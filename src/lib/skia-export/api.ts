@@ -11,6 +11,7 @@ import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { RGBA, SkiaScene } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
 import { emitSkiaBundle } from "./emit";
+import { emitBakedSceneBundle, emitBakedSkiaBundle } from "./emit-baked";
 import { planSkiaExport } from "./plan";
 import { emitSceneBundle } from "./scene-emit";
 import { planSceneExport, type PlannedBind } from "./scene-plan";
@@ -27,6 +28,10 @@ export interface SkiaExportRequest {
   // src/lib/skia-export/runtime/toolbox-timeline.ts, verbatim. The CLI reads
   // it from disk; the editor imports the generated string module.
   runtimeSource: string;
+  // How the timeline ships (spec §3.5): "worklet" (default) — tracks replayed
+  // by Reanimated worklets on one master clock; "baked" — program uniforms
+  // compiled into the SkSL as functions of iTime (emit-baked.ts).
+  animation?: "worklet" | "baked";
 }
 
 export interface SkiaExportResult {
@@ -44,6 +49,7 @@ export interface SkiaSceneExportOptions {
   // The producer re-evaluated at another tick (see scene-sample.ts). Without
   // it, binds derived from animated params refuse and nothing is verified.
   sampleAt?: (tick: number) => SkiaScene | null;
+  animation?: SkiaExportRequest["animation"];
 }
 
 // Export a scene directly — the skia-canvas branch below after it has
@@ -61,6 +67,7 @@ export function exportSkiaScene(
     sampleAt: opts.sampleAt,
   });
   if (!plan) return { files: null, problems, warnings: [], binds };
+  if (opts.animation === "baked") return { ...emitBakedSceneBundle(plan, opts.runtimeSource), binds };
   return { files: emitSceneBundle(plan, opts.runtimeSource), problems: [], warnings: plan.warnings, binds };
 }
 
@@ -75,6 +82,7 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         timeline: req.timeline,
       });
       if (!plan) return { files: null, problems, warnings: [] };
+      if (req.animation === "baked") return emitBakedSkiaBundle(plan, req.runtimeSource);
       return { files: emitSkiaBundle(plan, req.runtimeSource), problems: [], warnings: plan.warnings };
     }
     case SKIA_CANVAS_TYPE: {
@@ -93,6 +101,7 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         timeline: req.timeline,
         runtimeSource: req.runtimeSource,
         sampleAt: (tick) => sampler.sampleAt(tick),
+        animation: req.animation,
       });
       // What the producers themselves could not express (an unfused shader,
       // an unported option) refuses the export, as it fails the preview.

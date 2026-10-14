@@ -33,9 +33,11 @@ function fromB64(b64: string): Uint8Array {
   return out;
 }
 
-// `which`: "effect" renders the M0 SkSL Shader node (src/bundle), "scene"
+// `which`: "effect" renders the M0 SkSL Shader node (src/bundle) — also the
+// reference for "baked" (src/bundle-baked, the same node exported with its
+// timeline inside the SkSL) — "scene"
 // the Skia-layer chain's Skia Canvas (src/bundle-scene).
-export async function renderToolbox(frames: number[], size: number, which: "effect" | "scene" = "effect"): Promise<string[]> {
+export async function renderToolbox(frames: number[], size: number, which: "effect" | "scene" | "baked" = "effect"): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
   setCanvasKit(await init({ locateFile: (f: string) => CANVASKIT_BASE + f }));

@@ -111,7 +111,8 @@ const same = (a: unknown, b: unknown) =>
 
 // lerp: keep both ends of every run of equal values (interpolating between
 // equal neighbours reproduces the run exactly); step: keep run starts.
-function compress(values: BindValue[], mode: "lerp" | "step"): { f: number[]; v: BindValue[] } {
+// (emit-baked.ts bakes a sampled series over the same frames.)
+export function compress(values: BindValue[], mode: "lerp" | "step"): { f: number[]; v: BindValue[] } {
   const f: number[] = [];
   const v: BindValue[] = [];
   const last = values.length - 1;

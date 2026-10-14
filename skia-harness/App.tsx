@@ -22,6 +22,7 @@ import { useSharedValue, type SharedValue } from "react-native-reanimated";
 import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
+import * as Baked from "./src/bundle-baked";
 import { deviceInfo, loopbackHost, nextFrames, parseLink, postJson, snapshot, toBase64, type Snapshot } from "./capture";
 
 const query =
@@ -33,9 +34,12 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 // Skia-layer scene bundle (src/bundle-scene) with ?bundle=scene. Fixed for
 // the page's lifetime, so the hook choice below is stable.
 const SCENE = query?.get("bundle") === "scene";
-const { CANVAS, NAME, TIMELINE } = SCENE ? Scene : Effect;
-const ToolboxEffect = SCENE ? Scene.ToolboxScene : Effect.ToolboxEffect;
-const useToolboxClock = SCENE ? Scene.useToolboxClock : Effect.useToolboxClock;
+// ?bundle=baked: the same SkSL Shader export with animation "baked"
+// (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
+const EffectBundle = query?.get("bundle") === "baked" ? Baked : Effect;
+const { CANVAS, NAME, TIMELINE } = SCENE ? Scene : EffectBundle;
+const ToolboxEffect = SCENE ? Scene.ToolboxScene : EffectBundle.ToolboxEffect;
+const useToolboxClock = SCENE ? Scene.useToolboxClock : EffectBundle.useToolboxClock;
 const initialSize = Number(query?.get("size") ?? CANVAS.width);
 
 type Capture = (t: number, sizePx?: number) => Promise<Snapshot>;

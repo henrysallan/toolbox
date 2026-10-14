@@ -1,0 +1,167 @@
+{
+  "format": 1,
+  "name": "Aurora",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "usesTime": true,
+  "uniforms": [
+    {
+      "name": "scale",
+      "kind": "float",
+      "animated": true,
+      "keys": 3,
+      "from": "Animated Value scale (3 keys)",
+      "baked": true
+    },
+    {
+      "name": "octaves",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "persistence",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "lacunarity",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "drift_x",
+      "kind": "float",
+      "animated": true,
+      "keys": 2,
+      "from": "Animated Value drift (2 keys)",
+      "baked": true
+    },
+    {
+      "name": "drift_y",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "contrast",
+      "kind": "float",
+      "animated": true,
+      "keys": 4,
+      "from": "Animated Value contrast (4 keys)",
+      "baked": true
+    },
+    {
+      "name": "c0",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c1",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c2",
+      "kind": "color",
+      "animated": true,
+      "keys": 3,
+      "from": "Color glow.color (3 keys, oklab)",
+      "baked": true
+    },
+    {
+      "name": "c3",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    }
+  ],
+  "warnings": [
+    "Baked colors are computed by the shader, so Skia no longer converts them as layout(color) uniforms: identical on sRGB canvases (toolbox, React Native Skia web, Android); on a Display P3 iOS canvas they read as P3, like any procedural color (spec §2b)."
+  ],
+  "animation": "baked",
+  "baked": {
+    "note": "Animated uniforms are SkSL functions of iTime inside the program; the component drives iTime from the master clock and supplies the static uniforms. No worklet timeline ships (toolbox-timeline.ts is omitted).",
+    "time": "tick = iTime × 60000 in fp32, snapped to the nearest integer tick within 1e-6 + 2.5e-7·tick; scenes must stay below 2^24 ticks",
+    "programs": [
+      {
+        "where": "effect",
+        "baked": [
+          {
+            "name": "scale",
+            "kind": "track",
+            "from": "Animated Value scale (3 keys)",
+            "type": "float",
+            "points": 3,
+            "color": false
+          },
+          {
+            "name": "drift_x",
+            "kind": "track",
+            "from": "Animated Value drift (2 keys)",
+            "type": "float",
+            "points": 2,
+            "color": false
+          },
+          {
+            "name": "contrast",
+            "kind": "track",
+            "from": "Animated Value contrast (4 keys)",
+            "type": "float",
+            "points": 4,
+            "color": false
+          },
+          {
+            "name": "c2",
+            "kind": "track",
+            "from": "Color glow.color (3 keys, oklab)",
+            "type": "float4",
+            "points": 3,
+            "color": true
+          }
+        ],
+        "uniforms": [
+          "octaves",
+          "persistence",
+          "lacunarity",
+          "drift_y",
+          "c0",
+          "c1",
+          "c3"
+        ]
+      }
+    ],
+    "worklet": {
+      "binds": 0
+    },
+    "color": "Baked colors are computed by the shader, so Skia no longer converts them as layout(color) uniforms: identical on sRGB canvases (toolbox, React Native Skia web, Android); on a Display P3 iOS canvas they read as P3, like any procedural color (spec §2b).",
+    "limits": {
+      "maxTicks": 16777216,
+      "trackKeys": 1024,
+      "seriesFrames": 1024,
+      "seriesLiterals": 16384
+    }
+  }
+}

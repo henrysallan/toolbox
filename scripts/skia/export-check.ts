@@ -32,6 +32,10 @@ export interface ExportCheckOptions {
   typecheck?: boolean;
   // Subfolder under skia-harness/src/__family_check__/ (unique per gate).
   slot: string;
+  // The export's timeline shape (SkiaExportRequest.animation). "baked"
+  // checks the programs as baked (emit-baked.ts), with the uniforms they
+  // still declare.
+  animation?: "worklet" | "baked";
 }
 
 export interface ExportCheckResult {
@@ -87,6 +91,7 @@ export async function checkExportable(o: ExportCheckOptions): Promise<ExportChec
     canvas,
     timeline,
     runtimeSource,
+    animation: o.animation,
   });
   const result: ExportCheckResult = {
     problems: r.problems,
@@ -101,7 +106,15 @@ export async function checkExportable(o: ExportCheckOptions): Promise<ExportChec
   if ("problem" in sampler) {
     result.problems.push(sampler.problem);
   } else {
-    const scene = sampler.sampleAt(0);
+    let scene = sampler.sampleAt(0);
+    if (scene && o.animation === "baked") {
+      // The programs as the baked bundle ships them.
+      const { planSceneExport } = await import("@/lib/skia-export");
+      const { bakeScenePlan } = await import("@/lib/skia-export/emit-baked");
+      const p = planSceneExport(scene, o.nodes, o.edges, { name: o.slot, timeline, sampleAt: (t) => sampler.sampleAt(t) }).plan;
+      const b = p ? bakeScenePlan(p) : null;
+      scene = b?.plan?.scene ?? null;
+    }
     if (scene) {
       const found: { where: string; program: SkslProgramIR }[] = [];
       programsOf(scene.root, "root", found);

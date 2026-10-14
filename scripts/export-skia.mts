@@ -7,6 +7,8 @@
 //   npx tsx scripts/export-skia.mts --fixture aurora-scene --out skia-harness/src/bundle-scene
 //   npx tsx scripts/export-skia.mts --graph g.json --node <id> --out <dir> [--name N]
 //   npx tsx scripts/export-skia.mts --scene ir.json --out <dir> [--name N]
+//   … --animation baked   program uniforms as SkSL functions of iTime
+//                         (emit-baked.ts; default: the worklet timeline)
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
 // (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame, sceneDurationTicks }).
@@ -37,7 +39,7 @@ const { exportSkia, exportSkiaScene } = await import("@/lib/skia-export");
 
 const out = arg("out");
 if (!out) {
-  console.error("usage: export-skia.mts (--fixture aurora|aurora-scene|scene | --graph g.json --node id | --scene ir.json) --out dir");
+  console.error("usage: export-skia.mts (--fixture aurora|aurora-scene|scene | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked]");
   process.exit(2);
 }
 
@@ -47,6 +49,8 @@ const runtimeSource = fs.readFileSync(path.join(ROOT, "src/lib/skia-export/runti
 let result: SkiaExportResult;
 let label: string;
 const fixture = arg("fixture");
+// --animation baked: program uniforms compiled into the SkSL (emit-baked.ts).
+const animation = arg("animation") as "worklet" | "baked" | undefined;
 const sceneFile = arg("scene");
 if (sceneFile) {
   const j = JSON.parse(fs.readFileSync(sceneFile, "utf8"));
@@ -55,6 +59,7 @@ if (sceneFile) {
     name: label,
     timeline: j.timeline ?? DEFAULT_TIMELINE,
     runtimeSource,
+    animation,
   });
 } else {
   let nodes, edges, targetId: string, timeline, canvas, name: string;
@@ -97,7 +102,7 @@ if (sceneFile) {
     name = arg("name") ?? node;
   }
   label = targetId;
-  result = exportSkia({ nodes, edges, targetId, name, canvas, timeline, runtimeSource });
+  result = exportSkia({ nodes, edges, targetId, name, canvas, timeline, runtimeSource, animation });
 }
 
 if (!result.files) {

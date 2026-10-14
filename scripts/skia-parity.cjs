@@ -44,15 +44,16 @@ const FRAMES = H.arg("frames", "0,45,90,120,150,200,240,299").split(",").map(Num
 const SIZE = Number(H.arg("size", "512"));
 const WRITE_GOLDEN = H.flag("write-golden");
 // effect = the M0 SkSL Shader bundle (skia-harness/src/bundle); scene = the
-// Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`).
+// Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`); baked =
+// the effect bundle exported with `--animation baked` (src/bundle-baked).
 const BUNDLE = H.arg("bundle", "effect");
 const FPS = 60;
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
-if (FRAMES.some((f) => !Number.isInteger(f) || f < 0) || !(SIZE > 0) || !["effect", "scene"].includes(BUNDLE) || (WRITE_GOLDEN && BUNDLE !== "effect")) {
-  console.error("usage: npm run parity:skia -- [--frames 0,45,120] [--size 512] [--bundle effect|scene] [--write-golden (effect only)]");
+if (FRAMES.some((f) => !Number.isInteger(f) || f < 0) || !(SIZE > 0) || !["effect", "scene", "baked"].includes(BUNDLE) || (WRITE_GOLDEN && BUNDLE !== "effect")) {
+  console.error("usage: npm run parity:skia -- [--frames 0,45,120] [--size 512] [--bundle effect|scene|baked] [--write-golden (effect only)]");
   process.exit(2);
 }
 if (!fs.existsSync(path.join(HARNESS_DIST, "index.html"))) {
@@ -113,7 +114,7 @@ app.whenReady().then(async () => {
     const win = H.makeWindow(SIZE + 64, SIZE + 96);
 
     // ---- device: React Native Skia (web) -------------------------------------
-    await win.loadURL(`${server.base}/?t=0&size=${SIZE}&chrome=0${BUNDLE === "scene" ? "&bundle=scene" : ""}`);
+    await win.loadURL(`${server.base}/?t=0&size=${SIZE}&chrome=0${BUNDLE === "effect" ? "" : `&bundle=${BUNDLE}`}`);
     await H.waitFor(win, "window.__toolboxHarnessReady");
     const device = [];
     for (const f of FRAMES) {
