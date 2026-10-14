@@ -182,7 +182,9 @@ app.whenReady().then(async () => {
 <script src="/__compare/bundle.js"></script></body>`,
         },
       },
-      mounts: { "/canvaskit/": path.dirname(ck.dir), "/__compare/": BUNDLE_DIR },
+      // /fonts/ is public/fonts, as the editor serves it: Skia text fixtures
+      // load their bundled font asset (and the Text node its FontFace) by URL.
+      mounts: { "/canvaskit/": path.dirname(ck.dir), "/__compare/": BUNDLE_DIR, "/fonts/": path.join(H.REPO, "public", "fonts") },
     });
     win = H.makeWindow(640, 640, { verbose });
     await win.loadURL(`${server.base}/__compare/page.html`);

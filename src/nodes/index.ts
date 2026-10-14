@@ -354,6 +354,13 @@ import { skiaDitherNode } from "./skia/dither";
 import { skiaCircleNode } from "./skia/circle";
 import { skiaRectNode } from "./skia/rect";
 import { skiaLineNode } from "./skia/line";
+import { skiaStrokeNode } from "./skia/stroke";
+import { skiaSplineFillNode } from "./skia/spline-fill";
+import { skiaTrimPathNode } from "./skia/trim-path";
+import { skiaRoundCornersNode } from "./skia/round-corners";
+import { skiaDashNode } from "./skia/dash";
+import { skiaGradientFillNode } from "./skia/gradient-fill";
+import { skiaTextNode } from "./skia/text";
 
 let registered = false;
 
@@ -746,5 +753,12 @@ export function registerAllNodes() {
   registerNode(skiaCircleNode);
   registerNode(skiaRectNode);
   registerNode(skiaLineNode);
+  registerNode(skiaStrokeNode);
+  registerNode(skiaSplineFillNode);
+  registerNode(skiaTrimPathNode);
+  registerNode(skiaRoundCornersNode);
+  registerNode(skiaDashNode);
+  registerNode(skiaGradientFillNode);
+  registerNode(skiaTextNode);
   registered = true;
 }
