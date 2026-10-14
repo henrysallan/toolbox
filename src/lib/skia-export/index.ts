@@ -17,3 +17,5 @@ export {
   type ExportSegments,
   type ExportMarker,
 } from "./segments";
+// …and the Reanimated-native animation mode (animation: "native", M3 lane D).
+export { emitNativeEffect, emitNativeScene, NATIVE_EASINGS, type NativeEasingRow, type NativeEasingClass } from "./emit-native";

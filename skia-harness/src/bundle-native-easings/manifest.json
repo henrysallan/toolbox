@@ -1,0 +1,2382 @@
+{
+  "format": 3,
+  "name": "Easings",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 0.95,
+      "frames": [
+        0,
+        57
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "rise",
+      "start": 0.95,
+      "end": 1.6666666666666667,
+      "frames": [
+        57,
+        100
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "mid",
+      "start": 1.6666666666666667,
+      "end": 4,
+      "frames": [
+        100,
+        240
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "settle",
+      "start": 2.716666666666667,
+      "end": 3.716666666666667,
+      "frames": [
+        163,
+        223
+      ],
+      "kind": "range"
+    },
+    {
+      "name": "tail",
+      "start": 4,
+      "end": 5,
+      "frames": [
+        240,
+        300
+      ],
+      "kind": "next"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "rise",
+      "frame": 57,
+      "time": 0.95
+    },
+    {
+      "name": "mid",
+      "frame": 100,
+      "time": 1.6666666666666667
+    },
+    {
+      "name": "settle",
+      "frame": 163,
+      "time": 2.716666666666667
+    },
+    {
+      "name": "tail",
+      "frame": 240,
+      "time": 4
+    }
+  ],
+  "usesTime": false,
+  "uniforms": [
+    {
+      "name": "e_linear",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_in_sine",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_sine",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_inout_sine",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_in_quad",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_quad",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_inout_quad",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_in_cubic",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_cubic",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_inout_cubic",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_in_expo",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_expo",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_in_back",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_back",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_bounce",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_out_elastic",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_ease_in",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_ease_out",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_ease_inout",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_hold",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_custom",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_custom_def",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_bezier",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_bezier_steep",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_spring",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "e_spring_settle",
+      "kind": "float",
+      "animated": true,
+      "keys": 5,
+      "from": "channel keyframes (5 keys)"
+    },
+    {
+      "name": "t_flag",
+      "kind": "int",
+      "animated": true,
+      "keys": 3,
+      "from": "channel keyframes (3 keys)"
+    },
+    {
+      "name": "c_oklab",
+      "kind": "color",
+      "animated": true,
+      "keys": 4,
+      "from": "channel keyframes (4 keys, oklab)"
+    },
+    {
+      "name": "c_rgb",
+      "kind": "color",
+      "animated": true,
+      "keys": 3,
+      "from": "channel keyframes (3 keys, rgb)"
+    },
+    {
+      "name": "c_spring",
+      "kind": "color",
+      "animated": true,
+      "keys": 2,
+      "from": "channel keyframes (2 keys, oklab)"
+    }
+  ],
+  "warnings": [],
+  "animation": "native",
+  "native": {
+    "reanimated": "4.7.0",
+    "drift": "Reanimated starts each withSequence step on the frame its predecessor finished, and a withTiming finishes on the first frame at or past its duration. On a steady display clock every step still lands on its toolbox frame (durations end 1 µs early to absorb float noise); a frame whose timestamp arrives early by more than that pushes the rest of that value's sequence one frame late, and the lag adds up step by step. Export with animation \"worklet\" for frame-exact playback whatever the clock does.",
+    "clock": null,
+    "segments": [
+      {
+        "name": "intro",
+        "from": 0,
+        "to": 57000,
+        "steps": 30
+      },
+      {
+        "name": "rise",
+        "from": 57000,
+        "to": 100000,
+        "steps": 31
+      },
+      {
+        "name": "mid",
+        "from": 100000,
+        "to": 240000,
+        "steps": 84
+      },
+      {
+        "name": "settle",
+        "from": 163000,
+        "to": 223000,
+        "steps": 29
+      },
+      {
+        "name": "tail",
+        "from": 240000,
+        "to": 300000,
+        "steps": 2
+      }
+    ],
+    "values": [
+      {
+        "key": "e_linear",
+        "from": "e_linear: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_in_sine",
+        "from": "e_in_sine: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInSine",
+            "native": "Easing.sin",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInSine",
+            "native": "Easing.sin",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInSine",
+            "native": "Easing.sin",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_out_sine",
+        "from": "e_out_sine: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutSine",
+            "native": "Easing.out(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutSine",
+            "native": "Easing.out(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutSine",
+            "native": "Easing.out(Easing.sin)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "e_inout_sine",
+        "from": "e_inout_sine: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInOutSine",
+            "native": "Easing.inOut(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInOutSine",
+            "native": "Easing.inOut(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInOutSine",
+            "native": "Easing.inOut(Easing.sin)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "e_in_quad",
+        "from": "e_in_quad: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInQuad",
+            "native": "Easing.quad",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInQuad",
+            "native": "Easing.quad",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInQuad",
+            "native": "Easing.quad",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_out_quad",
+        "from": "e_out_quad: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutQuad",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutQuad",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutQuad",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_inout_quad",
+        "from": "e_inout_quad: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_in_cubic",
+        "from": "e_in_cubic: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInCubic",
+            "native": "Easing.cubic",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInCubic",
+            "native": "Easing.cubic",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInCubic",
+            "native": "Easing.cubic",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_out_cubic",
+        "from": "e_out_cubic: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutCubic",
+            "native": "Easing.out(Easing.cubic)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutCubic",
+            "native": "Easing.out(Easing.cubic)",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutCubic",
+            "native": "Easing.out(Easing.cubic)",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_inout_cubic",
+        "from": "e_inout_cubic: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInOutCubic",
+            "native": "Easing.inOut(Easing.cubic)",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInOutCubic",
+            "native": "Easing.inOut(Easing.cubic)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInOutCubic",
+            "native": "Easing.inOut(Easing.cubic)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "e_in_expo",
+        "from": "e_in_expo: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInExpo",
+            "native": "tbxEaseInExpo",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInExpo",
+            "native": "tbxEaseInExpo",
+            "class": "custom"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInExpo",
+            "native": "tbxEaseInExpo",
+            "class": "custom"
+          }
+        ]
+      },
+      {
+        "key": "e_out_expo",
+        "from": "e_out_expo: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutExpo",
+            "native": "tbxEaseOutExpo",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutExpo",
+            "native": "tbxEaseOutExpo",
+            "class": "custom"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutExpo",
+            "native": "tbxEaseOutExpo",
+            "class": "custom"
+          }
+        ]
+      },
+      {
+        "key": "e_in_back",
+        "from": "e_in_back: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInBack",
+            "native": "Easing.back(1.70158)",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInBack",
+            "native": "Easing.back(1.70158)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInBack",
+            "native": "Easing.back(1.70158)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "e_out_back",
+        "from": "e_out_back: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "e_out_bounce",
+        "from": "e_out_bounce: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutBounce",
+            "native": "Easing.bounce",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutBounce",
+            "native": "Easing.bounce",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutBounce",
+            "native": "Easing.bounce",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_out_elastic",
+        "from": "e_out_elastic: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          }
+        ]
+      },
+      {
+        "key": "e_ease_in",
+        "from": "e_ease_in: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeIn",
+            "native": "Easing.quad",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeIn",
+            "native": "Easing.quad",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeIn",
+            "native": "Easing.quad",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_ease_out",
+        "from": "e_ease_out: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeOut",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeOut",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeOut",
+            "native": "Easing.out(Easing.quad)",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_ease_inout",
+        "from": "e_ease_inout: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "easeInOut",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "easeInOut",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "easeInOut",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "e_hold",
+        "from": "e_hold: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          }
+        ]
+      },
+      {
+        "key": "e_custom",
+        "from": "e_custom: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.45, 1.3, 0.8, 1.4)",
+            "class": "solver",
+            "solverError": 2.8037567197363583e-7
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.45, 1.3, 0.8, 1.4000000000000001)",
+            "class": "solver",
+            "solverError": 2.8037567197363583e-7
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.45, 1.3, 0.8, 1.4000000000000001)",
+            "class": "solver",
+            "solverError": 2.8037567197363583e-7
+          }
+        ]
+      },
+      {
+        "key": "e_custom_def",
+        "from": "e_custom_def: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.33, 0.33, 0.6699999999999999, 0.6699999999999999)",
+            "class": "solver",
+            "solverError": 1.7210859293292913e-8
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.33, 0.33, 0.6699999999999999, 0.6699999999999999)",
+            "class": "solver",
+            "solverError": 1.7210859293292913e-8
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "customBezier",
+            "native": "Easing.bezier(0.33, 0.33, 0.6699999999999999, 0.6699999999999999)",
+            "class": "solver",
+            "solverError": 1.7210859293292913e-8
+          }
+        ]
+      },
+      {
+        "key": "e_bezier",
+        "from": "e_bezier: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "cubicBezier",
+            "native": "Easing.bezier(0.42, 0, 0.58, 1)",
+            "class": "solver",
+            "solverError": 1.6926147838880468e-7
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "cubicBezier",
+            "native": "Easing.bezier(0.42, 0, 0.58, 1)",
+            "class": "solver",
+            "solverError": 1.6926147838880468e-7
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "cubicBezier",
+            "native": "Easing.bezier(0.42, 0, 0.58, 1)",
+            "class": "solver",
+            "solverError": 1.6926147838880468e-7
+          }
+        ]
+      },
+      {
+        "key": "e_bezier_steep",
+        "from": "e_bezier_steep: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "cubicBezier",
+            "native": "tbxBezier0",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "cubicBezier",
+            "native": "tbxBezier0",
+            "class": "custom"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "cubicBezier",
+            "native": "tbxBezier0",
+            "class": "custom"
+          }
+        ]
+      },
+      {
+        "key": "e_spring",
+        "from": "e_spring: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 1268.6788899348871,
+              "damping": 24.932963242825643,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 46.53465346534654
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 324.0272479900758,
+              "damping": 12.600529810890379,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 92.07920792079207
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 472.67864190692643,
+              "damping": 15.218821719646824,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 76.23762376237623
+          }
+        ]
+      },
+      {
+        "key": "e_spring_settle",
+        "from": "e_spring_settle: channel keyframes (5 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 10000,
+            "to": 57000,
+            "ms": 783.3333333333334,
+            "startMs": 166.66666666666666,
+            "frames": 47,
+            "startFrames": 10,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 706.3706386992053,
+              "damping": 63.78632203621261,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 27.92079207920792
+          },
+          {
+            "segment": 1,
+            "from": 57000,
+            "to": 150000,
+            "ms": 1550,
+            "startMs": 950,
+            "frames": 93,
+            "startFrames": 57,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 180.41076897751697,
+              "damping": 32.23609823335476,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 55.24752475247524
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 163000,
+            "ms": 216.66666666666666,
+            "startMs": 2500,
+            "frames": 13,
+            "startFrames": 150,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          },
+          {
+            "segment": 3,
+            "from": 163000,
+            "to": 240000,
+            "ms": 1283.3333333333333,
+            "startMs": 2716.6666666666665,
+            "frames": 77,
+            "startFrames": 163,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 263.17637727889104,
+              "damping": 38.934508255870035,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 45.74257425742574
+          }
+        ]
+      },
+      {
+        "key": "t_flag",
+        "from": "t_flag: channel keyframes (3 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 30000,
+            "to": 100000,
+            "ms": 1166.6666666666667,
+            "startMs": 500,
+            "frames": 70,
+            "startFrames": 30,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          },
+          {
+            "segment": 1,
+            "from": 100000,
+            "to": 200000,
+            "ms": 1666.6666666666667,
+            "startMs": 1666.6666666666667,
+            "frames": 100,
+            "startFrames": 100,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          }
+        ]
+      },
+      {
+        "key": "c_oklab",
+        "from": "c_oklab: channel keyframes (4 keys, oklab)",
+        "kind": "color",
+        "segments": 3,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 90000,
+            "ms": 1500,
+            "startMs": 0,
+            "frames": 90,
+            "startFrames": 0,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 90000,
+            "to": 150000,
+            "ms": 1000,
+            "startMs": 1500,
+            "frames": 60,
+            "startFrames": 90,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          },
+          {
+            "segment": 2,
+            "from": 150000,
+            "to": 260000,
+            "ms": 1833.3333333333333,
+            "startMs": 2500,
+            "frames": 110,
+            "startFrames": 150,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "c_rgb",
+        "from": "c_rgb: channel keyframes (3 keys, rgb)",
+        "kind": "color",
+        "segments": 2,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 20000,
+            "to": 140000,
+            "ms": 2000,
+            "startMs": 333.3333333333333,
+            "frames": 120,
+            "startFrames": 20,
+            "easing": "cubicBezier",
+            "native": "Easing.bezier(0.2, 1.6, 0.3, -0.4)",
+            "class": "solver",
+            "solverError": 5.676353854741981e-7
+          },
+          {
+            "segment": 1,
+            "from": 140000,
+            "to": 280000,
+            "ms": 2333.3333333333335,
+            "startMs": 2333.3333333333335,
+            "frames": 140,
+            "startFrames": 140,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          }
+        ]
+      },
+      {
+        "key": "c_spring",
+        "from": "c_spring: channel keyframes (2 keys, oklab)",
+        "kind": "color",
+        "segments": 1,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 30000,
+            "to": 150000,
+            "ms": 2000,
+            "startMs": 500,
+            "frames": 120,
+            "startFrames": 30,
+            "easing": "spring",
+            "native": "withSpring",
+            "class": "physics",
+            "spring": {
+              "stiffness": 254.32021601521242,
+              "damping": 9.568452213679937,
+              "mass": 1,
+              "velocity": 0,
+              "overshootClamping": false,
+              "energyThreshold": 6e-9
+            },
+            "restFrames": 118.8118811881188
+          }
+        ]
+      }
+    ],
+    "customEasings": [
+      {
+        "name": "tbxEaseInExpo",
+        "why": "Easing.exp(0) = 2^−10 ≈ 0.00098, not 0 (toolbox special-cases t = 0)"
+      },
+      {
+        "name": "tbxEaseOutExpo",
+        "why": "Easing.out(Easing.exp)(1) = 1 − 2^−10, 0.1% short (toolbox special-cases t = 1)"
+      },
+      {
+        "name": "tbxEaseOutElastic",
+        "why": "Easing.elastic(b) is a different curve (1 − cos³(tπ/2)·cos(tbπ))"
+      },
+      {
+        "name": "tbxBezier0",
+        "why": "Reanimated's Easing.bezier(1, 0, 0, 1) misses toolbox's curve by 5.5e-2"
+      },
+      {
+        "name": "tbxCut0",
+        "why": "toolbox's easeInOutQuad cut to f0–f57"
+      },
+      {
+        "name": "tbxCut1",
+        "why": "toolbox's cubicBezier cut to f20–f57"
+      },
+      {
+        "name": "tbxCut2",
+        "why": "toolbox's spring cut to f30–f57"
+      },
+      {
+        "name": "tbxCut3",
+        "why": "toolbox's linear cut to f57–f100"
+      },
+      {
+        "name": "tbxCut4",
+        "why": "toolbox's easeInSine cut to f57–f100"
+      },
+      {
+        "name": "tbxCut5",
+        "why": "toolbox's easeOutSine cut to f57–f100"
+      },
+      {
+        "name": "tbxCut6",
+        "why": "toolbox's easeInOutSine cut to f57–f100"
+      },
+      {
+        "name": "tbxCut7",
+        "why": "toolbox's easeInQuad cut to f57–f100"
+      },
+      {
+        "name": "tbxCut8",
+        "why": "toolbox's easeOutQuad cut to f57–f100"
+      },
+      {
+        "name": "tbxCut9",
+        "why": "toolbox's easeInOutQuad cut to f57–f100"
+      },
+      {
+        "name": "tbxCut10",
+        "why": "toolbox's easeInCubic cut to f57–f100"
+      },
+      {
+        "name": "tbxCut11",
+        "why": "toolbox's easeOutCubic cut to f57–f100"
+      },
+      {
+        "name": "tbxCut12",
+        "why": "toolbox's easeInOutCubic cut to f57–f100"
+      },
+      {
+        "name": "tbxCut13",
+        "why": "toolbox's easeInExpo cut to f57–f100"
+      },
+      {
+        "name": "tbxCut14",
+        "why": "toolbox's easeOutExpo cut to f57–f100"
+      },
+      {
+        "name": "tbxCut15",
+        "why": "toolbox's easeInBack cut to f57–f100"
+      },
+      {
+        "name": "tbxCut16",
+        "why": "toolbox's easeOutBack cut to f57–f100"
+      },
+      {
+        "name": "tbxCut17",
+        "why": "toolbox's easeOutBounce cut to f57–f100"
+      },
+      {
+        "name": "tbxCut18",
+        "why": "toolbox's easeOutElastic cut to f57–f100"
+      },
+      {
+        "name": "tbxCut19",
+        "why": "toolbox's easeIn cut to f57–f100"
+      },
+      {
+        "name": "tbxCut20",
+        "why": "toolbox's easeOut cut to f57–f100"
+      },
+      {
+        "name": "tbxCut21",
+        "why": "toolbox's easeInOut cut to f57–f100"
+      },
+      {
+        "name": "tbxCut22",
+        "why": "toolbox's customBezier cut to f57–f100"
+      },
+      {
+        "name": "tbxCut23",
+        "why": "toolbox's customBezier cut to f57–f100"
+      },
+      {
+        "name": "tbxCut24",
+        "why": "toolbox's cubicBezier cut to f57–f100"
+      },
+      {
+        "name": "tbxCut25",
+        "why": "toolbox's cubicBezier cut to f57–f100"
+      },
+      {
+        "name": "tbxCut26",
+        "why": "toolbox's spring cut to f57–f100"
+      },
+      {
+        "name": "tbxCut27",
+        "why": "toolbox's spring cut to f57–f100"
+      },
+      {
+        "name": "tbxCut28",
+        "why": "toolbox's easeInOutQuad cut to f57–f90"
+      },
+      {
+        "name": "tbxCut29",
+        "why": "toolbox's cubicBezier cut to f57–f100"
+      },
+      {
+        "name": "tbxCut30",
+        "why": "toolbox's spring cut to f57–f100"
+      },
+      {
+        "name": "tbxCut31",
+        "why": "toolbox's linear cut to f100–f150"
+      },
+      {
+        "name": "tbxCut32",
+        "why": "toolbox's easeInSine cut to f100–f150"
+      },
+      {
+        "name": "tbxCut33",
+        "why": "toolbox's easeOutSine cut to f100–f150"
+      },
+      {
+        "name": "tbxCut34",
+        "why": "toolbox's easeInOutSine cut to f100–f150"
+      },
+      {
+        "name": "tbxCut35",
+        "why": "toolbox's easeInQuad cut to f100–f150"
+      },
+      {
+        "name": "tbxCut36",
+        "why": "toolbox's easeOutQuad cut to f100–f150"
+      },
+      {
+        "name": "tbxCut37",
+        "why": "toolbox's easeInOutQuad cut to f100–f150"
+      },
+      {
+        "name": "tbxCut38",
+        "why": "toolbox's easeInCubic cut to f100–f150"
+      },
+      {
+        "name": "tbxCut39",
+        "why": "toolbox's easeOutCubic cut to f100–f150"
+      },
+      {
+        "name": "tbxCut40",
+        "why": "toolbox's easeInOutCubic cut to f100–f150"
+      },
+      {
+        "name": "tbxCut41",
+        "why": "toolbox's easeInExpo cut to f100–f150"
+      },
+      {
+        "name": "tbxCut42",
+        "why": "toolbox's easeOutExpo cut to f100–f150"
+      },
+      {
+        "name": "tbxCut43",
+        "why": "toolbox's easeInBack cut to f100–f150"
+      },
+      {
+        "name": "tbxCut44",
+        "why": "toolbox's easeOutBack cut to f100–f150"
+      },
+      {
+        "name": "tbxCut45",
+        "why": "toolbox's easeOutBounce cut to f100–f150"
+      },
+      {
+        "name": "tbxCut46",
+        "why": "toolbox's easeOutElastic cut to f100–f150"
+      },
+      {
+        "name": "tbxCut47",
+        "why": "toolbox's easeIn cut to f100–f150"
+      },
+      {
+        "name": "tbxCut48",
+        "why": "toolbox's easeOut cut to f100–f150"
+      },
+      {
+        "name": "tbxCut49",
+        "why": "toolbox's easeInOut cut to f100–f150"
+      },
+      {
+        "name": "tbxCut50",
+        "why": "toolbox's customBezier cut to f100–f150"
+      },
+      {
+        "name": "tbxCut51",
+        "why": "toolbox's customBezier cut to f100–f150"
+      },
+      {
+        "name": "tbxCut52",
+        "why": "toolbox's cubicBezier cut to f100–f150"
+      },
+      {
+        "name": "tbxCut53",
+        "why": "toolbox's cubicBezier cut to f100–f150"
+      },
+      {
+        "name": "tbxCut54",
+        "why": "toolbox's spring cut to f100–f150"
+      },
+      {
+        "name": "tbxCut55",
+        "why": "toolbox's spring cut to f100–f150"
+      },
+      {
+        "name": "tbxCut56",
+        "why": "toolbox's easeOutBack cut to f150–f240"
+      },
+      {
+        "name": "tbxCut57",
+        "why": "toolbox's cubicBezier cut to f100–f140"
+      },
+      {
+        "name": "tbxCut58",
+        "why": "toolbox's easeOutElastic cut to f140–f240"
+      },
+      {
+        "name": "tbxCut59",
+        "why": "toolbox's spring cut to f100–f150"
+      },
+      {
+        "name": "tbxCut60",
+        "why": "toolbox's linear cut to f163–f223"
+      },
+      {
+        "name": "tbxCut61",
+        "why": "toolbox's easeInSine cut to f163–f223"
+      },
+      {
+        "name": "tbxCut62",
+        "why": "toolbox's easeOutSine cut to f163–f223"
+      },
+      {
+        "name": "tbxCut63",
+        "why": "toolbox's easeInOutSine cut to f163–f223"
+      },
+      {
+        "name": "tbxCut64",
+        "why": "toolbox's easeInQuad cut to f163–f223"
+      },
+      {
+        "name": "tbxCut65",
+        "why": "toolbox's easeOutQuad cut to f163–f223"
+      },
+      {
+        "name": "tbxCut66",
+        "why": "toolbox's easeInOutQuad cut to f163–f223"
+      },
+      {
+        "name": "tbxCut67",
+        "why": "toolbox's easeInCubic cut to f163–f223"
+      },
+      {
+        "name": "tbxCut68",
+        "why": "toolbox's easeOutCubic cut to f163–f223"
+      },
+      {
+        "name": "tbxCut69",
+        "why": "toolbox's easeInOutCubic cut to f163–f223"
+      },
+      {
+        "name": "tbxCut70",
+        "why": "toolbox's easeInExpo cut to f163–f223"
+      },
+      {
+        "name": "tbxCut71",
+        "why": "toolbox's easeOutExpo cut to f163–f223"
+      },
+      {
+        "name": "tbxCut72",
+        "why": "toolbox's easeInBack cut to f163–f223"
+      },
+      {
+        "name": "tbxCut73",
+        "why": "toolbox's easeOutBack cut to f163–f223"
+      },
+      {
+        "name": "tbxCut74",
+        "why": "toolbox's easeOutBounce cut to f163–f223"
+      },
+      {
+        "name": "tbxCut75",
+        "why": "toolbox's easeOutElastic cut to f163–f223"
+      },
+      {
+        "name": "tbxCut76",
+        "why": "toolbox's easeIn cut to f163–f223"
+      },
+      {
+        "name": "tbxCut77",
+        "why": "toolbox's easeOut cut to f163–f223"
+      },
+      {
+        "name": "tbxCut78",
+        "why": "toolbox's easeInOut cut to f163–f223"
+      },
+      {
+        "name": "tbxCut79",
+        "why": "toolbox's customBezier cut to f163–f223"
+      },
+      {
+        "name": "tbxCut80",
+        "why": "toolbox's customBezier cut to f163–f223"
+      },
+      {
+        "name": "tbxCut81",
+        "why": "toolbox's cubicBezier cut to f163–f223"
+      },
+      {
+        "name": "tbxCut82",
+        "why": "toolbox's cubicBezier cut to f163–f223"
+      },
+      {
+        "name": "tbxCut83",
+        "why": "toolbox's spring cut to f163–f223"
+      },
+      {
+        "name": "tbxCut84",
+        "why": "toolbox's spring cut to f163–f223"
+      },
+      {
+        "name": "tbxCut85",
+        "why": "toolbox's easeOutBack cut to f163–f223"
+      },
+      {
+        "name": "tbxCut86",
+        "why": "toolbox's easeOutElastic cut to f163–f223"
+      },
+      {
+        "name": "tbxCut87",
+        "why": "toolbox's easeOutBack cut to f240–f260"
+      },
+      {
+        "name": "tbxCut88",
+        "why": "toolbox's easeOutElastic cut to f240–f280"
+      }
+    ]
+  }
+}

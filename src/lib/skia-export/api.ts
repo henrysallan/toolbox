@@ -13,6 +13,7 @@ import { hexToRgba01 } from "@/engine/spline-fill";
 import type { TimelineMarker } from "@/lib/timeline-markers";
 import { emitSkiaBundle } from "./emit";
 import { emitBakedSceneBundle, emitBakedSkiaBundle } from "./emit-baked";
+import { emitNativeEffect, emitNativeScene } from "./emit-native";
 import { planSkiaExport } from "./plan";
 import { emitSceneBundle } from "./scene-emit";
 import { planSceneExport, type PlannedBind } from "./scene-plan";
@@ -34,9 +35,11 @@ export interface SkiaExportRequest {
   // it from disk; the editor imports the generated string module.
   runtimeSource: string;
   // How the timeline ships (spec §3.5): "worklet" (default) — tracks replayed
-  // by Reanimated worklets on one master clock; "baked" — program uniforms
-  // compiled into the SkSL as functions of iTime (emit-baked.ts).
-  animation?: "worklet" | "baked";
+  // by Reanimated worklets on one master clock, frame-exact and scrubbable;
+  // "baked" — program uniforms compiled into the SkSL as functions of iTime
+  // (emit-baked.ts); "native" — each value its own shared value on idiomatic
+  // Reanimated animations (emit-native.ts), interruptible, frame-scheduled.
+  animation?: "worklet" | "baked" | "native";
 }
 
 export interface SkiaExportResult {
@@ -77,6 +80,10 @@ export function exportSkiaScene(
     const r = emitBakedSceneBundle(plan, opts.runtimeSource, segments);
     return { ...r, warnings: [...r.warnings, ...segments.warnings], binds };
   }
+  if (opts.animation === "native") {
+    const r = emitNativeScene(plan, opts.runtimeSource, segments);
+    return { ...r, warnings: [...r.warnings, ...segments.warnings], binds };
+  }
   return {
     files: emitSceneBundle(plan, opts.runtimeSource, segments),
     problems: [],
@@ -99,6 +106,10 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
       const segments = exportSegments(req.timeline.markers, req.timeline);
       if (req.animation === "baked") {
         const r = emitBakedSkiaBundle(plan, req.runtimeSource, segments);
+        return { ...r, warnings: [...r.warnings, ...segments.warnings] };
+      }
+      if (req.animation === "native") {
+        const r = emitNativeEffect(plan, req.runtimeSource, segments);
         return { ...r, warnings: [...r.warnings, ...segments.warnings] };
       }
       return {

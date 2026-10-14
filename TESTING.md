@@ -562,6 +562,29 @@ that pair). Offline node tests should push each input through
   returns an array 4× too long (slice it). Programs that are slow on the
   CPU backend (Kuwahara, Flow Blur, Lyapunov) render smaller (`CM_SIZE`,
   default 32, is the cap).
+- `check-skia-native` — the Reanimated-native export mode
+  (`animation: "native"`, src/lib/skia-export/emit-native.ts; spec §3.5c).
+  The easing table against Reanimated's own Easing (exact rows bit-equal
+  to toolbox's easeOf, ulp rows ≤ 1e-15, each custom row's nearest
+  Reanimated function proven wrong, Easing.bezier within its tolerance or
+  swapped for toolbox's solver); snapshots of the emitted code
+  (`snapshots/native-*`); playback of every value through a Reanimated
+  stand-in (`scripts/skia/reanimated-sim.ts`) on a steady 60 Hz clock —
+  within 2e-5 of range of the worklet value at every frame, no frame of
+  lag — with ±0.05 / ±1 ms jittered clocks reported, not asserted; the
+  same for `playSegment(name)` over every marker segment of every bundle
+  (the easings fixture's markers cut key segments mid-curve: `tbxCut*`);
+  `colorAt` ≡ evaluateTrack's colors; refusals; the emitted bundles
+  type-check in skia-harness; the `skia-harness/src/bundle-native*` slots
+  are today's export; and no worklet in the shipped runtime or an emitted
+  module calls one declared below it. With skia-harness installed it also
+  runs Reanimated's REAL Easing and animation sources and holds the
+  transcriptions bit-identical to them; `SKIA_NATIVE_TRANSCRIPTION=1`
+  forces the CI path. Trap it guards: the worklets Babel plugin turns
+  every worklet `function` into a non-hoisted `const` that captures its
+  callees when created, so calling a worklet declared further down the
+  file throws "Cannot access … before initialization" on device and on
+  React Native web — while every Node gate (which hoists) passes.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
@@ -588,6 +611,16 @@ that pair). Offline node tests should push each input through
     export:web`); `--write-golden` also writes toolbox's frames to
     `scripts/fixtures/skia/golden/` for the device lanes. Re-run it whenever
     the bundle is re-exported: the device lane refuses stale goldens.
+    `--bundle native | native-easings | native-scene` plays the
+    Reanimated-native slots instead (`export-skia.mts --animation
+    native`): the page runs on a fake animation clock (`?clock=fake`,
+    `skia-harness/fake-clock.ts`) that steps Reanimated's real frame loop
+    one 60 Hz frame at a time from `play()`, so frames must ascend; it also
+    prints every value's drift from the worklet curve at every frame and
+    writes `native-values.json`. `--jitter <ms> [--seed n]` wobbles the
+    fake vsync to model a real display. Trap: React Native web's rAF
+    timestamps and `performance.now()` differ within a frame, so without
+    the fake clock a native run measures the browser, not Reanimated.
   - `npm run parity:skia:device -- --platform ios|android` — the same
     frames captured on the iOS Simulator / Android emulator through the
     harness's deep-link capture mode, scored against the goldens. Needs

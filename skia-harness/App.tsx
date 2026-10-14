@@ -17,6 +17,10 @@
 // window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
 // returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
+// ?bundle=native | native-easings | native-scene plays a Reanimated-native export instead
+// (native-harness.tsx; with ?clock=fake its capture steps Reanimated's own
+// clock frame by frame — the `time` freeze below doesn't apply).
+//
 // Native: deep links drive the same capture (capture.ts has the contract):
 //   toolboxharness://capture?t=1.25&run=<id>&host=http://127.0.0.1:<port>&frame=75&size=512
 // The first capture freezes the clock for the rest of the session.
@@ -27,6 +31,13 @@ import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
 import * as Baked from "./src/bundle-baked";
+import * as NativeAurora from "./src/bundle-native";
+import { evaluateTrack as nativeAuroraTrack } from "./src/bundle-native/toolbox-timeline";
+import * as NativeEasings from "./src/bundle-native-easings";
+import { evaluateTrack as nativeEasingsTrack } from "./src/bundle-native-easings/toolbox-timeline";
+import * as NativeScene from "./src/bundle-native-scene";
+import { evaluateTrack as nativeSceneTrack } from "./src/bundle-native-scene/toolbox-timeline";
+import { NativeHarness, type NativeBundle } from "./native-harness";
 import { deviceInfo, loopbackHost, nextFrames, parseLink, postJson, snapshot, toBase64, type Snapshot } from "./capture";
 
 const query =
@@ -44,6 +55,18 @@ const EffectBundle = query?.get("bundle") === "baked" ? Baked : Effect;
 const { CANVAS, NAME, TIMELINE, SEGMENTS } = SCENE ? Scene : EffectBundle;
 const ToolboxEffect = SCENE ? Scene.ToolboxScene : EffectBundle.ToolboxEffect;
 const useToolboxClock = SCENE ? Scene.useToolboxClock : EffectBundle.useToolboxClock;
+// Native-mode slots (animation: "native" exports, native-harness.tsx):
+// ?bundle=native (Aurora, src/bundle-native), ?bundle=native-easings (every
+// easing kind, src/bundle-native-easings) and ?bundle=native-scene (Aurora
+// as a Skia layer, src/bundle-native-scene).
+const NATIVE: NativeBundle | null =
+  query?.get("bundle") === "native"
+    ? { ...NativeAurora, evaluateTrack: nativeAuroraTrack }
+    : query?.get("bundle") === "native-easings"
+      ? { ...NativeEasings, evaluateTrack: nativeEasingsTrack }
+      : query?.get("bundle") === "native-scene"
+        ? { ...NativeScene, ToolboxEffect: NativeScene.ToolboxScene, evaluateTrack: nativeSceneTrack }
+        : null;
 const initialSize = Number(query?.get("size") ?? CANVAS.width);
 // Both harness bundles are exported with the same markers (AURORA_MARKERS).
 type SegmentName = Effect.SegmentName;
@@ -130,6 +153,10 @@ function Frozen({
 }
 
 export default function App() {
+  return NATIVE ? <NativeHarness bundle={NATIVE} chrome={query?.get("chrome") !== "0"} /> : <ClockApp />;
+}
+
+function ClockApp() {
   const canvasRef = useCanvasRef();
   const frozenTime = useSharedValue(webFrozenAt ?? 0);
   const [frozen, setFrozen] = useState(webFrozenAt !== null);

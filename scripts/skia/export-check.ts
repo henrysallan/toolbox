@@ -38,8 +38,8 @@ export interface ExportCheckOptions {
   slot: string;
   // The export's timeline shape (SkiaExportRequest.animation). "baked"
   // checks the programs as baked (emit-baked.ts), with the uniforms they
-  // still declare.
-  animation?: "worklet" | "baked";
+  // still declare; "native" the Reanimated-native bundle (emit-native.ts).
+  animation?: "worklet" | "baked" | "native";
 }
 
 export interface ExportCheckResult {

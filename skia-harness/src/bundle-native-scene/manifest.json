@@ -1,0 +1,301 @@
+{
+  "format": 3,
+  "kind": "scene",
+  "name": "Aurora (Skia layer)",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5,
+    "frames": 301
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "sampledFrames": 301,
+  "webPlayable": true,
+  "bindCounts": {
+    "static": 19,
+    "clock": 1,
+    "track": 3,
+    "sampled": 2
+  },
+  "binds": [
+    {
+      "id": "b3",
+      "path": "root.paint.shader.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b3",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b4",
+      "path": "root.paint.shader.program.uniforms.nskn_scale",
+      "kind": "track",
+      "sample": "b4",
+      "from": "Animated Value scale (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b8",
+      "path": "root.paint.shader.program.uniforms.nskn_offset_x",
+      "kind": "track",
+      "sample": "b8",
+      "from": "Animated Value drift (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b12",
+      "path": "root.paint.shader.program.uniforms.nskn_contrast",
+      "kind": "track",
+      "sample": "b12",
+      "from": "Animated Value contrast (4 keys)",
+      "keys": 4
+    },
+    {
+      "id": "b18",
+      "path": "root.paint.shader.program.uniforms.nskr_stops_color",
+      "kind": "sampled",
+      "sample": "b18",
+      "role": "array",
+      "from": "derived from skr.stops (animated: skr.stops); sampled 301 frames",
+      "distinct": 95
+    },
+    {
+      "id": "b20",
+      "path": "root.paint.shader.program.uniforms.nskr_stops_work",
+      "kind": "sampled",
+      "sample": "b20",
+      "role": "array",
+      "from": "derived from skr.stops, skr.interpolation, skr.space (animated: skr.stops); sampled 301 frames",
+      "distinct": 95
+    }
+  ],
+  "programs": [
+    {
+      "id": "SKSL_0",
+      "usedBy": [
+        "root (skf)"
+      ],
+      "fused": [
+        "tbx.noise.simplex@1",
+        "tbx.color_ramp@1"
+      ]
+    }
+  ],
+  "assets": [],
+  "warnings": [],
+  "animation": "native",
+  "native": {
+    "reanimated": "4.7.0",
+    "drift": "Reanimated starts each withSequence step on the frame its predecessor finished, and a withTiming finishes on the first frame at or past its duration. On a steady display clock every step still lands on its toolbox frame (durations end 1 µs early to absorb float noise); a frame whose timestamp arrives early by more than that pushes the rest of that value's sequence one frame late, and the lag adds up step by step. Export with animation \"worklet\" for frame-exact playback whatever the clock does.",
+    "clock": "clock",
+    "segments": [
+      {
+        "name": "intro",
+        "from": 0,
+        "to": 120000,
+        "steps": 4
+      },
+      {
+        "name": "loop",
+        "from": 120000,
+        "to": 300000,
+        "steps": 4
+      },
+      {
+        "name": "flash",
+        "from": 150000,
+        "to": 180000,
+        "steps": 3
+      }
+    ],
+    "values": [
+      {
+        "key": "b4",
+        "from": "root.paint.shader.program.uniforms.nskn_scale: Animated Value scale (3 keys)",
+        "kind": "scalar",
+        "initial": 3,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 120000,
+            "ms": 2000,
+            "startMs": 0,
+            "frames": 120,
+            "startFrames": 0,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 120000,
+            "to": 300000,
+            "ms": 3000,
+            "startMs": 2000,
+            "frames": 180,
+            "startFrames": 120,
+            "easing": "easeInOutCubic",
+            "native": "Easing.inOut(Easing.cubic)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "b8",
+        "from": "root.paint.shader.program.uniforms.nskn_offset_x: Animated Value drift (2 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 300000,
+            "ms": 5000,
+            "startMs": 0,
+            "frames": 300,
+            "startFrames": 0,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "b12",
+        "from": "root.paint.shader.program.uniforms.nskn_contrast: Animated Value contrast (4 keys)",
+        "kind": "scalar",
+        "initial": 0.8,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 90000,
+            "ms": 1500,
+            "startMs": 0,
+            "frames": 90,
+            "startFrames": 0,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 90000,
+            "to": 240000,
+            "ms": 2500,
+            "startMs": 1500,
+            "frames": 150,
+            "startFrames": 90,
+            "easing": "easeInOutSine",
+            "native": "Easing.inOut(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 240000,
+            "to": 300000,
+            "ms": 1000,
+            "startMs": 4000,
+            "frames": 60,
+            "startFrames": 240,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          }
+        ]
+      }
+    ],
+    "customEasings": [
+      {
+        "name": "tbxEaseOutElastic",
+        "why": "Easing.elastic(b) is a different curve (1 − cos³(tπ/2)·cos(tbπ))"
+      },
+      {
+        "name": "tbxCut0",
+        "why": "toolbox's linear cut to f0–f120"
+      },
+      {
+        "name": "tbxCut1",
+        "why": "toolbox's easeInOutSine cut to f90–f120"
+      },
+      {
+        "name": "tbxCut2",
+        "why": "toolbox's linear cut to f120–f300"
+      },
+      {
+        "name": "tbxCut3",
+        "why": "toolbox's easeInOutSine cut to f120–f240"
+      },
+      {
+        "name": "tbxCut4",
+        "why": "toolbox's easeInOutCubic cut to f150–f180"
+      },
+      {
+        "name": "tbxCut5",
+        "why": "toolbox's linear cut to f150–f180"
+      },
+      {
+        "name": "tbxCut6",
+        "why": "toolbox's easeInOutSine cut to f150–f180"
+      }
+    ]
+  }
+}

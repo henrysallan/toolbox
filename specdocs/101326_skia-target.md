@@ -539,6 +539,109 @@ d. **Springs (new).** Add a `spring` easing to toolbox whose evaluator *is*
    and exports emit `withSpring(config)`. The analytic solution is a worklet
    too, so mode (a) replays it exactly.
 
+#### 3.5c built and measured (M3 lane D, 2026-10-14)
+
+`exportSkia({ …, animation: "native" })` (CLI `--animation native`) for both
+targets, SkSL Shader and Skia Canvas: `src/lib/skia-export/emit-native.ts`.
+The bundle gains `animations.ts` (one exported `<value>Animation()` per
+value, `TRACKS`, `SEGMENT_STARTS`, `useToolboxAnimations({ autoplay, loop })`
+→ `{ values, play, playSegment, stop }`) and `toolbox-native.ts` (`colorAt`,
+`looped`, `segmentEase`); it ships lane B's `toolbox-clock.ts` (SEGMENTS,
+MARKERS) and manifest segments like every bundle. The component takes
+`animations` instead of `time`. A scene keeps its sampled binds and `iTime`
+in `sampleBinds`, read from a native linear-clock shared value.
+`playSegment(name, { loop, from })` plays every value over one SEGMENTS
+window from its value at the segment start (`from: "current"`: scalars
+animate on from where they are — an interruption). A window edge inside a
+key segment — a marker mid-curve, keys before frame 0 or past the end — is
+a `tbxCut*` worklet easing that replays toolbox's curve over the cut as the
+fraction of its move, so cuts stay exact (the easings fixture has 89).
+
+| toolbox | emitted | class | measured vs `easeOf` |
+|---|---|---|---|
+| linear, easeInSine, easeIn/Out/InOut Quad (+ aliases), easeIn/OutCubic, easeOutBounce | `Easing.linear / sin / quad / out(quad) / inOut(quad) / cubic / out(cubic) / bounce` | exact | 0 (bit for bit) |
+| easeOutSine, easeInOutSine, easeInOutCubic, easeIn/OutBack | `out(sin)`, `inOut(sin)`, `inOut(cubic)`, `back(1.70158)`, `out(back(…))` | last ulp | 1.1e-16 – 6.7e-16 |
+| cubicBezier, customBezier (scalar; normalised handles) | `Easing.bezier(x1, y1, x2, y2)` | solver | ≤ 2e-6, checked per segment (ordinary shapes 1.7e-7 – 9.9e-7) |
+| …a shape Reanimated's solver misses (vertical tangent: (1,0,0,1) by 5.5e-2) | toolbox's `cubicBezierEase` as a worklet easing | custom | 0 |
+| easeInExpo, easeOutExpo, easeOutElastic | toolbox's `easeOf` as a worklet easing (`Easing.exp` is 9.8e-4 off at the ends, `Easing.elastic` is another curve) | custom | 0 |
+| hold | `withDelay(d, withTiming(next, { duration: 0 }))`; first step: `withTiming(next, { duration, easing: Easing.steps(1, false) })` | hold | 0 |
+| spring (lane C) | `withSpring(next, springToReanimated(key, ms))` from rest + a wait to the next key when it settles early | physics | lane C: ≤ 1e-11 × \|B − A\| |
+| a segment cut by a window edge (marker, timeline end) | `tbxCut*`: toolbox's curve over the cut | custom | 0 (≤ 7.5e-6 of range played, the 1 µs margin) |
+| a preset this exporter doesn't know; a customBezier between equal keys with moving handles; a cut whose ends are equal while the curve between moves | refused with the reason | — | — |
+
+Colors animate one 0..1 progress shared value per segment (eased by
+Reanimated, `withSpring(1, …)` for springs) and `colorAt` mixes the keys with
+toolbox's own OKLab / RGB lerp (copied verbatim from the runtime at export)
+plus the 8-bit snap — bit-identical to `evaluateTrack` at the same
+progress (gate: 4,677 samples incl. overshoot, holds, springs).
+
+**Drift, measured.** Reanimated (4.7, web) driven by the harness's fake 60 Hz
+clock (`parity:skia -- --bundle native*`), and offline by a Reanimated
+stand-in that plays Reanimated's real animation sources bit-identically
+(`check-skia-native`; the stand-in also matches the harness to ≤ 1 ulp on
+the samples where they differ: 11 of 9,000 steady, 6 of 9,000 jittered):
+
+| clock | Aurora (SkSL, 4 values) | every-easing fixture (30 values, 5–7 steps each) | Aurora scene (3 tracks + clock) |
+|---|---|---|---|
+| steady 60 Hz | ≤ 6e-7 (5e-7 of range), 0 frames late; pixels 8/8 MATCH, max 1/255 on ≤ 0.04 % | ≤ 7.5e-6 of range (e_in_expo), 0 frames late; pixels 13/13 MATCH, max 1/255 on ≤ 0.04 % | ≤ 1e-6, 0 late; pixels 8/8 MATCH |
+| ±0.05 ms vsync jitter | worst 1.5 % of range, 1 value-frame one late | 97 value-frames one late; worst = a whole hold step for one frame (40 % of range), colors ≤ 62/255 at a hold switch | worst 1.5 % |
+| ±1 ms | 1.4 % | 75 value-frames late, same worst cases | 1.4 % |
+
+What makes the steady-clock column exact, each found while measuring:
+- **Float noise at step boundaries.** Reanimated ends a step on the first
+  frame with `now − start ≥ duration`; 47 frames is 783.33… ms, and frame
+  timestamps minus start land a hair under it about half the time, so the
+  step ends a frame late and every later step of that value follows
+  (measured before the fix: up to 6 % of range by f154). Every emitted
+  duration now ends 1 µs early (`frames(n)`), which costs ≤ 1e-5 of range.
+- **A leading `withDelay` shows the wrong value on RN web.** A fresh web
+  shared value's `_animation` is `undefined` (native: `null`), and
+  `withSequence` then hands its first step the sequence's own last step as
+  "previous animation"; a first-step `withDelay` displays that step's target
+  for the whole wait (measured: the value read 1 instead of 0 for 10
+  frames). The same substitution happens at every `withRepeat` restart on
+  all platforms. The lead is therefore a timed wait and a leading hold a
+  stepped `withTiming`; `looped()` pads with a reset to the frame-0 value.
+- **Start off the frame grid.** `play()` runs from `scheduleOnUI`, outside a
+  frame, where the start time is `_getAnimationTimestamp()` (between two
+  frames; integer ms on Android). It now assigns inside a UI-runtime
+  `requestAnimationFrame`, where the start is the frame's `__frameTimestamp`.
+- **The shipped runtime threw on device.** Lane C's `easeOf` calls
+  `springEase`, declared below it; the worklets Babel plugin makes worklet
+  functions non-hoisted consts that capture callees at creation → "Cannot
+  access … before initialization" for every bundle exported from `main`
+  (worklet mode too; the committed slots predated it, and Node hoists, so no
+  gate saw it). Found here while measuring and fixed on `main` by moving the
+  spring block up (lane B made the same move); check-skia-export and
+  check-skia-native now check declaration order — check-skia-native in
+  every emitted native module too.
+
+The jittered rows are the limit: once a frame timestamp arrives early by
+more than the 1 µs margin, that step ends a frame late and the rest of the
+value's sequence trails by a frame (by k frames after k such boundaries).
+The value error is one frame of that step's motion — large for holds, steep
+curves and fast steps. `loop: true` (offline, 3 cycles, steady clock): exact
+except one frame per cycle for a value whose last key sits on the timeline
+end and differs from its first (Aurora's drift and contrast): `withRepeat`
+restarts on the frame a cycle ends, which then shows the last key where the
+worklet clock shows frame 0. Device vsync regularity is **not measured** (no
+Xcode here; iOS hands Reanimated `displayLink.targetTimestamp`, Android
+Choreographer `frameTimeNanos`), nor 120 Hz.
+
+Segments (lane B markers), offline on a steady clock with Reanimated's real
+sources: every `playSegment` of all three bundles (Aurora `intro` / `loop` /
+the `flash` range; the easings fixture's five, cut mid-curve) within 7.5e-6
+of range of the worklet clock's `playSegment`, no frame of lag.
+
+**When to use which.** Worklet (default): playback that must match the
+editor frame for frame whatever the display does — scrubbing (`seek`), long
+chains of keys, holds that must switch on their frame, anything compared
+against a golden. Native: app-driven motion — a state you start with
+`play()` / `playSegment(name)`, a value you interrupt, chain from or hand to
+a gesture (`cancelAnimation`, `withSpring` to a new target, `playSegment(…,
+{ from: "current" })`), springs that should feel physical; it is exact on a
+steady clock and within a frame per step otherwise.
+
 ### 3.6 Device parity harness (iOS/Android)
 
 - Deep link `toolboxharness://capture?t=1.25&id=<run>` freezes the clock,

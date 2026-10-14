@@ -15,6 +15,7 @@ import { setCanvasKit, CANVASKIT_BASE } from "@/engine/skia/canvaskit";
 import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import { auroraGraph, AURORA_TIMELINE } from "../fixtures/skia/aurora-graph";
 import { auroraSceneGraph } from "../fixtures/skia/aurora-scene-graph";
+import { easingsGraph, EASINGS_TIMELINE } from "../fixtures/skia/easings-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -35,16 +36,28 @@ function fromB64(b64: string): Uint8Array {
 
 // `which`: "effect" renders the M0 SkSL Shader node (src/bundle) — also the
 // reference for "baked" (src/bundle-baked, the same node exported with its
-// timeline inside the SkSL) — "scene"
-// the Skia-layer chain's Skia Canvas (src/bundle-scene).
-export async function renderToolbox(frames: number[], size: number, which: "effect" | "scene" | "baked" = "effect"): Promise<string[]> {
+// timeline inside the SkSL) — "scene" the Skia-layer chain's Skia Canvas
+// (src/bundle-scene); the native-mode slots render the graphs they were
+// exported from — "native" the same Aurora SkSL node (src/bundle-native),
+// "native-easings" the every-easing node (easings-graph.ts,
+// src/bundle-native-easings), "native-scene" the Skia-layer Aurora
+// (src/bundle-native-scene).
+export async function renderToolbox(
+  frames: number[],
+  size: number,
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" = "effect"
+): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
   setCanvasKit(await init({ locateFile: (f: string) => CANVASKIT_BASE + f }));
   const backend = createEngineBackend(size, size);
   const { nodes, edges, targetId } =
-    which === "scene" ? { ...auroraSceneGraph(AURORA_SKSL), targetId: "skc" } : auroraGraph(AURORA_SKSL);
-  const { fps, ticksPerFrame } = AURORA_TIMELINE;
+    which === "scene" || which === "native-scene"
+      ? { ...auroraSceneGraph(AURORA_SKSL), targetId: "skc" }
+      : which === "native-easings"
+        ? easingsGraph()
+        : auroraGraph(AURORA_SKSL);
+  const { fps, ticksPerFrame } = which === "native-easings" ? EASINGS_TIMELINE : AURORA_TIMELINE;
   const out: string[] = [];
   for (const f of frames) {
     const ctx = backend.makeContext(f / fps, f, undefined, false, { tick: f * ticksPerFrame, ticksPerFrame, fps }, true);

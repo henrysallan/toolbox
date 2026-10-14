@@ -1,0 +1,350 @@
+{
+  "format": 3,
+  "name": "Aurora",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "usesTime": false,
+  "uniforms": [
+    {
+      "name": "scale",
+      "kind": "float",
+      "animated": true,
+      "keys": 3,
+      "from": "Animated Value scale (3 keys)"
+    },
+    {
+      "name": "octaves",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "persistence",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "lacunarity",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "drift_x",
+      "kind": "float",
+      "animated": true,
+      "keys": 2,
+      "from": "Animated Value drift (2 keys)"
+    },
+    {
+      "name": "drift_y",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "contrast",
+      "kind": "float",
+      "animated": true,
+      "keys": 4,
+      "from": "Animated Value contrast (4 keys)"
+    },
+    {
+      "name": "c0",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c1",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c2",
+      "kind": "color",
+      "animated": true,
+      "keys": 3,
+      "from": "Color glow.color (3 keys, oklab)"
+    },
+    {
+      "name": "c3",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    }
+  ],
+  "warnings": [],
+  "animation": "native",
+  "native": {
+    "reanimated": "4.7.0",
+    "drift": "Reanimated starts each withSequence step on the frame its predecessor finished, and a withTiming finishes on the first frame at or past its duration. On a steady display clock every step still lands on its toolbox frame (durations end 1 µs early to absorb float noise); a frame whose timestamp arrives early by more than that pushes the rest of that value's sequence one frame late, and the lag adds up step by step. Export with animation \"worklet\" for frame-exact playback whatever the clock does.",
+    "clock": null,
+    "segments": [
+      {
+        "name": "intro",
+        "from": 0,
+        "to": 120000,
+        "steps": 5
+      },
+      {
+        "name": "loop",
+        "from": 120000,
+        "to": 300000,
+        "steps": 6
+      },
+      {
+        "name": "flash",
+        "from": 150000,
+        "to": 180000,
+        "steps": 4
+      }
+    ],
+    "values": [
+      {
+        "key": "scale",
+        "from": "scale: Animated Value scale (3 keys)",
+        "kind": "scalar",
+        "initial": 3,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 120000,
+            "ms": 2000,
+            "startMs": 0,
+            "frames": 120,
+            "startFrames": 0,
+            "easing": "easeOutBack",
+            "native": "Easing.out(Easing.back(1.70158))",
+            "class": "ulp"
+          },
+          {
+            "segment": 1,
+            "from": 120000,
+            "to": 300000,
+            "ms": 3000,
+            "startMs": 2000,
+            "frames": 180,
+            "startFrames": 120,
+            "easing": "easeInOutCubic",
+            "native": "Easing.inOut(Easing.cubic)",
+            "class": "ulp"
+          }
+        ]
+      },
+      {
+        "key": "drift_x",
+        "from": "drift_x: Animated Value drift (2 keys)",
+        "kind": "scalar",
+        "initial": 0,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 300000,
+            "ms": 5000,
+            "startMs": 0,
+            "frames": 300,
+            "startFrames": 0,
+            "easing": "linear",
+            "native": "Easing.linear",
+            "class": "exact"
+          }
+        ]
+      },
+      {
+        "key": "contrast",
+        "from": "contrast: Animated Value contrast (4 keys)",
+        "kind": "scalar",
+        "initial": 0.8,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 90000,
+            "ms": 1500,
+            "startMs": 0,
+            "frames": 90,
+            "startFrames": 0,
+            "easing": "easeOutElastic",
+            "native": "tbxEaseOutElastic",
+            "class": "custom"
+          },
+          {
+            "segment": 1,
+            "from": 90000,
+            "to": 240000,
+            "ms": 2500,
+            "startMs": 1500,
+            "frames": 150,
+            "startFrames": 90,
+            "easing": "easeInOutSine",
+            "native": "Easing.inOut(Easing.sin)",
+            "class": "ulp"
+          },
+          {
+            "segment": 2,
+            "from": 240000,
+            "to": 300000,
+            "ms": 1000,
+            "startMs": 4000,
+            "frames": 60,
+            "startFrames": 240,
+            "easing": "hold",
+            "native": "withDelay + withTiming(duration 0)",
+            "class": "hold"
+          }
+        ]
+      },
+      {
+        "key": "c2",
+        "from": "c2: Color glow.color (3 keys, oklab)",
+        "kind": "color",
+        "segments": 2,
+        "steps": [
+          {
+            "segment": 0,
+            "from": 0,
+            "to": 150000,
+            "ms": 2500,
+            "startMs": 0,
+            "frames": 150,
+            "startFrames": 0,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          },
+          {
+            "segment": 1,
+            "from": 150000,
+            "to": 300000,
+            "ms": 2500,
+            "startMs": 2500,
+            "frames": 150,
+            "startFrames": 150,
+            "easing": "easeInOutQuad",
+            "native": "Easing.inOut(Easing.quad)",
+            "class": "exact"
+          }
+        ]
+      }
+    ],
+    "customEasings": [
+      {
+        "name": "tbxEaseOutElastic",
+        "why": "Easing.elastic(b) is a different curve (1 − cos³(tπ/2)·cos(tbπ))"
+      },
+      {
+        "name": "tbxCut0",
+        "why": "toolbox's linear cut to f0–f120"
+      },
+      {
+        "name": "tbxCut1",
+        "why": "toolbox's easeInOutSine cut to f90–f120"
+      },
+      {
+        "name": "tbxCut2",
+        "why": "toolbox's easeInOutQuad cut to f0–f120"
+      },
+      {
+        "name": "tbxCut3",
+        "why": "toolbox's linear cut to f120–f300"
+      },
+      {
+        "name": "tbxCut4",
+        "why": "toolbox's easeInOutSine cut to f120–f240"
+      },
+      {
+        "name": "tbxCut5",
+        "why": "toolbox's easeInOutQuad cut to f120–f150"
+      },
+      {
+        "name": "tbxCut6",
+        "why": "toolbox's easeInOutCubic cut to f150–f180"
+      },
+      {
+        "name": "tbxCut7",
+        "why": "toolbox's linear cut to f150–f180"
+      },
+      {
+        "name": "tbxCut8",
+        "why": "toolbox's easeInOutSine cut to f150–f180"
+      },
+      {
+        "name": "tbxCut9",
+        "why": "toolbox's easeInOutQuad cut to f150–f180"
+      }
+    ]
+  }
+}

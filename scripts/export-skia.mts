@@ -9,6 +9,8 @@
 //   npx tsx scripts/export-skia.mts --scene ir.json --out <dir> [--name N]
 //   … --animation baked   program uniforms as SkSL functions of iTime
 //                         (emit-baked.ts; default: the worklet timeline)
+//   … --animation native  Reanimated-native animations (emit-native.ts):
+//   npx tsx scripts/export-skia.mts --fixture easings --animation native --out skia-harness/src/bundle-native-easings
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
 // (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame,
@@ -41,18 +43,27 @@ const { exportSkia, exportSkiaScene } = await import("@/lib/skia-export");
 
 const out = arg("out");
 if (!out) {
-  console.error("usage: export-skia.mts (--fixture aurora|aurora-scene|scene | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked]");
+  console.error(
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+  );
   process.exit(2);
 }
 
 const DEFAULT_TIMELINE = { fps: 60, ticksPerFrame: 1000, sceneDurationTicks: 300_000 };
+// --animation baked: program uniforms compiled into the SkSL (emit-baked.ts);
+// --animation native: Reanimated-native animations (emit-native.ts) instead
+// of the worklet master clock.
+const animationArg = arg("animation");
+if (animationArg && animationArg !== "worklet" && animationArg !== "baked" && animationArg !== "native") {
+  console.error(`--animation must be worklet, baked or native, got "${animationArg}"`);
+  process.exit(2);
+}
+const animation = animationArg as "worklet" | "baked" | "native" | undefined;
 const runtimeSource = fs.readFileSync(path.join(ROOT, "src/lib/skia-export/runtime/toolbox-timeline.ts"), "utf8");
 
 let result: SkiaExportResult;
 let label: string;
 const fixture = arg("fixture");
-// --animation baked: program uniforms compiled into the SkSL (emit-baked.ts).
-const animation = arg("animation") as "worklet" | "baked" | undefined;
 const sceneFile = arg("scene");
 if (sceneFile) {
   const j = JSON.parse(fs.readFileSync(sceneFile, "utf8"));
@@ -89,8 +100,16 @@ if (sceneFile) {
     timeline = { ...fx.AURORA_TIMELINE, markers: fx.AURORA_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Aurora (Skia layer)";
+  } else if (fixture === "easings") {
+    // Every easing kind on one SkSL node (easings-graph.ts): the native
+    // mode's drift fixture (`--animation native`, ?bundle=native-easings).
+    const fx = await import("./fixtures/skia/easings-graph.ts");
+    ({ nodes, edges, targetId } = fx.easingsGraph());
+    timeline = fx.EASINGS_TIMELINE;
+    canvas = { width: fx.EASINGS_SIZE, height: fx.EASINGS_SIZE };
+    name = "Easings";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings)`);
   } else {
     const file = arg("graph");
     const node = arg("node");

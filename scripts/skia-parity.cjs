@@ -4,6 +4,7 @@
 //   npm run export:skia -- --fixture aurora --out skia-harness/src/bundle
 //   npm --prefix skia-harness run export:web
 //   npm run parity:skia            # [--frames 0,45,120] [--size 512] [--write-golden]
+//   npm run parity:skia -- --bundle native|native-easings   # Reanimated-native exports
 //
 // One offscreen Electron window, two pages on one local server:
 //   device  — skia-harness/dist: the exported bundle running in React Native
@@ -37,23 +38,48 @@ const golden = require("./skia/golden.cjs");
 
 const REPO = H.REPO;
 const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
-const OUT = path.join(REPO, "skia-harness", "parity-out");
-const BUNDLE_DIR = path.join(OUT, ".bundle");
-
-const FRAMES = H.arg("frames", "0,45,90,120,150,200,240,299").split(",").map(Number);
-const SIZE = Number(H.arg("size", "512"));
-const WRITE_GOLDEN = H.flag("write-golden");
 // effect = the M0 SkSL Shader bundle (skia-harness/src/bundle); scene = the
 // Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`); baked =
-// the effect bundle exported with `--animation baked` (src/bundle-baked).
+// the effect bundle exported with `--animation baked` (src/bundle-baked);
+// native / native-easings / native-scene = Reanimated-native exports
+// (`--animation native`: src/bundle-native = Aurora, src/bundle-native-
+// easings = every easing kind, src/bundle-native-scene = Aurora as a Skia
+// layer). The native pages run on the harness's fake clock
+// (?clock=fake): each capture steps Reanimated frame by frame from play(),
+// so frames must ascend, and the run also reports every animated value's
+// drift from the worklet-mode curve at every frame (drift.json).
 const BUNDLE = H.arg("bundle", "effect");
+const NATIVE = BUNDLE === "native" || BUNDLE === "native-easings" || BUNDLE === "native-scene";
+// --jitter <ms> [--seed n] (native only): the fake clock's frames wobble by
+// up to ± that much, deterministically — a real vsync, not a perfect one.
+// Drift is then measured against the worklet value at the same jittered
+// time; the pixels still compare with toolbox's exact frames.
+const JITTER = Number(H.arg("jitter", "0"));
+const SEED = Number(H.arg("seed", "1"));
+const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${JITTER ? `-jitter${JITTER}` : ""}` : "");
+const BUNDLE_DIR = path.join(OUT, ".bundle");
+
+const DEFAULT_FRAMES = BUNDLE === "native-easings" ? "0,10,30,57,58,90,120,150,151,163,200,240,299" : "0,45,90,120,150,200,240,299";
+const FRAMES = H.arg("frames", DEFAULT_FRAMES).split(",").map(Number);
+const SIZE = Number(H.arg("size", "512"));
+const WRITE_GOLDEN = H.flag("write-golden");
 const FPS = 60;
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
-if (FRAMES.some((f) => !Number.isInteger(f) || f < 0) || !(SIZE > 0) || !["effect", "scene", "baked"].includes(BUNDLE) || (WRITE_GOLDEN && BUNDLE !== "effect")) {
-  console.error("usage: npm run parity:skia -- [--frames 0,45,120] [--size 512] [--bundle effect|scene|baked] [--write-golden (effect only)]");
+if (
+  FRAMES.some((f) => !Number.isInteger(f) || f < 0) ||
+  (NATIVE && FRAMES.some((f, i) => i > 0 && f <= FRAMES[i - 1])) ||
+  !(SIZE > 0) ||
+  !(JITTER >= 0) ||
+  (JITTER > 0 && !NATIVE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene"].includes(BUNDLE) ||
+  (WRITE_GOLDEN && BUNDLE !== "effect")
+) {
+  console.error(
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
+  );
   process.exit(2);
 }
 if (!fs.existsSync(path.join(HARNESS_DIST, "index.html"))) {
@@ -114,15 +140,34 @@ app.whenReady().then(async () => {
     const win = H.makeWindow(SIZE + 64, SIZE + 96);
 
     // ---- device: React Native Skia (web) -------------------------------------
-    await win.loadURL(`${server.base}/?t=0&size=${SIZE}&chrome=0${BUNDLE === "effect" ? "" : `&bundle=${BUNDLE}`}`);
+    const query = NATIVE ? `bundle=${BUNDLE}&clock=fake${JITTER ? `&jitter=${JITTER}&seed=${SEED}` : ""}` : `t=0${BUNDLE === "effect" ? "" : `&bundle=${BUNDLE}`}`;
+    await win.loadURL(`${server.base}/?${query}&size=${SIZE}&chrome=0`);
     await H.waitFor(win, "window.__toolboxHarnessReady");
     const device = [];
     for (const f of FRAMES) {
-      device.push(await H.call(win, `window.__toolboxHarness.capture(${f / FPS})`, 30000, `device capture f${f}`));
+      device.push(await H.call(win, `window.__toolboxHarness.capture(${f / FPS})`, 60000, `device capture f${f}`));
     }
     const dw = device[0].width;
     const dh = device[0].height;
     console.log(`device: captured ${device.length} frames at ${dw}×${dh}`);
+
+    // ---- native: every animated value vs the worklet-mode curve ----------------
+    let drift = null;
+    if (NATIVE) {
+      drift = await H.call(win, "window.__toolboxHarness.drift()");
+      const values = await H.call(win, "window.__toolboxHarness.values()");
+      fs.writeFileSync(path.join(OUT, "native-values.json"), JSON.stringify(values) + "\n");
+      console.log(
+        `native values: ${drift.length} values × ${values.frames} frames (fake 60 Hz clock from play()${JITTER ? `, ±${JITTER} ms jitter, seed ${SEED}` : ""}) vs evaluateTrack:`
+      );
+      for (const d of drift) {
+        const rel = d.range > 0 ? d.maxAbs / d.range : 0;
+        console.log(
+          `  ${d.key.padEnd(16)} ${d.kind.padEnd(6)} max |Δ| ${d.maxAbs.toExponential(2)} (f${d.maxAt}, ${(rel * 100).toFixed(3)}% of range)` +
+            `  frames differing ${d.framesDiffer}, > 1e-9 ${d.framesOff} (of which one frame late: ${d.lagOne})`
+        );
+      }
+    }
 
     // ---- toolbox: the engine + SkSL Shader node --------------------------------
     await win.loadURL(`${server.base}/__parity/page.html`);
@@ -164,7 +209,11 @@ app.whenReady().then(async () => {
     const all = rows.every((r) => r.verdict === "match") && moved > 0.01;
     fs.writeFileSync(
       path.join(OUT, "report.json"),
-      JSON.stringify({ size: SIZE, frames: FRAMES, canvasKit: ck.version, motionMeanAbs: moved, rows, ok: all }, null, 2) + "\n"
+      JSON.stringify(
+        { bundle: BUNDLE, ...(NATIVE ? { jitterMs: JITTER, seed: SEED } : {}), size: SIZE, frames: FRAMES, canvasKit: ck.version, motionMeanAbs: moved, rows, ...(drift ? { drift } : {}), ok: all },
+        null,
+        2
+      ) + "\n"
     );
     console.log(all ? "PARITY: match on every frame" : "PARITY: FAILED");
 
