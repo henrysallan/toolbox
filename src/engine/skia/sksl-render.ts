@@ -1,5 +1,7 @@
-// Runs a compiled SkSL effect on CanvasKit's own WebGL context and lands the
-// result in an engine image (specdocs/101326_skia-target.md).
+// Runs Skia (CanvasKit) on its own WebGL context and lands the result in an
+// engine image (specdocs/101326_skia-target.md). Shared by the SkSL Shader
+// node (one runtime effect) and the Skia Canvas terminal (a whole scene IR,
+// engine/skia/scene-render.ts).
 //
 // Two GL contexts, one copy each way:
 //   - Skia renders into a private offscreen canvas (one shared surface,
@@ -15,8 +17,19 @@
 //
 // The surface is sRGB, like React Native Skia's default canvas, so shader
 // math runs on gamma-encoded values exactly as the engine's own shaders do.
+//
+// Callers render back to back within one eval and each copies the surface
+// into its own engine texture before returning, so one shared surface is
+// enough for every Skia-rendering node.
 
-import type { CanvasKit, GrDirectContext, RuntimeEffect, Surface } from "canvaskit-wasm";
+import type {
+  Canvas,
+  CanvasKit,
+  GrDirectContext,
+  Image,
+  RuntimeEffect,
+  Surface,
+} from "canvaskit-wasm";
 import type { ImageValue, RenderContext } from "../types";
 
 interface SkiaGpu {
@@ -92,63 +105,10 @@ void main() {
   outColor = c.a > 0.0 ? vec4(c.rgb / c.a, c.a) : vec4(0.0);
 }`;
 
-function childShader(kit: CanvasKit, ctx: RenderContext, img: ImageValue | undefined) {
-  if (!img) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
-  const bytes = ctx.readImagePixels(img);
-  if (!bytes) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
-  const image = kit.MakeImage(
-    {
-      width: img.width,
-      height: img.height,
-      alphaType: kit.AlphaType.Unpremul,
-      colorType: kit.ColorType.RGBA_8888,
-      colorSpace: kit.ColorSpace.SRGB,
-    },
-    bytes,
-    img.width * 4
-  );
-  if (!image) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
-  const shader = image.makeShaderOptions(
-    kit.TileMode.Clamp,
-    kit.TileMode.Clamp,
-    kit.FilterMode.Linear,
-    kit.MipmapMode.None
-  );
-  return { shader, image };
-}
-
-export function renderSkslToImage(
-  ctx: RenderContext,
-  kit: CanvasKit,
-  effect: RuntimeEffect,
-  uniforms: Float32Array,
-  children: (ImageValue | undefined)[],
-  width: number,
-  height: number
-): ImageValue | null {
-  const surface = ensureSurface(kit, width, height);
-  if (!surface || !gpu) return null;
-
-  const kids = children.map((c) => childShader(kit, ctx, c));
-  const shader = kids.length
-    ? effect.makeShaderWithChildren(uniforms, kids.map((k) => k.shader))
-    : effect.makeShader(uniforms);
-  const paint = new kit.Paint();
-  paint.setShader(shader);
-  // Src, not SrcOver: the node's output is the shader's value, not the
-  // shader composited over last frame.
-  paint.setBlendMode(kit.BlendMode.Src);
-  const canvas = surface.getCanvas();
-  canvas.clear(kit.TRANSPARENT);
-  canvas.drawPaint(paint);
-  surface.flush();
-  paint.delete();
-  shader.delete();
-  for (const k of kids) {
-    k.shader.delete();
-    k.image?.delete();
-  }
-
+// The shared surface's pixels → a fresh engine image (premul → straight,
+// Y flip). Call after the surface was flushed.
+function importSurface(ctx: RenderContext, width: number, height: number): ImageValue | null {
+  if (!gpu) return null;
   const gl = ctx.gl;
   const tmp = gl.createTexture();
   if (!tmp) return null;
@@ -171,4 +131,96 @@ export function renderSkslToImage(
   });
   gl.deleteTexture(tmp);
   return out;
+}
+
+// Draw anything with Skia at width × height and get it back as an engine
+// image. The canvas arrives cleared to transparent; `draw` must not keep
+// the canvas past its return. It may return a cleanup that runs after the
+// flush — CanvasKit objects the recorded draws still reference (shaders,
+// images) are deleted there, not before Skia has executed them. Null (with
+// skiaGpuError() set) when no Skia surface could be made.
+export function renderSkiaToImage(
+  ctx: RenderContext,
+  kit: CanvasKit,
+  width: number,
+  height: number,
+  draw: (canvas: Canvas) => void | (() => void)
+): ImageValue | null {
+  const surface = ensureSurface(kit, width, height);
+  if (!surface || !gpu) return null;
+  const canvas = surface.getCanvas();
+  const saves = canvas.getSaveCount();
+  canvas.clear(kit.TRANSPARENT);
+  let cleanup: void | (() => void) = undefined;
+  try {
+    cleanup = draw(canvas);
+  } finally {
+    // A throwing draw must not leave a save/layer open on the shared surface.
+    canvas.restoreToCount(saves);
+    surface.flush();
+    cleanup?.();
+  }
+  return importSurface(ctx, width, height);
+}
+
+// An engine image as a CanvasKit image (RGBA8 unpremul, row 0 = top), or
+// null when the readback fails. The caller deletes it.
+export function engineImageToSkia(kit: CanvasKit, ctx: RenderContext, img: ImageValue): Image | null {
+  const bytes = ctx.readImagePixels(img);
+  if (!bytes) return null;
+  return kit.MakeImage(
+    {
+      width: img.width,
+      height: img.height,
+      alphaType: kit.AlphaType.Unpremul,
+      colorType: kit.ColorType.RGBA_8888,
+      colorSpace: kit.ColorSpace.SRGB,
+    },
+    bytes,
+    img.width * 4
+  );
+}
+
+function childShader(kit: CanvasKit, ctx: RenderContext, img: ImageValue | undefined) {
+  if (!img) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
+  const image = engineImageToSkia(kit, ctx, img);
+  if (!image) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
+  const shader = image.makeShaderOptions(
+    kit.TileMode.Clamp,
+    kit.TileMode.Clamp,
+    kit.FilterMode.Linear,
+    kit.MipmapMode.None
+  );
+  return { shader, image };
+}
+
+export function renderSkslToImage(
+  ctx: RenderContext,
+  kit: CanvasKit,
+  effect: RuntimeEffect,
+  uniforms: Float32Array,
+  children: (ImageValue | undefined)[],
+  width: number,
+  height: number
+): ImageValue | null {
+  return renderSkiaToImage(ctx, kit, width, height, (canvas) => {
+    const kids = children.map((c) => childShader(kit, ctx, c));
+    const shader = kids.length
+      ? effect.makeShaderWithChildren(uniforms, kids.map((k) => k.shader))
+      : effect.makeShader(uniforms);
+    const paint = new kit.Paint();
+    paint.setShader(shader);
+    // Src, not SrcOver: the node's output is the shader's value, not the
+    // shader composited over last frame.
+    paint.setBlendMode(kit.BlendMode.Src);
+    canvas.drawPaint(paint);
+    return () => {
+      paint.delete();
+      shader.delete();
+      for (const k of kids) {
+        k.shader.delete();
+        k.image?.delete();
+      }
+    };
+  });
 }
