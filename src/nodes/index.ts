@@ -333,6 +333,7 @@ import { skiaMirrorNode } from "./skia/mirror";
 import { skiaPolarCoordsNode } from "./skia/polar-coords";
 import { skiaPixelateNode } from "./skia/pixelate";
 import { skiaArrayNode } from "./skia/array";
+import { skiaMergeNode } from "./skia/merge";
 
 let registered = false;
 
@@ -704,5 +705,6 @@ export function registerAllNodes() {
   registerNode(skiaPolarCoordsNode);
   registerNode(skiaPixelateNode);
   registerNode(skiaArrayNode);
+  registerNode(skiaMergeNode);
   registered = true;
 }

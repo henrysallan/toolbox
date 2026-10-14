@@ -142,6 +142,7 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   "skia-polar-coords": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `polar-coords` node it mirrors (same params) instead." },
   "skia-pixelate": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `pixelate` node it mirrors (same params) instead." },
   "skia-array": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `array` node it mirrors (same params) instead." },
+  "skia-merge": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `merge` node it mirrors (same `layers` param, same blend formulas) instead." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------

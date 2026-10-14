@@ -70,11 +70,15 @@ export const skiaFillNode: NodeDefinition = {
   compute({ inputs, params, ctx, nodeId }) {
     const state = getState(ctx, nodeId);
     const color = hexToRgba01((params.color as string) ?? "#808080");
+    // srcOver is left unset so an enclosing Skia Group's blendMode reaches
+    // this fill (an explicit paint mode overrides the group's, in the
+    // renderer and in React Native alike) — as Skia Group itself does.
+    const mode = skiaBlendMode(params.blendMode);
     const paint: PaintIR = {
       style: "fill",
       color: bindParam(color, nodeId, "color"),
       opacity: bindParam(typeof params.opacity === "number" ? params.opacity : 1, nodeId, "opacity"),
-      blendMode: skiaBlendMode(params.blendMode),
+      ...(mode !== "srcOver" ? { blendMode: mode } : {}),
     };
     const sv = inputs.shader as SkiaShaderValue | undefined;
     state.readsTime = false;

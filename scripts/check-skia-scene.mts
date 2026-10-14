@@ -734,6 +734,11 @@ const alphaOf = (r: Rendered, x: number, y: number) => at(r, x, y)[3];
   check("skia-fill emits a fill with its id", f.kind === "skia_draw" && f.node.k === "fill" && f.node.id === "f1");
   check("skia-fill color is an RGBA bind on the color param", !!fp?.color && fp.color.ref?.param === "color" && fp.color.ref.node === "f1" && Math.abs(fp.color.v[3] - 128 / 255) < 1e-9);
   check("skia-fill opacity / blendMode", fp?.opacity?.v === 0.5 && fp.opacity.ref?.param === "opacity" && fp.blendMode === "screen");
+  const plainFill = run("skia-fill", {}, { color: "#00ff00", blendMode: "srcOver" }).node;
+  check(
+    "skia-fill: srcOver is left unset so an enclosing group's blendMode reaches it",
+    plainFill.k === "fill" && plainFill.paint.blendMode === undefined
+  );
   const lf = render(run("skia-fill", {}, { color: "#00ff00" }).node);
   px("skia-fill renders its color", lf, 8, 8, [0, 255, 0, 255], 0);
   const withLeaf = run("skia-fill", { shader: { kind: "skia_shader", expr: { k: "leaf", shader: colorShader(BLUE) } } });
