@@ -17,7 +17,7 @@
 // window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
 // returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
-// ?bundle=scene | atlas | baked | image | procedural | procedural-baked picks
+// ?bundle=scene | atlas | text | baked | image | procedural | procedural-baked picks
 // another export on the same master clock (procedural: Aurora on LFO /
 // Expression / Scene Time drivers compiled to worklets; -baked: the same
 // drivers in the SkSL).
@@ -37,6 +37,7 @@ import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
 import * as AtlasScene from "./src/bundle-atlas";
+import * as TextScene from "./src/bundle-text";
 import * as Baked from "./src/bundle-baked";
 import * as ImageBundle from "./src/bundle-image";
 import * as Procedural from "./src/bundle-procedural";
@@ -61,7 +62,10 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 // ?bundle=atlas: Copy to Points (Skia) — sprite-sheet atlases (useTexture +
 // useRSXformBuffer) and vector copy groups in one scene (src/bundle-atlas,
 // `export-skia.mts --fixture atlas`).
-const SceneBundle = query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : null;
+// ?bundle=text: the Text (Skia) scene bundle (src/bundle-text, `--fixture
+// text`: paragraphs, anchors, letter spacing, a blend group, bundled fonts).
+const SceneBundle =
+  query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : query?.get("bundle") === "text" ? TextScene : null;
 // ?bundle=baked: the same SkSL Shader export with animation "baked"
 // (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
 // ?bundle=image: an SkSL Shader sampling a bundled image (iImage1, an

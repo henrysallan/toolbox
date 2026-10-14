@@ -44,6 +44,7 @@ import {
   SKIA_IR_VERSION,
   type Bind,
   type BindXY,
+  type BlendMode as IrBlendMode,
   type ColorFilterIR,
   type GeomIR,
   type GradientStopIR,
@@ -219,6 +220,12 @@ type V = { kind: "static"; code: string } | { kind: "render"; code: string } | {
 
 const prop = (v: V) => (v.kind === "anim" ? v.direct : v.code);
 
+// An absent optional number in a text helper's arguments.
+const NAN: V = { kind: "static", code: "NaN" };
+
+// Text `anchor` → the share of the block's height above y (scene-render.ts).
+const TEXT_ANCHOR_K: Record<"baseline" | "top" | "middle" | "bottom", number> = { baseline: 0, top: 0, middle: 0.5, bottom: 1 };
+
 // Animated binds that evaluate to the same thing (one keyframed param read
 // by three props) share one sampleBinds key: bind id → the key it reads.
 export function sampleKeys(plan: ScenePlan): Map<string, string> {
@@ -256,6 +263,10 @@ class SceneEmitter {
   private pathHooks = new Map<string, V>();
   // Enclosing groups' opacities, outermost first (see the Paragraph case).
   private groupOpacity: Bind<number>[] = [];
+  // Enclosing groups' blend modes, outermost first: the innermost one is
+  // what a paragraph inherits (RN paints it with its own paint, so the
+  // emitter folds the mode into that paint — lane T).
+  private groupBlend: IrBlendMode[] = [];
   private assetHooks = new Map<string, string>();
   needB = false;
   needF = false;
@@ -779,6 +790,48 @@ class SceneEmitter {
     }
   }
 
+  // Text with a width that v1's one <Paragraph> can't express — a line
+  // height, an anchor, letter spacing or a blend mode: makeTextPicture
+  // (scene-render.ts drawText's algorithm as a worklet) records the block
+  // into an SkPicture. Its paint is built from the color, the opacity folded
+  // with the enclosing groups' (as for <Paragraph>) and the inherited blend
+  // mode, since RN paints text with that paint and never the group's.
+  private textBlock(n: Extract<SkiaNode, { k: "text" }>, blend: IrBlendMode | undefined): El {
+    this.rn.add("Picture");
+    this.rn.add("TextAlign");
+    this.rn.add("Skia");
+    this.rn.add("BlendMode");
+    this.helpers.add("makeTextPicture");
+    const align = n.align === "center" ? "TextAlign.Center" : n.align === "right" ? "TextAlign.Right" : "TextAlign.Left";
+    const anchor = n.anchor ?? "top";
+    const k = anchor === "baseline" ? -1 : TEXT_ANCHOR_K[anchor];
+    const mode = `BlendMode.${(blend ?? "srcOver").charAt(0).toUpperCase()}${(blend ?? "srcOver").slice(1)}`;
+    const stack = this.groupOpacity.map((b) => this.bind(b));
+    const pic = this.composite(
+      [
+        this.fonts(n.font.asset),
+        this.bind(n.text),
+        this.bind(n.font.size),
+        this.bind(n.width),
+        n.letterSpacing ? this.bind(n.letterSpacing) : { kind: "static", code: "0" },
+        n.lineHeight ? this.bind(n.lineHeight) : NAN,
+        n.baselineOffset ? this.bind(n.baselineOffset) : NAN,
+        this.bind(n.x),
+        this.bind(n.y),
+        n.paint.color ? this.bind(n.paint.color) : { kind: "static", code: "[0, 0, 0, 1]" },
+        n.paint.opacity ? this.bind(n.paint.opacity) : { kind: "static", code: "1" },
+        ...stack,
+      ],
+      ([f, t, s, w, ls, lh, off, x, y, c, o, ...g]) => {
+        const clamp = (v: string) => `Math.min(1, Math.max(0, ${v}))`;
+        const op = g.length ? clamp(`${g.reduce((acc, v) => clamp(`${acc} * ${v}`), "1")} * ${o}`) : o;
+        return `makeTextPicture(${f}, ${lit(n.font.asset)}, ${t}, ${s}, ${align}, ${w}, ${ls}, ${lh}, ${k}, ${off}, ${x}, ${y}, ${c}, ${op}, ${mode})`;
+      },
+      { type: "SkPicture" }
+    );
+    return el("Picture", [["picture", prop(pic)]]);
+  }
+
   node(n: SkiaNode, path: string): El {
     if (!this.shared.has(n)) return this.drawNode(n, path);
     const hit = this.sharedEl.get(n);
@@ -812,7 +865,9 @@ class SceneEmitter {
           props.push(["layer", fx.length || cf.length ? el("Paint", [], [...fx, ...cf]) : "true"]);
         }
         if (n.opacity) this.groupOpacity.push(n.opacity);
+        if (n.blendMode) this.groupBlend.push(n.blendMode);
         const kids = n.children.map((c, i) => this.node(c, `${path}.children.${i}`));
+        if (n.blendMode) this.groupBlend.pop();
         if (n.opacity) this.groupOpacity.pop();
         return el("Group", props, kids);
       }
@@ -834,6 +889,9 @@ class SceneEmitter {
           ["fit", lit(n.fit)],
         ]);
       case "text": {
+        const blend = n.paint.blendMode ?? this.groupBlend[this.groupBlend.length - 1];
+        const v1 = !n.lineHeight && (n.anchor === undefined || n.anchor === "top") && !n.letterSpacing && (!blend || blend === "srcOver");
+        if (n.width && !v1) return this.textBlock(n, blend);
         if (n.width) {
           // A paragraph laid out to `width`, top-left at (x, y), aligned in
           // it (RN <Paragraph>); its run takes the paint's color + opacity
@@ -865,7 +923,7 @@ class SceneEmitter {
           return el("Paragraph", [["paragraph", prop(para)], ["x", prop(this.bind(n.x))], ["y", prop(this.bind(n.y))], ["width", prop(this.bind(n.width))]]);
         }
         // One line with y the baseline (RN <Text>); `align` anchors the
-        // run's advance at x.
+        // run's advance at x; another anchor places the line box at y.
         this.rn.add("Text");
         const font = this.font(n.font.asset, n.font.size);
         const p = this.paint(n.paint, where);
@@ -875,7 +933,16 @@ class SceneEmitter {
           const k = n.align === "center" ? " / 2" : "";
           x = this.composite([x, font, this.bind(n.text)], ([xx, f, t]) => `${xx} - textAdvance(${f}, ${t})${k}`);
         }
-        return el("Text", [["font", prop(font)], ["text", prop(this.bind(n.text))], ["x", prop(x)], ["y", prop(this.bind(n.y))], ...p.props], p.children);
+        let y = this.bind(n.y);
+        if (n.anchor && n.anchor !== "baseline") {
+          this.helpers.add("textBaselineY");
+          const k = TEXT_ANCHOR_K[n.anchor];
+          y = this.composite(
+            [font, y, n.lineHeight ? this.bind(n.lineHeight) : NAN, n.baselineOffset ? this.bind(n.baselineOffset) : NAN],
+            ([f, yy, lh, off]) => `textBaselineY(${f}, ${yy}, ${k}, ${lh}, ${off})`
+          );
+        }
+        return el("Text", [["font", prop(font)], ["text", prop(this.bind(n.text))], ["x", prop(x)], ["y", prop(y)], ...p.props], p.children);
       }
       case "atlas":
         return this.atlas(n, path);
@@ -1099,6 +1166,109 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, 
   return { text, fields: fields.length, procedural };
 }
 
+// ---- text helpers (lane T) ------------------------------------------------------------------
+//
+// The emitted twins of scene-render.ts drawText. Every worklet calls only
+// helpers declared above it (HELPER_ORDER): the worklets Babel plugin turns
+// them into consts that capture their callees when created.
+
+export const TEXT_BASELINE_Y_SOURCE =
+  `// One-line text's baseline for an anchor: the line box is lineHeight (NaN:\n` +
+  `// ascent + descent) tall with y \`anchor\` of the way down it, the baseline\n` +
+  `// \`offset\` (NaN: the font's ascent + descent centred) below its top.\n` +
+  `function textBaselineY(font: SkFont | null, y: number, anchor: number, lineHeight: number, offset: number) {\n` +
+  `  "worklet";\n` +
+  `  if (!font) return y;\n` +
+  `  const m = font.getMetrics();\n` +
+  `  const asc = -m.ascent;\n` +
+  `  const desc = m.descent;\n` +
+  `  const lh = Number.isNaN(lineHeight) ? asc + desc : lineHeight;\n` +
+  `  return y - anchor * lh + (Number.isNaN(offset) ? (lh - (asc + desc)) / 2 + asc : offset);\n` +
+  `}\n`;
+
+export const TEXT_RUN_SOURCE =
+  `// One paragraph of \`text\` in the scene font, painted with \`paint\`.\n` +
+  `function textRun(fonts: SkTypefaceFontProvider, family: string, text: string, size: number, align: TextAlign, spacing: number, paint: SkPaint) {\n` +
+  `  "worklet";\n` +
+  `  const style = { fontFamilies: [family], fontSize: size, letterSpacing: spacing };\n` +
+  `  return Skia.ParagraphBuilder.Make({ textAlign: align, textStyle: style }, fonts).pushStyle(style, paint).addText(text).build();\n` +
+  `}\n`;
+
+export const MAKE_TEXT_PICTURE_SOURCE =
+  `// A text block as toolbox lays it out: SkParagraph breaks \`text\` at \`width\`\n` +
+  `// and places each line horizontally; with a lineHeight (NaN: SkParagraph's\n` +
+  `// own pitch, which rounds to whole px) each line is drawn as its own run\n` +
+  `// exactly lineHeight below the last, its baseline \`offset\` (NaN: the\n` +
+  `// font's ascent + descent centred) into its line box. anchor: -1 = y is\n` +
+  `// the first baseline, else the share of the block above y (0 top, 0.5\n` +
+  `// middle, 1 bottom). React Native paints text with this paint, never the\n` +
+  `// group's: color × opacity (the groups' folded in) and the inherited blend.\n` +
+  `function makeTextPicture(\n` +
+  `  fonts: SkTypefaceFontProvider | null,\n` +
+  `  family: string,\n` +
+  `  text: string,\n` +
+  `  size: number,\n` +
+  `  align: TextAlign,\n` +
+  `  width: number,\n` +
+  `  spacing: number,\n` +
+  `  lineHeight: number,\n` +
+  `  anchor: number,\n` +
+  `  offset: number,\n` +
+  `  x: number,\n` +
+  `  y: number,\n` +
+  `  color: number[],\n` +
+  `  opacity: number,\n` +
+  `  blend: BlendMode\n` +
+  `): SkPicture {\n` +
+  `  "worklet";\n` +
+  `  const recorder = Skia.PictureRecorder();\n` +
+  `  if (!fonts) {\n` +
+  `    recorder.beginRecording(Skia.XYWHRect(0, 0, 1, 1));\n` +
+  `    return recorder.finishRecordingAsPicture();\n` +
+  `  }\n` +
+  `  const paint = Skia.Paint();\n` +
+  `  paint.setColor(Skia.Color(color));\n` +
+  `  paint.setAlphaf(color[3] * opacity);\n` +
+  `  paint.setBlendMode(blend);\n` +
+  `  const para = textRun(fonts, family, text, size, align, spacing, paint);\n` +
+  `  para.layout(width);\n` +
+  `  const lines = para.getLineMetrics();\n` +
+  `  const n = lines.length;\n` +
+  `  // The recording's cull rect: every line's advance, padded for ink.\n` +
+  `  const pad = 4 * size + 64;\n` +
+  `  let x0 = x;\n` +
+  `  let x1 = x + 1;\n` +
+  `  for (let i = 0; i < n; i++) {\n` +
+  `    x0 = Math.min(x0, x + lines[i].left);\n` +
+  `    x1 = Math.max(x1, x + lines[i].left + lines[i].width);\n` +
+  `  }\n` +
+  `  if (Number.isNaN(lineHeight)) {\n` +
+  `    const h = para.getHeight();\n` +
+  `    const top = anchor < 0 ? y - (n > 0 ? lines[0].baseline : 0) : y - anchor * h;\n` +
+  `    const canvas = recorder.beginRecording(Skia.XYWHRect(x0 - pad, top - pad, x1 - x0 + 2 * pad, h + 2 * pad));\n` +
+  `    para.paint(canvas, x, top);\n` +
+  `    return recorder.finishRecordingAsPicture();\n` +
+  `  }\n` +
+  `  const asc = n > 0 ? lines[0].ascent : 0;\n` +
+  `  const desc = n > 0 ? lines[0].descent : 0;\n` +
+  `  const off = Number.isNaN(offset) ? (lineHeight - (asc + desc)) / 2 + asc : offset;\n` +
+  `  // The first baseline, computed once (glyphs snap to a position grid).\n` +
+  `  const first = anchor < 0 ? y : y - anchor * n * lineHeight + off;\n` +
+  `  const canvas = recorder.beginRecording(Skia.XYWHRect(x0 - pad, first - off - pad, x1 - x0 + 2 * pad, n * Math.abs(lineHeight) + 2 * pad));\n` +
+  `  for (let i = 0; i < n; i++) {\n` +
+  `    const s = text.slice(lines[i].startIndex, lines[i].endExcludingWhitespaces);\n` +
+  `    if (s.length === 0) continue;\n` +
+  `    const line = textRun(fonts, family, s, size, TextAlign.Left, spacing, paint);\n` +
+  `    line.layout(width);\n` +
+  `    const own = line.getLineMetrics();\n` +
+  `    line.paint(canvas, x + lines[i].left, first + i * lineHeight - (own.length > 0 ? own[0].baseline : 0));\n` +
+  `  }\n` +
+  `  return recorder.finishRecordingAsPicture();\n` +
+  `}\n`;
+
+// The order helpers are emitted in: callees first.
+const HELPER_ORDER = ["makeEffect", "parsePath", "toPoints", "textAdvance", "textBaselineY", "makeParagraph", "textRun", "makeTextPicture", "trimSpan"];
+
 // ---- the bundle ------------------------------------------------------------------------------
 
 // `segments`: the composition's markers on this timeline (exportSegments);
@@ -1179,10 +1349,17 @@ export function emitSceneBundle(
       `// One run in the scene font, its paint the text's color × opacity.\nfunction makeParagraph(\n  fonts: SkTypefaceFontProvider | null,\n  family: string,\n  text: string,\n  size: number,\n  align: TextAlign,\n  color: number[],\n  opacity: number\n) {\n  "worklet";\n  if (!fonts) return null;\n  const paint = Skia.Paint();\n  paint.setColor(Skia.Color(color));\n  paint.setAlphaf(color[3] * opacity);\n  const style = { fontFamilies: [family], fontSize: size };\n  return Skia.ParagraphBuilder.Make({ textAlign: align, textStyle: style }, fonts).pushStyle(style, paint).addText(text).build();\n}\n`,
     trimSpan:
       `// Several trims compose by length fraction, each over what the previous kept.\nfunction trimSpan(t: number[], which: number) {\n  "worklet";\n  let s = 0;\n  let e = 1;\n  for (let i = 0; i + 1 < t.length; i += 2) {\n    const span = e - s;\n    const ns = s + Math.min(1, Math.max(0, t[i])) * span;\n    e = s + Math.min(1, Math.max(0, t[i + 1])) * span;\n    s = ns;\n  }\n  return which === 0 ? s : e;\n}\n`,
+    textBaselineY: TEXT_BASELINE_Y_SOURCE,
+    textRun: TEXT_RUN_SOURCE,
+    makeTextPicture: MAKE_TEXT_PICTURE_SOURCE,
   };
+  // makeTextPicture calls textRun (declared above it: worklet capture order).
+  if (em.helpers.has("makeTextPicture")) em.helpers.add("textRun");
   if (em.helpers.has("makeEffect") || em.helpers.has("parsePath")) em.rn.add("Skia");
-  if (em.helpers.has("textAdvance")) em.rnTypes.add("SkFont");
-  if (em.helpers.has("makeParagraph")) em.rnTypes.add("SkTypefaceFontProvider");
+  if (em.helpers.has("textAdvance") || em.helpers.has("textBaselineY")) em.rnTypes.add("SkFont");
+  if (em.helpers.has("makeParagraph") || em.helpers.has("textRun")) em.rnTypes.add("SkTypefaceFontProvider");
+  if (em.helpers.has("textRun")) em.rnTypes.add("SkPaint");
+  if (em.helpers.has("makeTextPicture")) em.rnTypes.add("SkPicture");
   em.rnTypes.add("CanvasRef");
   const rnNames = [...em.rn].sort((a, b) => a.localeCompare(b));
   const rnTypes = [...em.rnTypes].sort((a, b) => a.localeCompare(b)).map((t) => `type ${t}`);
@@ -1201,7 +1378,7 @@ export function emitSceneBundle(
     (assetEntries.length ? `import { ASSET_SOURCES } from "./assets";\n` : "") +
     `import { ${tlNames.join(", ")} } from "./timeline";\n` +
     (driver?.imports.length ? `${driver.imports.join("\n")}\n` : "") +
-    (em.helpers.size ? `\n${["makeEffect", "parsePath", "toPoints", "textAdvance", "makeParagraph", "trimSpan"].filter((h) => em.helpers.has(h)).map((h) => helperSrc[h]).join("\n")}` : "") +
+    (em.helpers.size ? `\n${HELPER_ORDER.filter((h) => em.helpers.has(h)).map((h) => helperSrc[h]).join("\n")}` : "") +
     (em.consts.length ? `\n${em.consts.join("\n")}\n` : "") +
     `\nexport interface ToolboxSceneGroupProps {\n${driver ? driver.propDecl : "  // Seconds on the toolbox timeline (see useToolboxClock).\n  time: SharedValue<number>;\n"}  // The size to draw at, in points; the scene is authored at CANVAS px.\n  width: number;\n  height: number;\n}\n` +
     `\nexport interface ToolboxSceneProps extends ToolboxSceneGroupProps {\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +

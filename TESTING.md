@@ -769,6 +769,61 @@ that pair). Offline node tests should push each input through
   writes it to disk before `transformSync`. NaN / Infinity is not a fp32
   promise: samples whose engine evaluation passes through one (a domain
   error toNum maps to 0) are counted, not held.
+- `check-skia-text` — Text (Skia) and the text IR (101326_skia-target.md
+  §3.4b, Wave 3 lane T). Fonts: the bundled faces' tables, fvar axes and
+  OFL licence files are the files' (`public/fonts/*-OFL.txt`, first line =
+  the font's own copyright); globals.css registers the very Inter file a
+  Skia layer ships as "Inter" (so the editor's Text node and Text (Skia)
+  draw the same bytes); every curated Text-node family resolves or refuses
+  with its reason (only Inter ships; Google families aren't bundled; the
+  system ones are OS-licensed); an uploaded Custom font ships its exact
+  bytes as a `data:` asset; weights / italic / axes a phone can't draw
+  refuse — and the fact behind that is PINNED: react-native-skia 3.4's
+  native `JsiSkTextStyle.h` never reads `fontVariations` (only the web
+  build passes them), so variable fonts draw their default instance
+  everywhere — the editor included: `text-raster.ts` `applyAxisStyling`
+  sets `font-optical-sizing: none` on the (DOM-attached) raster canvas,
+  so Chromium no longer picks Inter's opsz from the size (pinned on the
+  styling call; a detached canvas would ignore it). Layout: the IR's baselines equal the Text node's
+  drawTextBlock math over 324 align × vAlign × leading × lines × box ×
+  units combos (≤ 1e-9 px). Renderer (CanvasKit CPU): per-line drawing puts
+  every glyph where SkParagraph's whole paragraph does (≤ 1e-3 px); a
+  fractional lineHeight lands each line exactly; every anchor ≡ a baseline
+  anchor at the computed baseline; letter spacing sits half before each
+  glyph; group blend modes blend a paragraph's glyphs (and why it is the
+  paint, not a layer: srcIn / dstIn as a layer wipe the backdrop). Export:
+  the emitted `makeTextPicture` / `textBaselineY`, run on CanvasKit through
+  an RN-Skia-shaped shim, draw pixel-identically to the renderer (32
+  cases); group opacity + blend fold into the paragraph's paint; v1 text
+  keeps its one `<Paragraph>`; refusals; worklet declaration order; every
+  compare-fixture canvas exports; `skia-harness/src/bundle-text` type-checks
+  and is today's export (`export-skia.mts --fixture text`). Traps it hit:
+  glyphs snap to a position grid, so a coordinate that lands ON a bin edge
+  flips a glyph a pixel on a 1-ulp difference — the renderer computes the
+  first baseline once (a "baseline" anchor is y itself) instead of a round
+  trip through the block top; SkParagraph's own float32 run positions drift
+  ~3e-4 px by line 10 (0.12 % of ink px flip vs per-line drawing, measured,
+  not a bug in either); a paragraph without a foreground paint draws
+  ALIASED glyphs; `getShapedLines()` skips empty lines, reports whole-px
+  baselines and UTF-8 ranges, while `getLineMetrics()` indices are UTF-16.
+  Pixel parity vs the Text node is `compare:skia` on
+  `scripts/fixtures/skia/text-graph.ts` (`--a text:<pair>n --b
+  text:<pair>s --expect close`), whose `ready()` PROVES both faces first
+  (Chromium's measureText of each Text node's line, styled by the
+  engine's own `applyAxisStyling` on an attached canvas, must equal
+  SkParagraph shaping the intended file at the axes the node draws —
+  default opsz, wght = weight — within 0.05 px, and differ from
+  sans-serif: the 2026-09 fallback trap; it also prints what automatic
+  opsz would have drawn); read
+  geometry with `node scripts/skia/text-ink.cjs <out dir>` (ink box, per-
+  eighth x drift, per-line edges: CoreText's ink is ~10 % heavier than
+  FreeType's, so whole-image scores mix weight with position). RN web is
+  `npm run parity:skia -- --bundle text` (the bundled Geist / Inter ship
+  in `assets/` with their OFL texts through lane I's seam; the run warms
+  up until `useFonts` has landed — a capture before is a stable picture
+  without text). A fresh worktree's harness also needs
+  `skia-harness/public/canvaskit.wasm` (gitignored; copy
+  `canvaskit-wasm/bin/full/canvaskit.wasm`) or the web build 404s it.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on

@@ -362,8 +362,8 @@ function validateScene(
       case "text": {
         noteAsset(n.font.asset, ["font"], where);
         paint(n.paint, where);
-        // With a width it ships as <Paragraph>, whose run takes one
-        // foreground paint built from the color and opacity.
+        // With a width it ships as a paragraph, whose runs take one
+        // foreground paint built from the color, opacity and blend mode.
         const p = n.paint;
         const extra = [
           p.style === "stroke" && "stroke style",
@@ -371,10 +371,15 @@ function validateScene(
           p.maskFilter && "a mask filter",
           p.colorFilters?.length && "color filters",
           p.pathEffects?.length && "path effects",
-          p.blendMode && p.blendMode !== "srcOver" && "a blend mode",
         ].filter(Boolean);
         if (n.width && extra.length) {
-          problems.push(`${where}: text with a width exports as a Paragraph, which takes the paint's color and opacity only — not ${extra.join(", ")}.`);
+          problems.push(`${where}: text with a width exports as a Paragraph, which takes the paint's color, opacity and blend mode only — not ${extra.join(", ")}.`);
+        }
+        if (n.anchor !== undefined && !["baseline", "top", "middle", "bottom"].includes(n.anchor)) {
+          problems.push(`${where}: unknown text anchor "${String(n.anchor)}" (baseline, top, middle or bottom).`);
+        }
+        if (!n.width && n.letterSpacing) {
+          problems.push(`${where}: letterSpacing needs a width — one-line text exports as <Text>, a single run that can't space letters.`);
         }
         return;
       }

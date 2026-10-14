@@ -214,6 +214,8 @@ app.whenReady().then(async () => {
     }
 
     await call(`init(${w}, ${h})`, "init (CanvasKit + nodes)", 60000);
+    // A fixture's async needs (fonts, assets: SkiaGraphFixture.ready).
+    for (const f of new Set([A.fixture, B.fixture])) await call(`settle(${JSON.stringify(f)})`, `settle(${f})`, 60000);
     const prepA = await call(`prepare("A", ${JSON.stringify({ fixture: A.fixture, node: A.node, handle: A.handle })})`, "prepare A");
     const prepB = await call(`prepare("B", ${JSON.stringify({ fixture: B.fixture, node: B.node, handle: B.handle })})`, "prepare B");
     const wasm = server.served.find((s) => s.path.endsWith("/canvaskit.wasm"));

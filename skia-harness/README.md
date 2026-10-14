@@ -15,7 +15,10 @@ Two more slots, chosen on the web with `?bundle=`: `scene` plays
 `src/bundle-scene/` (`--fixture aurora-scene`), `baked` plays
 `src/bundle-baked/` — the same Aurora node exported with
 `--animation baked`, its timeline compiled into the SkSL and driven by
-iTime alone (`npm run parity:skia -- --bundle baked`).
+iTime alone (`npm run parity:skia -- --bundle baked`), and `text` plays
+`src/bundle-text/` (`--fixture text`: Text (Skia) paragraphs with
+leading, anchors, letter spacing and a blend group; its fonts ship in
+`assets/` — `npm run parity:skia -- --bundle text`).
 
 `src/bundle/` is generated; regenerate instead of editing it. Install
 packages with `npx expo install` (`.npmrc` sets `legacy-peer-deps`:

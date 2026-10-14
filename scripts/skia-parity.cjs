@@ -44,6 +44,7 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // the effect bundle exported with `--animation baked` (src/bundle-baked);
 // image = an SkSL Shader sampling a bundled image + ramp / curve LUT
 // children (src/bundle-image, `--fixture image`, Wave 3 lane I);
+// text = the Text (Skia) bundle (src/bundle-text, `--fixture text`);
 // native / native-easings / native-scene = Reanimated-native exports
 // (`--animation native`: src/bundle-native = Aurora, src/bundle-native-
 // easings = every easing kind, src/bundle-native-scene = Aurora as a Skia
@@ -96,11 +97,11 @@ if (
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
   (SEGMENT && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }
@@ -150,7 +151,9 @@ app.whenReady().then(async () => {
 <script src="/__parity/bundle.js"></script></body>`,
         },
       },
-      mounts: { "/__parity/": BUNDLE_DIR, "/canvaskit/": path.dirname(ck.dir) },
+      // /fonts/ is public/fonts as the editor serves it (the text slot's
+      // toolbox side fetches its bundled fonts from there).
+      mounts: { "/__parity/": BUNDLE_DIR, "/canvaskit/": path.dirname(ck.dir), "/fonts/": path.join(REPO, "public", "fonts") },
       // Everything else is the static web build; unknown paths are the SPA index.
       fallback: (p) => {
         const f = path.join(HARNESS_DIST, p);
@@ -177,6 +180,18 @@ app.whenReady().then(async () => {
       if (!FRAMES_ARG) FRAMES = [...new Set([0, 1, 2, 3, 4, 5, 6, 7].map((k) => Math.round((k * (len - 1)) / 7)))];
       if (FRAMES.some((f) => f >= len)) throw new Error(`segment "${SEGMENT}" is ${len} frames: --frames must stay below ${len}`);
       console.log(`segment "${SEGMENT}": f${segFrom}–f${segFrom + len} (${len} frames) via playSegment(); frames +${FRAMES.join(", +")}`);
+    }
+    if (BUNDLE === "text") {
+      // useFonts loads the bundle's font assets asynchronously, and a capture
+      // before they land is a stable picture WITHOUT text. Capture frame 0
+      // until two captures 300 ms apart agree (≤ 10 s).
+      let prev = null;
+      for (let i = 0; i < 33; i++) {
+        const c = await H.call(win, "window.__toolboxHarness.capture(0)", 60000, "text warm-up capture");
+        if (prev !== null && c.rgba === prev) break;
+        prev = c.rgba;
+        await new Promise((r) => setTimeout(r, 300));
+      }
     }
     const device = [];
     for (const f of FRAMES) {

@@ -394,7 +394,7 @@ function resizeStateIfNeeded(ctx: RenderContext, state: TextState): void {
 // Case transform applied to the raw text before layout/wrap so measure,
 // wrap, and draw all agree. "title" uppercases the first letter of each
 // whitespace-delimited word (Unicode-aware), preserving newlines.
-function applyTextCase(text: string, mode: string | undefined): string {
+export function applyTextCase(text: string, mode: string | undefined): string {
   switch (mode) {
     case "upper":
       return text.toUpperCase();

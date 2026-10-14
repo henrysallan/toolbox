@@ -91,6 +91,13 @@ export function info(name: string) {
   };
 }
 
+// Await a fixture's `ready()` (fonts, assets) — after init, before prepare.
+export async function settle(name: string) {
+  const fx = fixtureOf(name);
+  if (fx.ready) await fx.ready();
+  return true;
+}
+
 export async function init(width: number, height: number) {
   registerAllNodes();
   size = [width, height];

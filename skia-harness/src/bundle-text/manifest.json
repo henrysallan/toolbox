@@ -1,0 +1,136 @@
+{
+  "format": 3,
+  "kind": "scene",
+  "name": "Text (Skia)",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5,
+    "frames": 301
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "sampledFrames": 301,
+  "webPlayable": true,
+  "bindCounts": {
+    "static": 58,
+    "track": 1,
+    "sampled": 3
+  },
+  "binds": [
+    {
+      "id": "b19",
+      "path": "root.children.0.children.1.font.size",
+      "kind": "track",
+      "sample": "b19",
+      "from": "keyframes para.font_size (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b25",
+      "path": "root.children.0.children.1.lineHeight",
+      "kind": "sampled",
+      "sample": "b25",
+      "role": "number",
+      "from": "derived from para.font_size, para.units, para.leading (animated: para.font_size); sampled 301 frames",
+      "distinct": 299
+    },
+    {
+      "id": "b26",
+      "path": "root.children.0.children.1.baselineOffset",
+      "kind": "sampled",
+      "sample": "b26",
+      "role": "number",
+      "from": "derived from para.font_size, para.units, para.leading (animated: para.font_size); sampled 301 frames",
+      "distinct": 299
+    },
+    {
+      "id": "b31",
+      "path": "root.children.0.children.2.y",
+      "kind": "sampled",
+      "sample": "b31",
+      "role": "number",
+      "from": "derived from inter.font_size, inter.units, inter.leading, inter.boxWidth, inter.boxHeight, inter.translateX, inter.translateY, inter.text, inter.textCase (animated: inter.translateY); sampled 301 frames",
+      "distinct": 299
+    }
+  ],
+  "programs": [],
+  "assets": [
+    {
+      "id": "geist",
+      "kind": "font",
+      "mime": "font/ttf",
+      "file": "assets/geist.ttf",
+      "bundled": true,
+      "bytes": 125956,
+      "license": "assets/Geist-OFL.txt"
+    },
+    {
+      "id": "inter",
+      "kind": "font",
+      "mime": "font/ttf",
+      "file": "assets/inter.ttf",
+      "bundled": true,
+      "bytes": 874708,
+      "license": "assets/Inter-OFL.txt"
+    }
+  ],
+  "warnings": []
+}

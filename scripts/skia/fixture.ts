@@ -41,4 +41,10 @@ export interface SkiaGraphFixture {
    */
   ready?(): Promise<void>;
   build(ctx: SkiaFixtureContext): { nodes: GraphNode[]; edges: GraphEdge[] };
+  /**
+   * Optional: resolves once everything the graph needs asynchronously has
+   * landed (fonts, assets). compare:skia awaits it after CanvasKit loads and
+   * before it prepares the sides (text-graph.ts: fonts + the face proof).
+   */
+  ready?(): Promise<void>;
 }

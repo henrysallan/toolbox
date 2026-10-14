@@ -2,46 +2,55 @@ import type { NodeDefinition, SkiaDrawValue } from "@/engine/types";
 import { OPACITY_PARAM } from "@/engine/conventions";
 import { bindDerived, bindParam, bindStatic, type Bind, type BindRef, type PaintIR, type SkiaNode } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
-import { strokeUnitsParam } from "@/engine/stroke-units";
+import { strokeUnitsParam, unitsRangeHints } from "@/engine/stroke-units";
+import { applyTextCase } from "../source/text";
 import { bindScaled, num, unitScale } from "./paint-shared";
-import { SKIA_FONT_FAMILIES, SKIA_FONTS, canvasMiddleToAlphabetic, paragraphLineBox } from "./fonts";
+import { SKIA_FONT_FAMILIES, canvasMiddleToAlphabetic, resolveSkiaTextFace } from "./fonts";
 
-// Text (Skia) — the Skia-layer mirror of the Text node's core: string,
-// font, size (px or % of the canvas width), color, opacity, alignment, the
-// centered text box (boxWidth / boxHeight, translateX / Y in uv01) and
-// word-wrap in the box. It lays the text out where the Text node does —
-// as Chromium's Canvas2D draws it (textBaseline "middle": each line's
-// middle is placed, the alphabetic baseline sits canvasMiddleToAlphabetic
-// below it) — and emits `text` IR:
+// Text (Skia) — the Skia-layer mirror of the Text node's core, with its
+// param names: string, case, font (family / Custom font / weight / italic),
+// size + letter spacing (px or % of the canvas width), color, opacity,
+// alignment, vertical alignment, leading, the centered text box (boxWidth /
+// boxHeight, translateX / Y in uv01) and word-wrap in the box. It lays the
+// text out where the Text node does — as Chromium's Canvas2D draws it
+// (textBaseline "middle": each line's middle sits leading × size below the
+// last, the alphabetic baseline canvasMiddleToAlphabetic below that) — and
+// emits `text` IR (scene-ir.ts):
 //
-//   shaping = paragraph (default)  every line is a React Native Skia
-//     <Paragraph> (SkParagraph: HarfBuzz shaping, kerning — the advances
-//     Chromium's canvas gives the Text node, to 0.01 px). Unwrapped lines
-//     are one-line paragraphs on a wide layout box anchored at the line's
-//     alignment point, each placed at its own baseline, so `leading`
-//     works. With wrap on, the whole text is ONE paragraph laid out to the
-//     box width: lines then sit the font's own line height apart (Geist
-//     1.3 em, Inter 1.21 em, rounded to whole px) and the block hangs from
-//     the box top — the wrapped height is only known after shaping, which
-//     the IR can't anchor on.
+//   shaping = paragraph (default)  the whole text is ONE paragraph
+//     (SkParagraph: HarfBuzz shaping, kerning — Chromium's advances to
+//     0.01 px). SkParagraph breaks it (at the box width with wrap on, else
+//     only at "\n") and places each line horizontally; every line is then
+//     drawn `lineHeight` = leading × size below the last, the block anchored
+//     at the box's top / middle / bottom by vAlign, each baseline
+//     `baselineOffset` = lineHeight / 2 + the middle → alphabetic offset into
+//     its line box. So leading and vAlign hold for wrapped text too, whose
+//     line count only shaping knows.
 //   shaping = line   every line is a React Native Skia <Text>: one simple
-//     run (no kerning, no ligatures, whole-pixel advances), cheaper, a few
-//     px narrower or wider than the Text node over a long line.
+//     run (no kerning, no ligatures, no letter spacing), cheaper, a few px
+//     narrower or wider than the Text node over a long line.
 //
-// Fonts are the bundled files in fonts.ts, shipped as scene assets — never
-// a system font. Text on a path, gradient / image fills, the in-raster
-// stroke, letter spacing, case, variable axes, animators and the
-// post-transform (scale / rotate / pivot) are not part of this node: put a
-// Skia Group around it to scale or rotate.
+// Fonts (fonts.ts): Inter and Geist ship with toolbox (OFL); a Custom font
+// ships as its uploaded bytes. Any other family, a weight the face can't
+// draw, italic, or a variable-font axis refuses the export with the reason
+// (the preview draws Inter / the default instance meanwhile).
+//
+// Text on a path, gradient / image fills, the in-raster stroke, animators
+// and the post-transform (scale / rotate / pivot) are not part of this node:
+// put a Skia Group around it to scale or rotate.
 
-// The layout box unwrapped lines are anchored in: wide enough that no line
+// The layout box unwrapped text is laid out in: wide enough that no line
 // wraps, an integer (SkParagraph floors the layout width), small enough
 // that float32 keeps the anchor to ~0.002 px.
 const NOWRAP_WIDTH = 32768;
 
 const ALIGN = ["left", "center", "right"] as const;
 const VALIGN = ["top", "middle", "bottom"] as const;
+const CASES = ["none", "upper", "lower", "title"] as const;
 type Align = (typeof ALIGN)[number];
+
+// The governed metrics (the Text node's TEXT_UNITS_GOVERNS minus its stroke).
+const UNITS_GOVERNS = ["font_size", "letter_spacing"];
 
 const pick = <T extends string>(v: unknown, opts: readonly T[], d: T): T => (opts.includes(v as T) ? (v as T) : d);
 
@@ -51,23 +60,25 @@ export const skiaTextNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Draws text in a Skia layer with a bundled font, laid out like the Text node (centered text box, alignment, vertical alignment, leading, wrap in box), as React Native Skia <Paragraph>s (shaped and kerned) or simple <Text> runs. Wire it into Skia Group or Skia Canvas.",
-  searchAliases: ["skia", "text", "type", "paragraph", "label", "react native"],
+    "Draws text in a Skia layer with a font that ships in the export (Inter, Geist or an uploaded Custom font), laid out like the Text node (centered text box, alignment, vertical alignment, leading, letter spacing, case, wrap in box), as React Native Skia paragraphs (shaped and kerned) or simple <Text> runs. Wire it into Skia Group or Skia Canvas.",
+  searchAliases: ["skia", "text", "type", "paragraph", "label", "react native", "font"],
   facts: {
     space: {
       out: "pixels",
       "param:font_size": "pixels",
+      "param:letter_spacing": "pixels",
       "param:boxWidth": "uv01",
       "param:boxHeight": "uv01",
       "param:translateX": "uv01",
       "param:translateY": "uv01",
     },
     gotchas: [
-      "Fonts are the bundled files only (Geist, Inter's default instance); the font ships with the export as an asset.",
+      "Only shipped fonts draw: Inter, Geist (bundled, OFL) or a Custom font upload (its bytes ship). Any other font_family refuses the export; the preview draws Inter.",
+      "Variable fonts draw their default instance (Inter: opsz 14, wght 400): React Native's native text ignores font axes, so font_weight must be the default and font_variations unset.",
+      "The Text node draws variable fonts at their default optical size too (no automatic opsz), so Inter matches it at every size, as Geist (static) does.",
       "boxWidth/boxHeight are uv01 fractions of the canvas, the box centered and moved by translateX/Y, exactly like the Text node; there is no rotate / scale here (wrap it in a Skia Group).",
-      "wrap=true lays the text out as one paragraph: lines sit the font's own line height apart (leading is ignored) and the block hangs from the box top (vAlign is ignored).",
-      "shaping=line draws React Native <Text> runs: no kerning, so long lines drift a few px from the Text node; paragraph shaping matches its advances.",
-      "Text with \"\\n\" draws one paragraph (or run) per line unwrapped: an export needs the line count to stay constant over the scene.",
+      "Paragraph shaping puts each line leading × size below the last and anchors the block by vAlign, wrapped too; SkParagraph picks the breaks (greedy, but it keeps runs of spaces).",
+      "shaping=line draws React Native <Text> runs: no kerning and no letter spacing, so long lines drift a few px from the Text node; paragraph shaping matches its advances.",
     ],
   },
   backend: "webgl2",
@@ -78,6 +89,9 @@ export const skiaTextNode: NodeDefinition = {
     OPACITY_PARAM,
     { name: "text", label: "Text", type: "string", multiline: true, default: "Hello", placeholder: "type here…" },
     { name: "font_family", label: "Font", type: "enum", options: SKIA_FONT_FAMILIES, default: "Inter" },
+    // The Text node's upload slot: when set it wins over font_family and its
+    // bytes ship with the export.
+    { name: "custom_font", label: "Custom font", type: "font", default: null },
     {
       name: "font_size",
       label: "Size",
@@ -87,27 +101,25 @@ export const skiaTextNode: NodeDefinition = {
       softMax: 200,
       step: 1,
       default: 96,
+      ...unitsRangeHints("units", { min: 0.1, max: 100, softMax: 20, step: 0.1 }),
     },
-    strokeUnitsParam("units", undefined, { governs: ["font_size"] }),
+    strokeUnitsParam("units", undefined, { governs: UNITS_GOVERNS }),
+    { name: "font_weight", label: "Weight", type: "scalar", min: 100, max: 900, step: 1, default: 400 },
+    { name: "italic", label: "Italic", type: "boolean", default: false },
     { name: "color", label: "Color", type: "color", default: "#ffffff", alpha: true },
     { name: "alignment", label: "Align", type: "enum", options: [...ALIGN], default: "center" },
+    { name: "vAlign", label: "Vertical align", type: "enum", options: [...VALIGN], default: "middle" },
+    { name: "textCase", label: "Case", type: "enum", options: [...CASES], default: "none" },
+    { name: "leading", label: "Leading", type: "scalar", min: 0.5, max: 3, step: 0.01, default: 1.2 },
     {
-      name: "vAlign",
-      label: "Vertical align",
-      type: "enum",
-      options: [...VALIGN],
-      default: "middle",
-      visibleIf: (p) => p.wrap !== true,
-    },
-    {
-      name: "leading",
-      label: "Leading",
+      name: "letter_spacing",
+      label: "Letter spacing",
       type: "scalar",
-      min: 0.5,
-      max: 3,
-      step: 0.01,
-      default: 1.2,
-      visibleIf: (p) => p.wrap !== true,
+      min: -10,
+      max: 40,
+      step: 0.5,
+      default: 0,
+      ...unitsRangeHints("units", { min: -1, max: 4, step: 0.05 }),
     },
     { name: "boxWidth", label: "Box width", type: "scalar", min: 0.01, max: 2, softMax: 1, step: 0.001, default: 1 },
     { name: "boxHeight", label: "Box height", type: "scalar", min: 0.01, max: 2, softMax: 1, step: 0.001, default: 1 },
@@ -130,10 +142,13 @@ export const skiaTextNode: NodeDefinition = {
   compute({ params, ctx, nodeId }) {
     const W = ctx.width;
     const H = ctx.height;
-    const face = SKIA_FONTS[pick(params.font_family, SKIA_FONT_FAMILIES, "Inter")];
+    const { face, problems } = resolveSkiaTextFace(params);
     const u = unitScale(params.units, W);
     const size = Math.max(0.01, num(params.font_size, 96) * u);
-    const text = typeof params.text === "string" ? params.text : "";
+    const spacing = num(params.letter_spacing, 0) * u;
+    const caseMode = pick(params.textCase, CASES, "none");
+    const raw = typeof params.text === "string" ? params.text : "";
+    const text = applyTextCase(raw, caseMode);
     const align: Align = pick(params.alignment, ALIGN, "center");
     const vAlign = pick(params.vAlign, VALIGN, "middle");
     const wrap = params.wrap === true;
@@ -146,13 +161,15 @@ export const skiaTextNode: NodeDefinition = {
     const originX = W / 2 - boxW / 2 + num(params.translateX, 0) * W;
     const originY = H / 2 - boxH / 2 + num(params.translateY, 0) * H;
     const k = align === "left" ? 0 : align === "right" ? 1 : 0.5;
+    const kv = vAlign === "top" ? 0 : vAlign === "bottom" ? 1 : 0.5;
     const anchorX = originX + boxW * k;
+    const lineH = size * num(params.leading, 1.2);
     const middleToBaseline = canvasMiddleToAlphabetic(face, size);
-    const box = paragraphLineBox(face, size);
 
     const ref = (param: string): BindRef => ({ node: nodeId, param });
-    const layoutDeps = ["font_size", "units", "leading", "boxWidth", "boxHeight", "translateX", "translateY", "text"].map(ref);
+    const layoutDeps = ["font_size", "units", "leading", "boxWidth", "boxHeight", "translateX", "translateY", "text", "textCase"].map(ref);
     const placed = (v: number): Bind<number> => bindDerived(v, layoutDeps);
+    const metric = (v: number): Bind<number> => bindDerived(v, ["font_size", "units", "leading"].map(ref));
     const paint: PaintIR = {
       style: "fill",
       color: bindParam(hexToRgba01((params.color as string) ?? "#ffffff"), nodeId, "color"),
@@ -160,54 +177,49 @@ export const skiaTextNode: NodeDefinition = {
       antiAlias: true,
     };
     const font = { asset: face.asset.id, size: bindScaled(size, nodeId, "font_size", u) };
+    const textBind = (v: string): Bind<string> => (caseMode === "none" ? bindParam(v, nodeId, "text") : bindDerived(v, [ref("text"), ref("textCase")]));
 
     const children: SkiaNode[] = [];
-    if (wrap) {
-      // One paragraph in the box; its first line where a Text node with
-      // leading = the font's line height puts it, vAlign top. SkParagraph
-      // aligns inside floor(width): shift by what the floor took.
-      const lineH = box.height;
-      const baseline0 = originY + lineH / 2 + middleToBaseline;
+    if (paragraph) {
+      // One paragraph: SkParagraph breaks and aligns the lines inside
+      // `width` (it aligns inside floor(width): shift by what the floor
+      // took); the renderer stacks them lineHeight apart from the vAlign
+      // edge of the box.
+      const width: Bind<number> = wrap ? { v: boxW, ref: { node: nodeId, param: "boxWidth", scale: W } } : bindStatic(NOWRAP_WIDTH);
+      // SkParagraph spaces letters half before, half after each glyph;
+      // Chromium all after (the line widths agree): move back by half.
+      const x = (wrap ? originX + (boxW - Math.floor(boxW)) * k : anchorX - NOWRAP_WIDTH * k) - spacing / 2;
       children.push({
         k: "text",
         id: nodeId,
-        text: bindParam(text, nodeId, "text"),
+        text: textBind(text),
         font,
-        x: placed(originX + (boxW - Math.floor(boxW)) * k),
-        y: placed(baseline0 - box.baseline),
-        width: { v: boxW, ref: { node: nodeId, param: "boxWidth", scale: W } },
+        x: bindDerived(x, [...layoutDeps, ref("letter_spacing")]),
+        y: placed(originY + boxH * kv),
+        width,
         align,
         paint,
+        lineHeight: metric(lineH),
+        anchor: vAlign,
+        baselineOffset: metric(lineH / 2 + middleToBaseline),
+        letterSpacing: bindScaled(spacing, nodeId, "letter_spacing", u),
       });
     } else {
+      if (spacing !== 0) problems.push("Simple runs (shaping = line) can't space letters — use Paragraph shaping for letter spacing.");
       const lines = text.split("\n");
-      const lineH = size * num(params.leading, 1.2);
       const total = Math.max(1, lines.length) * lineH;
-      const blockTop = vAlign === "top" ? originY : vAlign === "bottom" ? originY + boxH - total : originY + boxH / 2 - total / 2;
+      const blockTop = originY + (boxH - total) * kv;
       lines.forEach((line, i) => {
         const baseline = blockTop + lineH / 2 + i * lineH + middleToBaseline;
-        const t = bindDerived(line, [ref("text")]);
-        children.push(
-          paragraph
-            ? {
-                k: "text",
-                id: nodeId,
-                text: t,
-                font,
-                x: placed(anchorX - NOWRAP_WIDTH * k),
-                y: placed(baseline - box.baseline),
-                width: bindStatic(NOWRAP_WIDTH),
-                align,
-                paint,
-              }
-            : { k: "text", id: nodeId, text: t, font, x: placed(anchorX), y: placed(baseline), align, paint }
-        );
+        const t = bindDerived(line, [ref("text"), ref("textCase")]);
+        children.push({ k: "text", id: nodeId, text: t, font, x: placed(anchorX), y: placed(baseline), align, paint });
       });
     }
     const out: SkiaDrawValue = {
       kind: "skia_draw",
       node: children.length === 1 ? children[0] : { k: "group", id: nodeId, children },
       assets: { [face.asset.id]: face.asset },
+      ...(problems.length ? { problems: [...new Set(problems)] } : {}),
     };
     return { primary: out };
   },

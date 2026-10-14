@@ -381,7 +381,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 
 **Carried to M3/M4:**
 - Font and image assets aren't copied into exported bundles yet.
-- RN Paragraphs drop an inherited group blendMode.
+- ~~RN Paragraphs drop an inherited group blendMode.~~ Fixed in M4 lane T (§3.4b): the mode rides the paragraph's paint.
 - Filter-stage splitting for over-budget gathers.
 - Device bands: CI lanes ready, not yet run.
 - ~~The P3 decision (§2b).~~ Decided and built 2026-10-14 (§5.5).
@@ -397,7 +397,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
   - a clock-dependency marker on binds (F2);
   - `float3x3` params (F2).
 - `BindRef.offset` (affine canvas01 → px, F7); optional producer ids on SDF values (F5).
-- Text IR: `lineHeight` and a vertical anchor (F8).
+- ~~Text IR: `lineHeight` and a vertical anchor (F8).~~ Applied in M4 lane T (§3.4b), with `baselineOffset` and `letterSpacing`.
 - `trim` inverted mode (F8).
 
 ## 2d. M3 results: timeline shapes + P3 (2026-10-14, on `main`)
@@ -695,6 +695,162 @@ Open:
   xforms would halve that, and lane P's procedural drivers could remove it.
 - `auto` can't see whether the instance animates, so that case is refused
   with the fix named.
+
+#### 3.4b built and measured: Text (Wave 3 lane T, 2026-10-14)
+
+Text (Skia) now mirrors the Text node's layout options one for one, and
+its fonts are the ones an export can ship. Gate: `check:skia-text`. Pixel
+proof vs the Text node: `compare:skia` on `scripts/fixtures/skia/text-graph.ts`
+(24 pairs). RN web proof: `parity:skia -- --bundle text`
+(`skia-harness/src/bundle-text`, `?bundle=text`).
+
+**Text IR, additive** (`scene-ir.ts` `text`):
+- `lineHeight` — px between baselines. SkParagraph still breaks the lines
+  and places each one horizontally (`getLineMetrics`: UTF-16 ranges,
+  `left`), but every line is drawn as its own run exactly `lineHeight`
+  below the last. SkParagraph's own pitch can't do it: `InternalLineMetrics::height()`
+  rounds to whole px with any strut / height multiplier (probed: 48 px ×
+  1.4 → 67, not 67.2).
+- `anchor` — `baseline` (the first line's baseline) / `top` / `middle` /
+  `bottom` of the block (N × lineHeight, or the laid-out height). Absent:
+  v1's meanings (baseline without a width, top with one).
+- `baselineOffset` — line-box top → baseline. The producer supplies its
+  own rule (Chromium's `middle` + em-box offset), so renderers need no
+  font metrics; absent, CSS half-leading from the font's ascent/descent.
+- `letterSpacing` — SkParagraph's: half the spacing before each glyph,
+  half after (Chromium puts it all after; same line widths), so Text
+  (Skia) shifts x by −ls/2. Paragraphs only: one-line `<Text>` refuses it.
+- Fonts carry lane I's `AssetIR.license` (the OFL text's URL); lane I's
+  asset seam ships it beside the bytes. Inter's licence file is new
+  (`public/fonts/Inter-OFL.txt`).
+
+**Renderer and emitter.** `scene-render.ts` `drawText` and the emitted
+`makeTextPicture` worklet (`scene-emit.ts`, recorded into an `SkPicture`
+for `<Picture>`) run the same algorithm. The first baseline is computed
+once, and a `baseline` anchor is `y` itself: glyphs snap to a position
+grid, so a round trip through the block top flipped glyphs a pixel on
+1-ulp differences. v1 text (no new field, no blend) still emits one
+`<Paragraph>` and `makeParagraph`, byte for byte.
+
+**Blend.** React Native Skia 3.4's paragraph builder takes a foreground
+paint (`pushStyle(style, paint)`; web: `pushPaintStyle`), and RN never
+applies the group paint to it. So the emitter folds the innermost group's
+`blendMode` (a paint's own mode wins) into that paint, beside the group
+opacities it already folded. A layer `Group` with the blend was rejected,
+measured on CanvasKit:
+- multiply is the same either way (≤ 1/255);
+- srcIn / dstIn as a layer wipe the backdrop around the glyphs (249,948 of 262,144 px differ).
+
+What the Wave 2 export shipped instead (the blend dropped):
+- 3,749 px up to 122/255 for a multiply group at 0.6;
+- 4,380 px up to 73/255 for a paint's own difference.
+
+**Fonts** (`src/nodes/skia/fonts.ts`). A Skia layer draws only what ships:
+- Inter and Geist from `public/fonts`, both OFL 1.1. Their licences sit beside them; `Inter-OFL.txt` is new.
+- An uploaded Custom font, as a `data:` asset of its bytes.
+  - It is parsed for metrics and axes.
+  - WOFF / WOFF2 / collections refuse.
+  - The uploader is responsible for its licence.
+
+The Text node's "Inter" is the same file: globals.css registers it under
+that name, weight 100 900 (gated). Every curated Text-node family has an
+answer. Only Inter ships. The 17 Google families refuse as not bundled,
+the 5 system families as OS-licensed. Installed fonts refuse with the
+upload hint. The preview draws Inter meanwhile and the export refuses.
+
+**Variable fonts draw their default instance everywhere** (Inter: opsz 14,
+wght 400). React Native Skia 3.4's native `JsiSkTextStyle` never reads
+`fontVariations`; only its web build passes them to CanvasKit (pinned in
+the gate). An axis the preview applied would therefore not reach a phone.
+So `font_weight` ≠ the default, `font_variations`, synthetic bold (a
+static face at ≥ 600) and italic all refuse.
+
+**The editor draws the default optical size too** (owner's call,
+2026-10-14: "fix opsz in editor"). Chromium applies `opsz` automatically
+(optical size = font px, clamped to Inter's 14–32), so the Text node used
+to draw Inter "Hello Skia" at 64 px 275.219 px wide (opsz 32) where a
+Skia layer, like a phone, draws 299.875 px (opsz 14): 8.2 % / 23 px.
+
+Mechanism, measured in Electron (Inter registered as globals.css does):
+
+| route | 20 / 32 / 64 / 96 px | |
+|---|---|---|
+| none (before) | 91.143 / 137.609 / 275.219 / 412.828 | auto opsz |
+| `font-optical-sizing: none` on the DOM-attached canvas | 93.711 / 149.938 / 299.875 / 449.813 | = the default instance; ≤ 14 px unchanged (46.855 at 10, 65.598 at 14) |
+| the same on a DETACHED canvas | unchanged | the style isn't resolved |
+| `font-variation-settings: "opsz" 14` (canvas style or @font-face descriptor) | = the default instance | but it pins opsz over a user's own value |
+
+So `text-raster.ts` `applyAxisStyling` sets `font-optical-sizing: none`
+on the raster canvas before every font assignment. That covers the Text
+node and every other caller of the engine's text rasterizer (Copy to
+Points' text mode, Point Labels), for every variable font with an
+`opsz` axis; static fonts are unaffected. An `opsz` (or `wght`) a user
+sets in `font_variations` on a Custom font still applies in the editor
+(measured: `'opsz' 32` with sizing off → 275.219 px; `'wght' 700` →
+308.582 px). React Native Skia's native text ignores those axes, so Text
+(Skia) keeps refusing non-default instances.
+
+**A visible change to existing projects:** Inter in a Text node above
+14 px now draws its opsz-14 (Text) design instead of the display cut. It
+gets WIDER and looser, not tighter: 9.0 % wider at ≥ 32 px, 2.8 % at
+20 px, unchanged at ≤ 14 px. Line breaks in wrapped Inter text can move.
+The face proof below now measures the node through `applyAxisStyling`
+itself, and `check:skia-text` pins the styling call.
+
+**Face proof** (the 2026-09 fallback trap). `text-graph.ts`'s
+`ready()` (a new optional `SkiaGraphFixture.ready`, awaited by
+compare:skia) measures every Text node's lines through the engine's own
+styling (`applyAxisStyling` on a DOM-attached canvas). Each must equal
+SkParagraph shaping the intended file at the axes the node draws (default
+opsz, wght = weight) within 0.05 px, and differ from `sans-serif`. Results:
+- 33 lines;
+- |Δ| ≤ 0.0055 px at whole-px sizes;
+- sans-serif 4–35 px off.
+
+At a fractional size (40.96 px) the file shapes 0.095 px short. FreeType
+(CanvasKit) sets sizes in 26.6 fixed point; that proof allows 1/128 px per
+px. The Skia side proves its asset bytes are the file.
+
+**Measured vs the Text node** (`compare:skia`, 512², ANGLE Metal, CanvasKit
+bin/full; geometry from `scripts/skia/text-ink.cjs`):
+
+| pairs | verdict | identical px | geometry |
+|---|---|---|---|
+| f_geist / f_custom (Geist 64 px; uploaded) | MATCH | 99.16 / 99.02 % | ink box Δ 0 px, x drift ≤ 0.30 px |
+| f_inter14 (Inter by name) | MATCH | 99.05 % | box ±1 px (FreeType hinting at 14 px), drift ≤ 0.99 px |
+| f_inter64 | MATCH | 99.07 % | box ±1 px, drift ≤ 0.42 px (was CLOSE, 97.39 %, box −12 / +11 px, before the editor's opsz fix) |
+| a_left / a_center / a_right (3 lines) | MATCH | 98.70 / 98.68 / 98.71 % | 3/3 lines, edges ≤ 1 px, drift ≤ 0.27 px |
+| v_top / v_middle / v_bottom (leading 1.5, translated box) | MATCH | 99.02 % each | 2/2 lines ≤ 1 px (block at rows 67 / 174 / 281 both sides) |
+| l_090 / l_120 / l_160 (wrapped) | MATCH | 96.80 % each | 4/4 lines ≤ 1 px (at 0.9 Chromium's heavier ink bridges the lines) |
+| w_208 / w_320 / w_464 (wrap widths, mixed align / vAlign) | MATCH | 97.56 / 97.12 / 96.38 % | 6/6, 4/4, 4/4 lines ≤ 1 px |
+| ls_px / ls_pct (6 px; 0.5 %, wrapped) | MATCH | 99.27 / 98.54 % | drift ≤ 0.31 px (3 px before the −ls/2 shift) |
+| c_upper / c_title | MATCH | 98.99 / 98.83 % | box ≤ 1 px |
+| b_multiply / b_difference / b_screen / multiply at 0.6 (Merge over a color vs Skia Group blend) | MATCH | 93.73 / 98.78 / 98.78 / 98.80 % | interior max 1/0/0/0 /255 |
+
+Every MATCH pair's interior (`edge-band.cjs`) is 0/255 apart from b_multiply
+(1/255). The rest is the anti-aliased edge band, where Chromium (CoreText)
+lays 8–15 % more ink than CanvasKit (FreeType). Wave 2's paint pairs t1–t4
+still MATCH.
+
+**Gate numbers:**
+- The IR's baselines equal the Text node's `drawTextBlock` over 324 combos (≤ 1e-9 px).
+- Per-line drawing puts every glyph where the whole paragraph does (≤ 2.7e-4 px).
+  - SkParagraph's own float32 run positions drift that much by line 10.
+  - The pixels flip in 211 of 180,069 ink px.
+- The emitted `makeTextPicture` / `textBaselineY`, run through an RN-Skia shim on CanvasKit, are pixel-identical to the renderer (32 + 6 cases).
+
+**RN web** (`parity:skia -- --bundle text`):
+- the bundle holds a sampled-size wrapped paragraph, Inter with letter spacing and a moving anchor, a 0.85 difference group, and a `<Text>` run — all on the bundled Geist / Inter, whose bytes and OFL texts ship in `assets/` through lane I's seam;
+- 8/8 frames identical, max 0/255; motion 0.044.
+
+**Open:**
+- **Devices are unmeasured.** iOS (CoreText) should draw ink closer to
+  the Text node's than the web does; Android is FreeType like the web.
+- **Edge cases left as SkParagraph does them:**
+  - the Text node collapses runs of spaces when wrapping; SkParagraph keeps them;
+  - a word wider than the box overflows in the Text node, but SkParagraph breaks it;
+  - SkParagraph floors a fractional box width, so wraps can differ by a word there (the fixture uses whole-px widths);
+  - fractional sizes shape ≤ 1/128 px per px off Chromium (FreeType 26.6).
 
 ### 3.5 Animation export: three shapes from one track IR
 
@@ -1079,8 +1235,9 @@ What shipped:
     that wasn't there, so Metro failed to bundle.
 - **Fonts.** `AssetIR.license` is additive. Geist's OFL text
   (`public/fonts/Geist-OFL.txt`) ships beside `assets/geist.ttf` as
-  `assets/Geist-OFL.txt`. Inter has no licence file in `public/fonts`, so
-  none ships.
+  `assets/Geist-OFL.txt`. Inter had no licence file in `public/fonts`;
+  lane T added `public/fonts/Inter-OFL.txt`, which now ships as
+  `assets/Inter-OFL.txt` (§3.4b).
 - **Image (Skia)** (`skia-image`, `nodes/skia/image.ts`). It has Image
   Source's `file`, `fit` and TRS params, and three outputs:
   - **primary**: an `<Image>` over the canvas rect. Image Source applies its
@@ -1181,7 +1338,7 @@ exactly; the copy script reads only from `node_modules/canvaskit-wasm`.
 | gradients (any ShaderIR gradient) on P3 | identical to Skia's native gradient on sRGB (≤ 1/255) | **≤ 1/255** (lowered to color-managed programs, Wave 3 lane C; native: up to 48/255, red → blue 24/255) | `gradient-program.ts`; ~2× a native gradient's GPU time (3.2× at 49 stops, §2e) |
 | native blend modes / translucent overlaps on P3 | — | **shift**: translucent srcOver ~28–38/255; per mode below | Skia blends in the working space; RN Skia 3.4 has no runtime blender — Merge (Skia) is exact |
 | native paths/AA | n/a in M0 | ≤ 1 px edge differences | Graphite AA vs Ganesh |
-| text | n/a | layout differences possible | Paragraph + bundled fonts only |
+| text | **pixel-identical** (`parity:skia -- --bundle text`, 8/8 frames); vs the Text node: same lines at the same rows (±1 px ink edge), ink 8–15 % lighter (FreeType vs CoreText) | glyph ink: iOS CoreText closer to Chromium's, Android FreeType like the web; variable fonts draw their default instance (RN native ignores `fontVariations`) | §3.4b; shipped fonts only (Inter, Geist, uploads) |
 | baked-in-shader timeline | — | ≤ 1e-6 per value | fp32 vs double |
 | Reanimated `Easing` transitions | — | exact for most presets; expo/elastic via worklet easings | §1.3 |
 

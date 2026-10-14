@@ -196,6 +196,14 @@ export function applyAxisStyling(
 
   // CSS path — feeds Chromium's canvas-style inheritance.
   canvas.style.fontVariationSettings = buildVariationsCss(resolved, fontAxes);
+  // A variable font draws its DEFAULT optical size (2026-10-14, Skia lane
+  // T): Chromium otherwise sets `opsz` to the font size on its own
+  // (font-optical-sizing: auto — Inter above 14 px drew narrower), while
+  // React Native Skia's native text, which a Skia layer exports to, draws
+  // the default instance. An `opsz` the user sets in font_variations
+  // (above) still wins. Read from the canvas element's computed style, so
+  // it needs the DOM-attached raster canvas every caller already uses.
+  canvas.style.setProperty("font-optical-sizing", "none");
 
   // Pull out wght / wdth / ital for the first-class canvas2d API
   // fallback. These are the standard axes for which canvas2d has

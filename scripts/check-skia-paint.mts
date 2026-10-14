@@ -236,8 +236,10 @@ if (combined.files) {
   // (Dash (Skia) keeps its shapes' ids; its phase is the only animated one.)
   check("export: a keyframed dash offset ships as a track (DashPathEffect phase)", manifest.binds.some((b) => /pathEffects\.\d\.phase$/.test(b.path) && b.kind === "track"));
   check("export: a keyframed font size ships as a track", anyUnder("ax_text", (b) => /font\.size$/.test(b.path) && b.kind === "track"));
-  check("export: text placement that depends on the size is sampled", anyUnder("ax_text", (b) => /\.y$/.test(b.path) && b.kind === "sampled"));
-  check("export: paragraph text emits <Paragraph> + makeParagraph", /<Paragraph/.test(tsx) && /makeParagraph\(/.test(tsx));
+  // (The line box follows the size; the anchor point doesn't since Wave 3
+  // lane T — y is the box edge vAlign names.)
+  check("export: text placement that depends on the size is sampled", anyUnder("ax_text", (b) => /\.(lineHeight|baselineOffset)$/.test(b.path) && b.kind === "sampled"));
+  check("export: paragraph text emits <Picture> + makeTextPicture (exact line placement, lane T)", /<Picture/.test(tsx) && /makeTextPicture\(/.test(tsx));
   check("export: simple-run text emits <Text>", /<Text\b/.test(tsx) && /textAdvance\(/.test(tsx));
   check("export: the Geist font ships as an asset with its editor URL", combined.files["manifest.json"].includes("/fonts/Geist-Regular.ttf"));
   void bindAt;
@@ -549,11 +551,11 @@ function maxPathDiff(a: string, b: string): number {
 {
   const r = await checkExportable({ nodes: G.nodes, edges: G.edges, canvasId: "t4s", canvas: CANVAS, timeline: TIMELINE, slot: "paint-t4" });
   const tsx = r.files?.["ToolboxScene.tsx"] ?? "";
-  const call = /makeParagraph\([^\n]*\)/.exec(tsx)?.[0] ?? "";
-  check("Paragraph: the enclosing group's opacity is folded into the run (RN paints it with its own paint)", /Math\.min\(1, Math\.max\(0, Math\.min\(1, Math\.max\(0, 1 \* 0\.5\)\) \* 1\)\)/.test(call), call);
+  const call = /makeTextPicture\(FONTS[^\n]*\)/.exec(tsx)?.[0] ?? "";
+  check("Paragraph: the enclosing group's opacity is folded into the run (RN paints it with its own paint)", /Math\.min\(1, Math\.max\(0, Math\.min\(1, Math\.max\(0, 1 \* 0\.5\)\) \* 1\)\), BlendMode\.SrcOver\)$/.test(call), call);
   const plain = await checkExportable({ nodes: G.nodes, edges: G.edges, canvasId: "t1s", canvas: CANVAS, timeline: TIMELINE, slot: "paint-t1" });
-  const plainCall = /makeParagraph\([^\n]*\)/.exec(plain.files?.["ToolboxScene.tsx"] ?? "")?.[0] ?? "";
-  check("Paragraph: without an enclosing opacity the run keeps its own opacity untouched", /, 1\)$/.test(plainCall), plainCall);
+  const plainCall = /makeTextPicture\(FONTS[^\n]*\)/.exec(plain.files?.["ToolboxScene.tsx"] ?? "")?.[0] ?? "";
+  check("Paragraph: without an enclosing opacity the run keeps its own opacity untouched", /, 1, BlendMode\.SrcOver\)$/.test(plainCall), plainCall);
 }
 
 if (failures) {

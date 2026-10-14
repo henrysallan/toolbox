@@ -340,6 +340,9 @@ const typefaceCache = new WeakMap<CanvasKit, WeakMap<object, Typeface | null>>()
 const providerCache = new WeakMap<CanvasKit, WeakMap<object, TypefaceFontProvider | null>>();
 const FONT_FAMILY = "tbx-scene-font";
 
+// Text `anchor` → the share of the block's height above y.
+const TEXT_ANCHOR_K: Record<"baseline" | "top" | "middle" | "bottom", number> = { baseline: 0, top: 0, middle: 0.5, bottom: 1 };
+
 function fontBuffer(bytes: ArrayBuffer | Uint8Array): ArrayBuffer {
   if (bytes instanceof ArrayBuffer) return bytes;
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -952,6 +955,9 @@ class SceneRenderer {
   // No `width`: one line at (x, y) with y the BASELINE (RN <Text>); `align`
   // anchors the line's advance at x. With `width`: a paragraph laid out to
   // that width, top-left at (x, y), aligned within it (RN <Paragraph>).
+  // `anchor` / `lineHeight` / `baselineOffset` / `letterSpacing` (lane T,
+  // scene-ir.ts) move and space it; the exporter's makeTextPicture
+  // (scene-emit.ts) is this same algorithm as a worklet.
   private drawText(node: Extract<SkiaNode, { k: "text" }>, pc: PaintCtx): void {
     const what = this.label(node);
     const { kit } = this;
@@ -970,6 +976,15 @@ class SceneRenderer {
     const x = this.num(node.x, 0, `${what} x`);
     const y = this.num(node.y, 0, `${what} y`);
     const paint = this.paint(node.paint, pc, what);
+    const anchor = node.anchor;
+    if (anchor !== undefined && !(anchor in TEXT_ANCHOR_K)) {
+      this.problem(`${what}: unknown anchor "${String(anchor)}"`);
+      return;
+    }
+    const lineHeight = node.lineHeight ? this.num(node.lineHeight, NaN, `${what} lineHeight`) : undefined;
+    const offset = node.baselineOffset ? this.num(node.baselineOffset, NaN, `${what} baselineOffset`) : undefined;
+    const spacing = node.letterSpacing ? this.num(node.letterSpacing, 0, `${what} letterSpacing`) : 0;
+    if (Number.isNaN(lineHeight) || Number.isNaN(offset)) return;
     if (node.width) {
       const width = this.num(node.width, 0, `${what} width`);
       const prov = cachedProvider(kit, bytes);
@@ -979,29 +994,71 @@ class SceneRenderer {
       }
       const align =
         node.align === "center" ? kit.TextAlign.Center : node.align === "right" ? kit.TextAlign.Right : kit.TextAlign.Left;
-      const style = new kit.ParagraphStyle({ textStyle: { fontFamilies: [FONT_FAMILY], fontSize: size }, textAlign: align });
-      const builder = this.track(kit.ParagraphBuilder.MakeFromFontProvider(style, prov));
       const bg = this.track(new kit.Paint());
       bg.setColor(kit.TRANSPARENT);
-      builder.pushPaintStyle(new kit.TextStyle({ fontFamilies: [FONT_FAMILY], fontSize: size }), paint, bg);
-      builder.addText(text);
-      const para = this.track(builder.build());
+      // One paragraph of `s` in the scene font, painted with the text's paint
+      // (color, opacity and the inherited blendMode: RN paints a paragraph
+      // with its own foreground paint, which the exporter builds the same).
+      const run = (s: string, a: EmbindEnumEntity) => {
+        const ts = { fontFamilies: [FONT_FAMILY], fontSize: size, ...(spacing ? { letterSpacing: spacing } : {}) };
+        const builder = this.track(kit.ParagraphBuilder.MakeFromFontProvider(new kit.ParagraphStyle({ textStyle: ts, textAlign: a }), prov));
+        builder.pushPaintStyle(new kit.TextStyle(ts), paint, bg);
+        builder.addText(s);
+        return this.track(builder.build());
+      };
+      const para = run(text, align);
       para.layout(width);
-      this.canvas.drawParagraph(para, x, y);
+      const lines = para.getLineMetrics();
+      if (lineHeight === undefined) {
+        // SkParagraph's own pitch, the block anchored as a whole (v1: top).
+        const a = anchor ?? "top";
+        const top = a === "baseline" ? y - (lines[0]?.baseline ?? 0) : y - TEXT_ANCHOR_K[a] * para.getHeight();
+        this.canvas.drawParagraph(para, x, top);
+        return;
+      }
+      // SkParagraph breaks the lines and places each one horizontally; each
+      // is drawn as its own run, exactly lineHeight below the one before.
+      const asc = lines[0]?.ascent ?? 0;
+      const desc = lines[0]?.descent ?? 0;
+      const off = offset ?? (lineHeight - (asc + desc)) / 2 + asc;
+      const a = anchor ?? "top";
+      // The first baseline, computed once (a "baseline" anchor is y itself:
+      // glyphs snap to a position grid, so a round trip through the block
+      // top could flip a pixel).
+      const first = a === "baseline" ? y : y - TEXT_ANCHOR_K[a] * lines.length * lineHeight + off;
+      lines.forEach((lm, i) => {
+        const s = text.slice(lm.startIndex, lm.endExcludingWhitespaces);
+        if (!s) return;
+        const line = run(s, kit.TextAlign.Left);
+        line.layout(width);
+        const own = line.getLineMetrics()[0]?.baseline ?? 0;
+        this.canvas.drawParagraph(line, x + lm.left, first + i * lineHeight - own);
+      });
       return;
     }
+    if (spacing) this.problem(`${what}: letterSpacing needs a width (a paragraph) — a one-line run can't space letters`);
     const tf = cachedTypeface(kit, bytes);
     if (!tf) {
       this.problem(`${what}: font asset "${node.font.asset}" could not be loaded`);
       return;
     }
     const font = this.track(new kit.Font(tf, size));
+    let baseline = y;
+    if (anchor !== undefined && anchor !== "baseline") {
+      // The line box: lineHeight (default ascent + descent) tall, y at its
+      // top / middle / bottom, the baseline baselineOffset into it.
+      const m = font.getMetrics();
+      const asc = -m.ascent;
+      const desc = m.descent;
+      const lh = lineHeight ?? asc + desc;
+      baseline = y - TEXT_ANCHOR_K[anchor] * lh + (offset ?? (lh - (asc + desc)) / 2 + asc);
+    }
     let dx = 0;
     if (node.align === "center" || node.align === "right") {
       const adv = font.getGlyphWidths(font.getGlyphIDs(text)).reduce((a, b) => a + b, 0);
       dx = node.align === "center" ? -adv / 2 : -adv;
     }
-    this.canvas.drawText(text, x + dx, y, paint, font);
+    this.canvas.drawText(text, x + dx, baseline, paint, font);
   }
 
   // Sprites are [x, y, w, h] in sheet px; xforms are RSXforms (scos, ssin,

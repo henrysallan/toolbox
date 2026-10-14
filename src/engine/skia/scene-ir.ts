@@ -36,6 +36,10 @@
 //     (RN takes degrees — the emitter converts).
 //   - Image shaders default to decal tiling, gradients to clamp.
 //   - A runtime ImageFilter's `content` must be its only child shader.
+//   - Text draws with the paint's color, opacity and blendMode (its own or
+//     the enclosing group's), never as a layer: a paragraph's foreground
+//     paint carries them, so a group's blendMode blends each glyph run
+//     (recorded 2026-10-14, lane T).
 
 export const SKIA_IR_VERSION = 1;
 
@@ -221,11 +225,38 @@ export type SkiaNode =
       // No `width`: one line, y = the BASELINE, `align` anchors the line's
       // advance at x (RN <Text>). With `width`: a paragraph wrapped to that
       // width, top-left at (x, y), aligned within it (RN <Paragraph>).
+      // `anchor` (below) moves what y means.
       x: Bind<number>;
       y: Bind<number>;
       width?: Bind<number>;
       align?: "left" | "center" | "right";
       paint: PaintIR;
+      // ---- additive (2026-10-14, Wave 3 lane T) ----
+      // Baseline-to-baseline distance in px. With `width`: SkParagraph
+      // still breaks the lines and places each one horizontally, but every
+      // line is drawn as its own run exactly `lineHeight` below the one
+      // before (SkParagraph's own line pitch rounds to whole px). Without a
+      // width it only sizes the line box `anchor` places. Absent: the
+      // paragraph's own pitch (v1).
+      lineHeight?: Bind<number>;
+      // Where y sits on the text block: "baseline" = the FIRST line's
+      // baseline; "top" / "middle" / "bottom" = that edge of the block.
+      // With lineHeight the block is N × lineHeight for the N laid-out
+      // lines and each line's baseline sits `baselineOffset` below the top
+      // of its line box; without it the block is the paragraph's laid-out
+      // height (one line: the font's ascent + descent). Absent: "baseline"
+      // without a width, "top" with one — the v1 meanings.
+      anchor?: "baseline" | "top" | "middle" | "bottom";
+      // Line-box top → baseline, px (see anchor). Absent: the font's
+      // ascent + descent centred in the line box (CSS half-leading),
+      // (lineHeight − (ascent + descent)) / 2 + ascent.
+      baselineOffset?: Bind<number>;
+      // px added to every glyph's advance, the last included — SkParagraph's
+      // letter spacing, which puts half before the glyph and half after
+      // (CSS / Chromium put it all after: shift x by −letterSpacing / 2 to
+      // match them). Paragraphs only: a one-line run (no width) can't space
+      // letters, so the exporter refuses it there.
+      letterSpacing?: Bind<number>;
     }
   | {
       k: "atlas";
