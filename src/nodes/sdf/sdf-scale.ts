@@ -36,6 +36,7 @@ export const sdfScaleNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     {

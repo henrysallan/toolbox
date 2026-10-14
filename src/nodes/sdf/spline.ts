@@ -124,6 +124,7 @@ export const sdfSplineNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   inputs: [
     { name: "spline", type: "spline", required: true, label: "Spline" },
     { name: "position", type: "position", required: false, label: "Position" },

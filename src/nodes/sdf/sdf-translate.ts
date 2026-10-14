@@ -39,6 +39,7 @@ export const sdfTranslateNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     {

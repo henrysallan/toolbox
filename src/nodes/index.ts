@@ -357,6 +357,7 @@ import { skiaLineNode } from "./skia/line";
 import { skiaShapeCellsNode } from "./skia/shape-cells";
 import { skiaLyapunovNode } from "./skia/lyapunov";
 import { skiaTextureCoordinateNode } from "./skia/texture-coordinate";
+import { skiaSdfBevelNode, skiaSdfRasterizeNode, skiaSdfShadeNode, skiaSdfToDistanceImageNode, skiaSdfToMaskNode } from "./skia/sdf";
 
 let registered = false;
 
@@ -752,5 +753,10 @@ export function registerAllNodes() {
   registerNode(skiaShapeCellsNode);
   registerNode(skiaLyapunovNode);
   registerNode(skiaTextureCoordinateNode);
+  registerNode(skiaSdfRasterizeNode);
+  registerNode(skiaSdfToMaskNode);
+  registerNode(skiaSdfToDistanceImageNode);
+  registerNode(skiaSdfBevelNode);
+  registerNode(skiaSdfShadeNode);
   registered = true;
 }

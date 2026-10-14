@@ -63,12 +63,14 @@ export const skiaGroupNode: NodeDefinition = {
   compute({ inputs, params, nodeId }) {
     const children: SkiaNode[] = [];
     let assets: Record<string, AssetIR> | undefined;
+    const problems: string[] = [];
     for (const name of CHILDREN) {
       const v = inputs[name];
       if (v?.kind !== "skia_draw") continue;
       const d = v as SkiaDrawValue;
       children.push(d.node);
       if (d.assets) assets = { ...(assets ?? {}), ...d.assets };
+      if (d.problems) problems.push(...d.problems);
     }
     const deg = num(params.rotate, 0);
     const blendMode = skiaBlendMode(params.blendMode);
@@ -94,7 +96,12 @@ export const skiaGroupNode: NodeDefinition = {
       ...(blendMode !== "srcOver" ? { blendMode } : {}),
       children,
     };
-    const out: SkiaDrawValue = { kind: "skia_draw", node, ...(assets ? { assets } : {}) };
+    const out: SkiaDrawValue = {
+      kind: "skia_draw",
+      node,
+      ...(assets ? { assets } : {}),
+      ...(problems.length ? { problems } : {}),
+    };
     return { primary: out };
   },
 };

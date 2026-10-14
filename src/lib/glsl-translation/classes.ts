@@ -163,6 +163,11 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   "skia-color-space-transform": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `color-space-transform` node it mirrors (same params) instead." },
   "skia-keyer": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `keyer` node it mirrors (same params) instead." },
   "skia-dither": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `dither` node it mirrors (same params) instead." },
+  "skia-sdf-rasterize": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running SkSL generated from the SDF tree. To fuse into GLSL, use the `sdf-rasterize` node it mirrors (same params) instead." },
+  "skia-sdf-to-mask": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running SkSL generated from the SDF tree. To fuse into GLSL, use the `sdf-to-mask` node it mirrors (same params) instead." },
+  "skia-sdf-to-distance-image": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running SkSL generated from the SDF tree. To fuse into GLSL, use the `sdf-to-distance-image` node it mirrors (same params) instead." },
+  "skia-sdf-bevel": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running SkSL generated from the SDF tree. To fuse into GLSL, use the `sdf-bevel` node it mirrors (same params) instead." },
+  "skia-sdf-shade": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running SkSL generated from the SDF tree. To fuse into GLSL, use the `sdf-shade` node it mirrors (same params) instead." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------

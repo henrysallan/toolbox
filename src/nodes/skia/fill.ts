@@ -82,6 +82,11 @@ export const skiaFillNode: NodeDefinition = {
     };
     const sv = inputs.shader as SkiaShaderValue | undefined;
     state.readsTime = false;
+    // Why the drawing isn't what its params ask for: the shader's own
+    // refusals (an unported mode renders transparent) plus a failed fuse.
+    // Carried on the value so the Skia Canvas lists them and the exporter
+    // refuses instead of shipping the fallback silently.
+    const problems: string[] = sv?.kind === "skia_shader" ? [...(sv.problems ?? [])] : [];
     if (sv?.kind === "skia_shader") {
       const fused = fuseShader(sv.expr, { resolution: [ctx.width, ctx.height], time: ctx.time });
       if (fused.shader) {
@@ -89,6 +94,7 @@ export const skiaFillNode: NodeDefinition = {
         state.readsTime = shaderReadsTime(fused.shader);
         state.lastWarned = null;
       } else {
+        problems.push(...fused.problems);
         const msg = fused.problems.join(" ");
         if (state.lastWarned !== msg) {
           console.warn(`[Skia Fill ${nodeId}] ${msg}`);
@@ -96,7 +102,11 @@ export const skiaFillNode: NodeDefinition = {
         }
       }
     }
-    const out: SkiaDrawValue = { kind: "skia_draw", node: { k: "fill", id: nodeId, paint } };
+    const out: SkiaDrawValue = {
+      kind: "skia_draw",
+      node: { k: "fill", id: nodeId, paint },
+      ...(problems.length ? { problems } : {}),
+    };
     return { primary: out };
   },
 

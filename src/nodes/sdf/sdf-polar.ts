@@ -35,6 +35,7 @@ export const sdfPolarNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     {

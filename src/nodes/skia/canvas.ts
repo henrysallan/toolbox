@@ -138,7 +138,8 @@ export const skiaCanvasNode: NodeDefinition = {
       report([skiaGpuError() ?? "CanvasKit render failed"]);
       return plain();
     }
-    report(problems);
+    // Producer problems (an unported option upstream) ride on the value.
+    report([...(draw.problems ?? []), ...problems]);
     return { primary: out };
   },
 
