@@ -1,0 +1,289 @@
+// check-skia-export: the SkSL Shader → React Native Skia export gate
+// (specdocs/101326_skia-target.md). No GPU, no device:
+//
+//   1. the worklet runtime (src/lib/skia-export/runtime/toolbox-timeline.ts)
+//      returns the SAME doubles as engine/keyframes.ts for every easing
+//      preset, cubicBezier, customBezier, hold and both color spaces, and
+//      matches the Color node's hex round trip bit for bit;
+//   2. the Aurora fixture exports, and the emitted timeline.ts reproduces
+//      what the real evaluator feeds the SkSL node at every frame;
+//   3. the emitted program compiles in CanvasKit (Node) and declares exactly
+//      the uniforms sampleUniforms() supplies — no missing, no extra;
+//   4. the planner refuses what M0 cannot ship (wired images, foreign
+//      drivers, keyframed Constant, ramp channels) instead of exporting it;
+//   5. prelude + lint rules (toggles → int, colors → layout(color), children
+//      only when referenced, `uniform` lines rejected) and the recipe
+//      builder's channel-by-name wiring for channelSync nodes.
+//
+//   npx tsx scripts/check-skia-export.mts
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const { registerAllNodes } = await import("@/nodes/index");
+registerAllNodes();
+const { getNodeDef } = await import("@/engine/registry");
+const { evaluateGraph } = await import("@/engine/evaluator");
+const { evaluateKeyframesAt, EASING_PRESET_ORDER } = await import("@/engine/keyframes");
+const { colorValueToHex } = await import("@/engine/conventions");
+const { syncChannelInputs } = await import("@/engine/expr-channels");
+const { buildSkslProgram, compileSksl, lintSksl, userLineError } = await import("@/engine/skia/sksl-program");
+const { planSkiaExport, emitSkiaBundle } = await import("@/lib/skia-export");
+const rt = await import("@/lib/skia-export/runtime/toolbox-timeline");
+const { buildRecipe } = await import("@/state/recipe-builder");
+const fx = await import("./fixtures/skia/aurora.ts");
+import type { EvalCache, GraphEdge, GraphNode } from "@/engine/evaluator";
+import type { Keyframe, KeyframeAnimationBlock } from "@/engine/keyframes";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail?: string) {
+  console.log(`${cond ? "ok  " : "FAIL"} ${name}${!cond && detail ? ` — ${detail}` : ""}`);
+  if (!cond) failures++;
+}
+
+const SPAN = 120_000;
+const sampleTicks: number[] = [];
+for (let t = -500; t <= SPAN * 2 + 500; t += 37) sampleTicks.push(t);
+for (let f = 0; f <= 240; f++) sampleTicks.push(f * 1000);
+sampleTicks.push(0.5, 999.999, 60_000.25, SPAN - 1e-7);
+
+const blockOf = (keys: Keyframe[], colorSpace?: "oklab" | "rgb"): KeyframeAnimationBlock => ({
+  animated: true,
+  trackVisible: true,
+  keyframes: keys,
+  ...(colorSpace ? { colorSpace } : {}),
+});
+
+// ---- 1. runtime == engine ---------------------------------------------------
+{
+  const presets = [...EASING_PRESET_ORDER.filter((p) => p !== "customBezier"), "easeIn", "easeOut", "easeInOut", "cubicBezier"];
+  let worst = 0;
+  let worstAt = "";
+  for (const p of presets) {
+    const keys: Keyframe[] = [
+      { tick: 0, value: -2, easingOut: p as any, ...(p === "cubicBezier" ? { bezier: { x1: 0.2, y1: 1.6, x2: 0.3, y2: -0.4 } } : {}) },
+      { tick: SPAN, value: 5, easingOut: p as any, ...(p === "cubicBezier" ? { bezier: { x1: 0.9, y1: 0, x2: 0.1, y2: 1 } } : {}) },
+      { tick: SPAN * 2, value: 1, easingOut: "linear" },
+    ];
+    const block = blockOf(keys);
+    const track = { kind: "scalar" as const, keys: keys.map((k) => ({ tick: k.tick, value: k.value as number, easing: k.easingOut, ...(k.bezier ? { bezier: k.bezier } : {}) })) };
+    for (const t of sampleTicks) {
+      const a = evaluateKeyframesAt(block, "scalar", t) as number;
+      const b = rt.evaluateTrack(track, t) as number;
+      const d = Object.is(a, b) ? 0 : Math.abs(a - b) || Infinity;
+      if (d > worst) {
+        worst = d;
+        worstAt = `${p} @${t}: engine ${a} runtime ${b}`;
+      }
+    }
+  }
+  check(`scalar runtime is bit-identical to evaluateKeyframesAt (${presets.length} easings × ${sampleTicks.length} ticks)`, worst === 0, worstAt);
+
+  // customBezier with explicit and missing handles.
+  const keys: Keyframe[] = [
+    { tick: 0, value: 0, easingOut: "customBezier", bezierHandles: { rightHandle: { dx: 50_000, dy: 9 }, leftHandle: { dx: -1, dy: 0 } } },
+    { tick: SPAN, value: 4, easingOut: "customBezier", bezierHandles: { rightHandle: { dx: 2_000, dy: -3 }, leftHandle: { dx: -70_000, dy: 2 } } },
+    { tick: SPAN * 2, value: -1, easingOut: "customBezier" },
+    { tick: SPAN * 3, value: 2, easingOut: "linear" },
+  ];
+  const track = {
+    kind: "scalar" as const,
+    keys: keys.map((k) => ({
+      tick: k.tick,
+      value: k.value as number,
+      easing: k.easingOut,
+      ...(k.bezierHandles ? { right: k.bezierHandles.rightHandle, left: k.bezierHandles.leftHandle } : {}),
+    })),
+  };
+  const bad = sampleTicks
+    .concat(sampleTicks.map((t) => t + SPAN))
+    .find((t) => !Object.is(evaluateKeyframesAt(blockOf(keys), "scalar", t), rt.evaluateTrack(track, t)));
+  check("customBezier (explicit + default handles) is bit-identical", bad === undefined, `first mismatch @${bad}`);
+
+  // Colors: raw interpolation in both spaces, then the Color node round trip.
+  const hexKeys: Keyframe[] = [
+    { tick: 0, value: "#ff7a45", easingOut: "easeInOutQuad" },
+    { tick: SPAN, value: "#1b2cff", easingOut: "easeOutBack" },
+    { tick: SPAN * 2, value: "#00ffa2", easingOut: "linear" },
+  ];
+  const tuple = (h: string) => {
+    const n = parseInt(h.slice(1, 7), 16);
+    return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, 1];
+  };
+  const colorDef = getNodeDef("color-literal")!;
+  for (const space of ["oklab", "rgb"] as const) {
+    const ctrack = { kind: "color" as const, colorSpace: space, keys: hexKeys.map((k) => ({ tick: k.tick, value: tuple(k.value as string), easing: k.easingOut })) };
+    const rawBad = sampleTicks.find((t) => {
+      const a = evaluateKeyframesAt(blockOf(hexKeys, space), "color", t);
+      const b = rt.evaluateTrackRaw(ctrack, t);
+      const av = typeof a === "string" ? tuple(a) : (a as number[]);
+      return av.some((x, i) => !Object.is(x, (b as number[])[i]));
+    });
+    check(`color (${space}) raw interpolation is bit-identical`, rawBad === undefined, `first mismatch @${rawBad}`);
+    const qtrack = { ...ctrack, quantize8: true, alpha: 0.75 };
+    const qBad = sampleTicks.find((t) => {
+      const v = evaluateKeyframesAt(blockOf(hexKeys, space), "color", t);
+      const hex = colorValueToHex(v, "#000000");
+      const out = colorDef.compute({ inputs: {}, auxIn: {}, params: { color: hex, alpha: 0.75, count: 1 }, ctx: undefined as never, nodeId: "c" }) as any;
+      const want = out.primary.value as number[];
+      const got = rt.evaluateTrack(qtrack, t) as number[];
+      return want.some((x, i) => !Object.is(x, got[i]));
+    });
+    check(`color (${space}) through the Color node's hex round trip is bit-identical`, qBad === undefined, `first mismatch @${qBad}`);
+  }
+  check(
+    "ticksAt snaps frame-aligned seconds to exact ticks",
+    [0, 7, 59, 240, 299].every((f) => rt.ticksAt(f / 60, 60, 1000) === f * 1000) && rt.ticksAt(0.0123, 60, 1000) === 0.0123 * 60 * 1000
+  );
+}
+
+// ---- 2. Aurora: emitted timeline == the evaluator's feed ---------------------
+const { nodes, edges, targetId } = fx.auroraGraph();
+const { plan, problems } = planSkiaExport(nodes, edges, targetId, {
+  name: "Aurora",
+  canvas: { width: 512, height: 512 },
+  timeline: fx.AURORA_TIMELINE,
+});
+check("Aurora fixture plans without problems", !!plan && problems.length === 0, problems.join(" | "));
+if (!plan) {
+  console.log(`\n${failures} failure(s)`);
+  process.exit(1);
+}
+check("4 of 11 uniforms are animated", plan.uniforms.length === 11 && plan.uniforms.filter((u) => u.track).length === 4);
+
+const tmp = path.join(ROOT, "scripts", ".skia-export.tmp");
+fs.rmSync(tmp, { recursive: true, force: true });
+fs.mkdirSync(tmp, { recursive: true });
+const runtimeSrc = fs.readFileSync(path.join(ROOT, "src/lib/skia-export/runtime/toolbox-timeline.ts"), "utf8");
+const files = emitSkiaBundle(plan, runtimeSrc);
+for (const [f, text] of Object.entries(files)) fs.writeFileSync(path.join(tmp, f), text);
+check(
+  "bundle has effect / timeline / runtime / component / manifest / index",
+  ["effect.ts", "timeline.ts", "toolbox-timeline.ts", "ToolboxEffect.tsx", "manifest.json", "index.ts"].every((f) => f in files)
+);
+check("runtime ships verbatim", files["toolbox-timeline.ts"] === runtimeSrc);
+const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
+
+{
+  const ctx: any = {
+    gl: {}, width: 8, height: 8, time: 0, frame: 0, tick: 0, ticksPerFrame: 1000, fps: 60,
+    playing: false, offline: false, cursor: { x: 0, y: 0, active: false }, state: {},
+  };
+  const drivers = nodes.filter((n) => n.type !== "sksl-shader");
+  const chanRows = (nodes.find((n) => n.id === targetId)!.params.inputs as any[]);
+  const byEdge = edges.map((e) => ({ src: e.source, name: chanRows.find((r) => e.targetHandle === `in:in:${r.id}`)!.name }));
+  let mismatch = "";
+  for (let f = 0; f <= 300 && !mismatch; f++) {
+    ctx.tick = f * 1000;
+    ctx.frame = f;
+    ctx.time = f / 60;
+    const r = evaluateGraph(drivers as GraphNode[], [] as GraphEdge[], ctx, new Map() as EvalCache, null, undefined, null, { extraTargets: drivers.map((d) => d.id) });
+    const u = emitted.sampleUniforms(f / 60, 512, 512);
+    for (const { src, name } of byEdge) {
+      const v = r.outputs.get(src)?.primary as any;
+      const want = v?.kind === "scalar" ? [v.value] : v?.value;
+      const got = Array.isArray(u[name]) ? u[name] : [u[name]];
+      if (!want || want.some((x: number, i: number) => !Object.is(x, got[i]))) {
+        mismatch = `frame ${f} ${name}: evaluator ${JSON.stringify(want)} export ${JSON.stringify(got)}`;
+        break;
+      }
+    }
+  }
+  check("emitted sampleUniforms == evaluator output for every driver, frames 0..300", !mismatch, mismatch);
+}
+
+// ---- 3. CanvasKit compile + uniform set ---------------------------------------
+{
+  const require = createRequire(path.join(ROOT, "package.json"));
+  const CK = await require("canvaskit-wasm")();
+  const r = compileSksl(CK, plan.sksl);
+  check("emitted SkSL compiles in CanvasKit", !!r.effect, r.error ? userLineError(r.error, plan.preludeLines) : "");
+  if (r.effect) {
+    const declared = new Set<string>();
+    for (let i = 0; i < r.effect.getUniformCount(); i++) declared.add(r.effect.getUniformName(i));
+    const supplied = new Set(Object.keys(emitted.sampleUniforms(0, 512, 512)));
+    const missing = [...declared].filter((n) => !supplied.has(n));
+    const extra = [...supplied].filter((n) => !declared.has(n));
+    check("sampleUniforms supplies exactly the declared uniforms", !missing.length && !extra.length, `missing ${missing} extra ${extra}`);
+  }
+}
+
+// ---- 4. refusals ---------------------------------------------------------------
+{
+  const plan2 = (mut: (n: GraphNode[], e: GraphEdge[]) => void) => {
+    const g = fx.auroraGraph();
+    mut(g.nodes, g.edges);
+    return planSkiaExport(g.nodes, g.edges, g.targetId, { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE }).problems;
+  };
+  check(
+    "refuses a wired image child",
+    plan2((n, e) => {
+      n.push({ id: "img", type: "solid-color", params: {} });
+      e.push({ id: "i", source: "img", sourceHandle: "out:primary", target: "aurora", targetHandle: "in:image1" });
+    }).some((p) => p.includes("image1"))
+  );
+  check(
+    "refuses a channel driven by a non-keyframe node",
+    plan2((n, e) => {
+      n.push({ id: "lfo", type: "lfo", params: {} });
+      const ed = e.find((x) => x.source === "drift")!;
+      ed.source = "lfo";
+    }).some((p) => p.includes("driven by a lfo"))
+  );
+  check(
+    "refuses a keyframed Constant",
+    plan2((n, e) => {
+      n.push({ id: "k", type: "constant", params: { value: 1 }, animation: { value: blockOf([{ tick: 0, value: 1, easingOut: "linear" }, { tick: 5, value: 2, easingOut: "linear" }]) } });
+      e.find((x) => x.source === "drift")!.source = "k";
+    }).some((p) => p.includes("Constant"))
+  );
+  check(
+    "refuses ramp channels",
+    plan2((n) => {
+      const sk = n.find((x) => x.id === "aurora")!;
+      const src = `${sk.params.expression}\n// ramp("ink", "#000", "#fff")`;
+      sk.params = { ...sk.params, expression: src, inputs: syncChannelInputs(sk.params.inputs as any, src) };
+    }).some((p) => p.includes("ramp/curve"))
+  );
+  check(
+    "a static Constant exports its stepped value",
+    (() => {
+      const g = fx.auroraGraph();
+      g.nodes.push({ id: "k", type: "constant", params: { value: 1.23456, mode: "float", step: 0.01 } });
+      g.edges.find((x) => x.source === "drift")!.source = "k";
+      const p = planSkiaExport(g.nodes, g.edges, g.targetId, { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE }).plan;
+      const v = p?.uniforms.find((u) => u.name === "drift_x")?.value as number;
+      return Math.abs(v - 1.23) < 1e-9;
+    })()
+  );
+}
+
+// ---- 5. prelude, lint, recipe wiring ------------------------------------------
+{
+  const src = `// ch("k", 0.5, 0, 1)\n// toggle("on", true)\n// pick("mode", "soft", "hard")\n// color("tint", "#ff8800")\nhalf4 main(float2 p) { return iImage2.eval(p); }`;
+  const prog = buildSkslProgram({ expression: src, inputs: syncChannelInputs([], src) });
+  check("toggle → uniform int", prog.sksl.includes("uniform int on;"));
+  check("pick → int + option consts", prog.sksl.includes("uniform int mode;") && prog.sksl.includes("const int mode_hard = 1;"));
+  check("color → layout(color) float4", prog.sksl.includes("layout(color) uniform float4 tint;"));
+  check("only referenced children are declared", prog.children.join() === "iImage2" && !prog.sksl.includes("iImage1"));
+  check("lint rejects `uniform` lines", lintSksl("uniform float x;\nhalf4 main(float2 p){return half4(x);}").problems.length === 1);
+  check("lint rejects a missing main", lintSksl("float f(){return 1.0;}").problems.some((p) => p.includes("main")));
+  check("lint warns on half declarations, not on return casts", lintSksl("half4 main(float2 p){ half3 c = half3(1); return half4(c, 1); }").warnings.length === 1 && lintSksl("half4 main(float2 p){ return half4(1); }").warnings.length === 0);
+  check("error lines map to the user's source", userLineError("error: 9: unknown identifier 'x'", 4) === "error: line 5: unknown identifier 'x'");
+
+  for (const type of ["sksl-shader", "glsl-expression"]) {
+    const expression = type === "sksl-shader" ? `// ch("k", 0.5, 0, 1)\nhalf4 main(float2 p) { return half4(k); }` : `// ch("k", 0.5, 0, 1)\nfragColor = vec4(k);`;
+    const r: any = buildRecipe({ name: "t", nodes: [{ id: "d", type: "animated-value" }, { id: "s", type, params: { expression } }], edges: [{ from: "d:out", to: "s:in:k" }], outputs: [{ name: "image", from: "s:out", type: "image" }] } as any);
+    const th = r.edges?.find((e: any) => e.source.startsWith("animated-value"))?.targetHandle ?? "";
+    check(`recipe wires a ${type} channel by name`, th.startsWith("in:in:ein-"), th);
+  }
+}
+
+fs.rmSync(tmp, { recursive: true, force: true });
+console.log(`\n${failures === 0 ? "all checks passed" : `${failures} failure(s)`}`);
+process.exit(failures === 0 ? 0 : 1);

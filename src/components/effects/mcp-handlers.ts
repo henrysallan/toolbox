@@ -61,6 +61,7 @@ import {
   attachGlslErrorsToSpec,
   inspectGlslExpression,
 } from "@/nodes/effect/glsl-expression";
+import { inspectSkslShader } from "@/nodes/effect/sksl-shader";
 import {
   channelKind,
   findExprChannel,
@@ -318,6 +319,28 @@ function parseNodePeek(
   );
 }
 
+// SkSL Shader counterpart of attachGlslErrorsToSpec: the compile log (or
+// the text-level problem) rides on the node so get_graph shows why a
+// transparent SkSL node is transparent.
+function attachSkslErrorsToSpec<T extends { id: string; type: string }>(
+  nodes: T[],
+  paramsOf: (id: string) => Record<string, unknown> | undefined
+): (T & { shaderError?: string; shaderProblems?: string[] })[] {
+  return nodes.map((sn) => {
+    if (sn.type !== "sksl-shader") return sn;
+    const params = paramsOf(sn.id);
+    if (!params) return sn;
+    const info = inspectSkslShader(params);
+    const problems = [...info.problems, ...info.unsupported.map((n) => `channel "${n}" (ramp/curve) has no SkSL lowering yet`)];
+    if (!info.error && !problems.length) return sn;
+    return {
+      ...sn,
+      ...(info.error ? { shaderError: info.error } : {}),
+      ...(problems.length ? { shaderProblems: problems } : {}),
+    };
+  });
+}
+
 export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
   const nodeOrThrow = (nodeId: unknown): GraphNode => {
     const node = deps.nodesRef.current.find((n) => n.id === nodeId);
@@ -330,6 +353,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     node: GraphNode | null,
     backend: EngineBackend | null
   ) => {
+    if (node?.data.defType === "sksl-shader") {
+      const info = inspectSkslShader(node.data.params);
+      return info.ok ? null : { ...info, problems: [...info.problems, ...info.unsupported.map((n) => `channel "${n}" (ramp/curve) has no SkSL lowering yet`)] };
+    }
     if (!node || !backend || node.data.defType !== "glsl-expression") return null;
     const info = inspectGlslExpression(node.id, node.data.params, backend.tryShader);
     return info.ok ? null : info;
@@ -372,10 +399,13 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           ? spec
           : {
               ...spec,
-              nodes: attachGlslErrorsToSpec(
-                spec.nodes,
-                (id) => nodes.find((n) => n.id === id)?.data.params,
-                backend.tryShader
+              nodes: attachSkslErrorsToSpec(
+                attachGlslErrorsToSpec(
+                  spec.nodes,
+                  (id) => nodes.find((n) => n.id === id)?.data.params,
+                  backend.tryShader
+                ),
+                (id) => nodes.find((n) => n.id === id)?.data.params
               ),
             };
       rememberSpec(scopeId, full);
@@ -1424,16 +1454,20 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       let targets: GraphNode[];
       if (nodeId != null && String(nodeId).length > 0) {
         const n = nodeOrThrow(nodeId);
-        if (n.data.defType !== "glsl-expression")
+        if (n.data.defType !== "glsl-expression" && n.data.defType !== "sksl-shader")
           throw new Error(
-            `"${n.id}" is a ${n.data.defType} — get_shader_errors compiles GLSL Expression. Point Expression uses validate_expression.`
+            `"${n.id}" is a ${n.data.defType} — get_shader_errors compiles GLSL Expression and SkSL Shader. Point Expression uses validate_expression.`
           );
         targets = [n];
       } else {
-        targets = all.filter((n) => n.data.defType === "glsl-expression");
+        targets = all.filter(
+          (n) => n.data.defType === "glsl-expression" || n.data.defType === "sksl-shader"
+        );
       }
       const nodes = targets.map((n) =>
-        inspectGlslExpression(n.id, n.data.params, backend.tryShader)
+        n.data.defType === "sksl-shader"
+          ? { nodeId: n.id, type: "sksl-shader", ...inspectSkslShader(n.data.params) }
+          : inspectGlslExpression(n.id, n.data.params, backend.tryShader)
       );
       return {
         compiled: nodes.length,

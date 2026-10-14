@@ -14,6 +14,7 @@ import { withMaskInput } from "@/engine/conventions";
 import { tidyLayout } from "@/state/node-layout";
 import { applyPositions, toLayoutGraph } from "@/state/node-layout-graph";
 import {
+  channelListParam,
   channelSocketType,
   EXPR_VAR_NAME_RE,
   findExprChannel,
@@ -215,7 +216,13 @@ export function growExprVarHandle(
     !targetHandle.startsWith("in:") ||
     targetHandle.startsWith("in:param:")
   ) {
-    return { params, handle: targetHandle };
+    // ChannelSync lists (Point / GLSL Expression, SkSL Shader) never grow,
+    // but their channels are still addressed BY NAME in recipes — without
+    // this, `<glsl>:in:<channel>` reached the validator unresolved.
+    const handle = channelListParam(def)
+      ? resolveChannelHandle(def, params, targetHandle)
+      : targetHandle;
+    return { params, handle };
   }
   const resolved = resolveChannelHandle(def, params, targetHandle);
   if (resolved !== targetHandle) return { params, handle: resolved };

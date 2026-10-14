@@ -23,6 +23,10 @@ const eslintConfig = defineConfig([
     // Figma plugin — a separate sandboxed bundle with its own tsconfigs
     // (npm run figma-plugin:typecheck); not a Next.js source.
     "figma-plugin/**",
+    // React Native Skia device harness — an Expo app with its own lint.
+    "skia-harness/**",
+    // CanvasKit browser build copied from canvaskit-wasm.
+    "public/canvaskit/**",
   ]),
   // Electron main-process files are CommonJS by design (they run unbundled
   // in Electron's Node; ESM would need a build step for no benefit).

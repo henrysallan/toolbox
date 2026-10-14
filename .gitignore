@@ -76,3 +76,18 @@ next-env.d.ts
 # README ships. scripts/check-figma-import.mts runs whatever is present.
 /scripts/fixtures/figma-import/*
 !/scripts/fixtures/figma-import/README.md
+
+# scratch bundle written by check:skia-export
+/scripts/.skia-export.tmp/
+
+# CanvasKit browser build (copied from canvaskit-wasm by scripts/copy-canvaskit.mjs)
+/public/canvaskit/
+
+# React Native Skia harness build outputs
+/skia-harness/node_modules
+/skia-harness/dist
+/skia-harness/.expo
+/skia-harness/ios
+/skia-harness/android
+/skia-harness/public/canvaskit.wasm
+/skia-harness/parity-out

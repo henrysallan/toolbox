@@ -39,6 +39,8 @@
     // Figma plugin: its own sandbox globals + tsconfigs
     // (npm run figma-plugin:typecheck).
     "figma-plugin",
+    // React Native Skia device harness: its own Expo toolchain + tsconfig.
+    "skia-harness",
     "src/export-template",
     "public/export-template",
     ".next/standalone",

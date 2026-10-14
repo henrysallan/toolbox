@@ -266,6 +266,7 @@ import { attributeMathNode } from "./effect/attribute-math";
 import { attributeBlurNode } from "./effect/attribute-blur";
 import { attributeTransferNode } from "./effect/attribute-transfer";
 import { glslExpressionNode } from "./effect/glsl-expression";
+import { skslShaderNode } from "./effect/sksl-shader";
 import { mapAttributeNode } from "./effect/map-attribute";
 import { staggerNode } from "./effect/stagger";
 import { attributeReadNode } from "./effect/attribute-read";
@@ -625,6 +626,7 @@ export function registerAllNodes() {
   registerNode(attributeBlurNode);
   registerNode(attributeTransferNode);
   registerNode(glslExpressionNode);
+  registerNode(skslShaderNode);
   registerNode(mapAttributeNode);
   registerNode(staggerNode);
   registerNode(attributeReadNode);

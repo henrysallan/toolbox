@@ -91,6 +91,7 @@ const STRING_INPUT_PARAMS: Record<
   expression: { param: "expression" },
   // The shader source IS the node, same reasoning as Expression.
   "glsl-expression": { param: "expression" },
+  "sksl-shader": { param: "expression" },
   "set-named-attribute": { param: "attr_name", singleLine: true },
   "attribute-math": { param: "attr_name", singleLine: true },
   "attribute-blur": { param: "attr_name", singleLine: true },

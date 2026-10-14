@@ -1,0 +1,124 @@
+// Aurora — Noise (simplex fBm) → Color Ramp (4 stops, linear, OKLab),
+// ported from toolbox's own nodes as ONE Skia runtime shader. The math
+// mirrors NOISE_FS (src/nodes/source/perlin-noise.ts) and makeColorRampSampler
+// (src/engine/color-ramp.ts) line for line; only the coordinate frame
+// differs (Skia hands us Y-down pixels, toolbox's v_uv is Y-up 0..1).
+// ch("scale", 3, 0.1, 64)
+// ch("octaves", 4, 1, 8)
+// ch("persistence", 0.5, 0, 1)
+// ch("lacunarity", 2, 1, 4)
+// ch("drift_x", 0, -10, 10)
+// ch("drift_y", 0, -10, 10)
+// ch("contrast", 1.2, 0, 4)
+// color("c0", "#0a0f2c")
+// color("c1", "#3d5afe")
+// color("c2", "#ff7a45")
+// color("c3", "#ffe3c2")
+
+// ---- simplex noise (Ashima snoise, as NOISE_FS) ----
+float3 mod289v3(float3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float2 mod289v2(float2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float3 permute3(float3 x) { return mod289v3(((x * 34.0) + 1.0) * x); }
+
+float snoise(float2 v) {
+  const float4 C = float4(0.211324865405187, 0.366025403784439,
+                          -0.577350269189626, 0.024390243902439);
+  float2 i = floor(v + dot(v, C.yy));
+  float2 x0 = v - i + dot(i, C.xx);
+  float2 i1 = (x0.x > x0.y) ? float2(1.0, 0.0) : float2(0.0, 1.0);
+  float4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289v2(i);
+  float3 p = permute3(permute3(i.y + float3(0.0, i1.y, 1.0)) + i.x + float3(0.0, i1.x, 1.0));
+  float3 m = max(0.5 - float3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+  m = m * m;
+  m = m * m;
+  float3 x = 2.0 * fract(p * C.www) - 1.0;
+  float3 h = abs(x) - 0.5;
+  float3 ox = floor(x + 0.5);
+  float3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+  float3 g;
+  g.x = a0.x * x0.x + h.x * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+// fBm: up to 8 octaves (Skia needs a constant loop bound — break early).
+float fbm(float2 p) {
+  float total = 0.0;
+  float amp = 1.0;
+  float freq = 1.0;
+  float maxAmp = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (float(i) >= octaves) break;
+    total += snoise(p * freq) * amp;
+    maxAmp += amp;
+    amp *= persistence;
+    freq *= lacunarity;
+  }
+  return total / max(maxAmp, 0.0001);
+}
+
+// ---- color ramp (linear interpolation in OKLab, as makeColorRampSampler) ----
+float srgbToLinear(float c) {
+  return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+float linearToSrgb(float c) {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+float cbrt(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
+
+float3 toOklab(float3 srgb) {
+  float r = srgbToLinear(srgb.r);
+  float g = srgbToLinear(srgb.g);
+  float b = srgbToLinear(srgb.b);
+  float l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  float m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  float s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return float3(0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+                1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+                0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s);
+}
+
+float3 fromOklab(float3 lab) {
+  float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+  float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+  float s_ = lab.x - 0.0894841775 * lab.y - 1.291485548 * lab.z;
+  float l = l_ * l_ * l_;
+  float m = m_ * m_ * m_;
+  float s = s_ * s_ * s_;
+  float3 lin = float3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                      -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+  lin = clamp(lin, 0.0, 1.0);
+  return float3(linearToSrgb(lin.r), linearToSrgb(lin.g), linearToSrgb(lin.b));
+}
+
+// Stops at 0, 0.45, 0.75, 1 (the Color Ramp node's positions).
+float3 ramp(float t) {
+  float3 k0 = toOklab(c0.rgb);
+  float3 k1 = toOklab(c1.rgb);
+  float3 k2 = toOklab(c2.rgb);
+  float3 k3 = toOklab(c3.rgb);
+  float3 v;
+  if (t <= 0.0) v = k0;
+  else if (t >= 1.0) v = k3;
+  else if (t <= 0.45) v = mix(k0, k1, t / 0.45);
+  else if (t <= 0.75) v = mix(k1, k2, (t - 0.45) / 0.30);
+  else v = mix(k2, k3, (t - 0.75) / 0.25);
+  return fromOklab(v);
+}
+
+half4 main(float2 fragCoord) {
+  // toolbox's v_uv: 0..1, Y-UP.
+  float2 uv = float2(fragCoord.x / iResolution.x, 1.0 - fragCoord.y / iResolution.y);
+  float aspect = iResolution.x / iResolution.y;
+  float2 p = (uv - 0.5) * scale;
+  p.y /= aspect;
+  p += float2(drift_x, drift_y);
+  float n = fbm(p);
+  float t = n * 0.5 + 0.5;
+  t = clamp(0.5 + (t - 0.5) * contrast, 0.0, 1.0);
+  return half4(float4(ramp(t), 1.0));
+}

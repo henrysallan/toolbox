@@ -1,3 +1,5 @@
+import type { AssetIR, SkiaNode } from "./skia/scene-ir";
+import type { ShaderExpr } from "./skia/shader-expr";
 import type {
   Object3DValue,
   CameraValue,
@@ -136,6 +138,14 @@ export type SocketType =
   // data, no coercions. 081026 spec M6.5.
   | "noise_field"
   | "camera"
+  // Skia scene IR (specdocs/101326_skia-target.md §3.4). `skia_draw` carries
+  // drawing (a SkiaNode tree: groups, shapes, fills, images, text);
+  // `skia_shader` carries a shader call tree the fuser compiles into one
+  // runtime effect. Pure data, no GL work, like `sdf`; the Skia Canvas node
+  // renders it through CanvasKit, and the React Native exporter emits it.
+  // No coercions: crossing into or out of a Skia layer is a node.
+  | "skia_draw"
+  | "skia_shader"
   // A colour ramp as a value (see ColorRampValue) — a CPU descriptor, no
   // texture, in the same shape as sdf/position/force. Produced by the Color
   // Ramp node's `ramp` aux output; consumed by every `color_ramp` PARAM, all
@@ -900,7 +910,21 @@ export type SocketValue =
   | CameraValue
   | ColorRampValue
   | FloatCurveValue
-  | TransformValue;
+  | TransformValue
+  | SkiaDrawValue
+  | SkiaShaderValue;
+
+export interface SkiaDrawValue {
+  kind: "skia_draw";
+  node: SkiaNode;
+  // Images / fonts the tree references by id.
+  assets?: Record<string, AssetIR>;
+}
+
+export interface SkiaShaderValue {
+  kind: "skia_shader";
+  expr: ShaderExpr;
+}
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
 // data tree, no GL work. The Rasterize node walks the tree, emits a
@@ -2005,6 +2029,14 @@ export interface NodeDefinition {
   // Unwired ⇒ normal playhead sampling. Wire > keyframe precedence is
   // untouched — this changes WHEN keyframes sample, never whether.
   clockInput?: { input: string; unitParam?: string };
+  // Skia-layer membership (specdocs/101326_skia-target.md §3.1–3.2). Only
+  // defs that declare this are offered inside a layer whose target is
+  // "skia"; `class` is how the node lowers (sksl: fused into a runtime
+  // effect; native: React Native Skia drawing; filter: an image filter over
+  // rendered content; driver: a keyframe source the timeline exports;
+  // terminal: Skia Canvas). `mirrors` names the default-layer node it ports,
+  // for "convert layer to Skia" and compare:skia.
+  skia?: { class: "sksl" | "native" | "filter" | "driver" | "terminal"; mirrors?: string };
   inputs: InputSocketDef[];
   // Optional: derive the active input socket list from params and from
   // the source-output types of any currently-wired edges. The

@@ -100,6 +100,10 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // both are "per-position scalar signal" wires; this one is the CPU/
   // world-space face.
   noise_field: { dark: "#ca8a04", light: "#8a5c00" },
+  // Skia scene wires (101326 spec) — a warm magenta pair, apart from image
+  // blue and sdf violet: "this is drawing that ships to React Native".
+  skia_draw: { dark: "#f472b6", light: "#be185d" },
+  skia_shader: { dark: "#fb7185", light: "#be123c" },
   // 3D curve (spec M11) — spline's cyan shifted deeper, the same
   // related-but-distinct family treatment as points/points3d: a curve,
   // but living in world space.
