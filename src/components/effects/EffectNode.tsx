@@ -52,7 +52,9 @@ import {
 import { tintRgba } from "./node-tints";
 import { Spinner } from "./Spinner";
 import { useAudioAudible } from "@/state/audio-audibility";
-import { VIRTUAL_SOCKET } from "@/engine/groups";
+import { LAYER_TYPE, VIRTUAL_SOCKET } from "@/engine/groups";
+import { readLayerTarget } from "@/engine/skia/layer-target";
+import SkiaLayerBadge from "./SkiaLayerBadge";
 import type { MergeLayer } from "@/nodes/effect/merge";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
@@ -1023,6 +1025,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             </span>
           )}
           {data.displayName ?? data.name}
+          {data.defType === LAYER_TYPE &&
+            readLayerTarget(data.params) === "skia" && <SkiaLayerBadge />}
           {showNotAudible && (
             <span
               title="Not audible — route to a Layer Output audio socket, the Output node, or set Active"

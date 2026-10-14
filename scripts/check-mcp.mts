@@ -11,8 +11,13 @@ import { connectBridge, type BridgeClient, type BridgeStatus } from "@/lib/mcp-b
 import { registerAllNodes } from "@/nodes";
 import { buildCatalogDsl } from "@/lib/ai/generate-recipe-client";
 import { getGlslDocs } from "@/lib/glsl-translation";
+import { exportSkia } from "@/lib/skia-export/api";
+import { readFileSync } from "node:fs";
 
 registerAllNodes();
+const fxSkia = await import("./fixtures/skia/aurora.ts");
+const auroraSkia = fxSkia.auroraGraph();
+const SKIA_RUNTIME = readFileSync("src/lib/skia-export/runtime/toolbox-timeline.ts", "utf8");
 
 const REPO = process.cwd();
 const PORT = "38299";
@@ -269,6 +274,7 @@ await client.connect(transport);
 const EXPECTED_TOOLS = [
   "compare_renders",
   "edit_group",
+  "export_skia",
   "get_catalog",
   "get_glsl_docs",
   "get_graph",
@@ -282,6 +288,7 @@ const EXPECTED_TOOLS = [
   "get_status",
   "insert_recipe",
   "plan_glsl_translation",
+  "plan_skia_export",
   "read_source",
   "screenshot",
   "screenshot_strip",
@@ -474,6 +481,7 @@ const bridge: BridgeClient = connectBridge({
         mode: args.mode === "full" ? "full" : args.mode === "list" ? "list" : undefined,
         category: args.category as string | string[] | undefined,
         types: args.types as string | string[] | undefined,
+        target: args.target === "skia" ? "skia" : undefined,
       }),
     get_graph: ({ scope, verbosity, params }) => ({
       name: scope ?? "root",
@@ -568,6 +576,22 @@ const bridge: BridgeClient = connectBridge({
       maxInputs,
       docs: ["conventions", "fusion", "parity"],
     }),
+    // React Native Skia (101326 §3.7): the editor-side resolution is covered
+    // by check-skia-layer; here the plan echoes its target and export_skia
+    // ships the REAL Aurora bundle, so a ~25 KB files map has to survive
+    // the JSON hop as text.
+    plan_skia_export: ({ target }) => ({
+      ok: true,
+      target: { id: target ?? "selected", type: "sksl-shader" },
+      timeline: { fps: 60, frames: 300, seconds: 5 },
+      uniforms: [{ name: "drift_x", kind: "float", animated: true, from: "Animated Value drift (2 keys)" }],
+    }),
+    export_skia: ({ target }) => {
+      if (target === "nope")
+        throw new Error('Nothing exported — fix these and retry:\n- No node "nope" in the graph.');
+      const r = exportSkia({ ...auroraSkia, name: "Aurora", canvas: { width: 512, height: 512 }, timeline: fxSkia.AURORA_TIMELINE, runtimeSource: SKIA_RUNTIME });
+      return { ok: true, target: { id: target, type: "sksl-shader" }, folder: "aurora", files: r.files, warnings: r.warnings };
+    },
     compare_renders: ({ a, b, frames }) => ({
       kind: "compare",
       mimeType: "image/png",
@@ -805,6 +829,61 @@ check(
     "compare_renders marshals as image + metrics text",
     !isError(rc) && !!cmpImg && textOf(rc).includes("CLOSE") && textOf(rc).includes("[0, 30]") && textOf(rc).includes("3×2"),
     textOf(rc)
+  );
+}
+
+// React Native Skia tools (101326 §3.7) and the Skia catalog filter cross
+// the bridge: args forward, the bundle arrives as text, refusals as errors.
+{
+  const listed = await client.listTools();
+  const propsOf = (name: string) =>
+    Object.keys(
+      ((listed.tools.find((t) => t.name === name)?.inputSchema ?? {}) as { properties?: Record<string, unknown> })
+        .properties ?? {}
+    );
+  check(
+    "get_catalog / plan_skia_export / export_skia schemas take target",
+    propsOf("get_catalog").includes("target") && propsOf("plan_skia_export").includes("target") && propsOf("export_skia").includes("target"),
+    JSON.stringify([propsOf("get_catalog"), propsOf("plan_skia_export"), propsOf("export_skia")])
+  );
+  const cat = await client.callTool({ name: "get_catalog", arguments: { target: "skia" } });
+  check(
+    "get_catalog target skia lists only Skia types",
+    !isError(cat) && textOf(cat).startsWith("# Skia layer catalog") && textOf(cat).includes("sksl-shader (SkSL Shader)") && !textOf(cat).includes("noise ("),
+    textOf(cat).slice(0, 200)
+  );
+  const catBad = await client.callTool({ name: "get_catalog", arguments: { target: "metal" } });
+  check("get_catalog rejects an unknown target at the server", isError(catBad), textOf(catBad).slice(0, 120));
+  const plan = await client.callTool({ name: "plan_skia_export", arguments: { target: "layer-1" } });
+  const pj = isError(plan) ? {} : JSON.parse(textOf(plan));
+  check(
+    "plan_skia_export forwards target and returns the plan",
+    !isError(plan) && pj.target?.id === "layer-1" && pj.uniforms?.[0]?.animated === true,
+    textOf(plan).slice(0, 200)
+  );
+  const planBare = await client.callTool({ name: "plan_skia_export", arguments: {} });
+  check("plan_skia_export target is optional (default: the selection)", !isError(planBare) && JSON.parse(textOf(planBare)).target?.id === "selected");
+  const exp = await client.callTool({ name: "export_skia", arguments: { target: "aurora" } });
+  const ej = isError(exp) ? {} : JSON.parse(textOf(exp));
+  check(
+    "export_skia returns every bundle file as text across the bridge",
+    !isError(exp) &&
+      ej.files?.["toolbox-timeline.ts"] === SKIA_RUNTIME &&
+      ["effect.ts", "timeline.ts", "ToolboxEffect.tsx", "manifest.json", "index.ts"].every((f) => typeof ej.files?.[f] === "string"),
+    textOf(exp).slice(0, 200)
+  );
+  const expBad = await client.callTool({ name: "export_skia", arguments: { target: "nope" } });
+  check(
+    "export_skia refusals arrive as tool errors with the problems",
+    isError(expBad) && textOf(expBad).includes('No node "nope"'),
+    textOf(expBad).slice(0, 120)
+  );
+  const pd = listed.tools.find((t) => t.name === "plan_skia_export")?.description ?? "";
+  const xd = listed.tools.find((t) => t.name === "export_skia")?.description ?? "";
+  check(
+    "the Skia tool docstrings say what they return and that the agent writes the files",
+    pd.includes("`animated`") && pd.includes("`from`") && pd.includes("Skia layer") && xd.includes("YOU write them") && xd.includes(".b64"),
+    `${pd.slice(0, 120)} | ${xd.slice(0, 120)}`
   );
 }
 

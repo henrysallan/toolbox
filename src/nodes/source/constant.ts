@@ -24,6 +24,8 @@ export const constantNode: NodeDefinition = {
   type: "constant",
   name: "Constant",
   category: "utility",
+  // Skia layers: a static value the export bakes into its uniform.
+  skia: { class: "driver" },
   description:
     "Emits a single scalar value, in float or integer mode, snapped to a configurable step (2 → 2, 4, 6…; 1.2 → 1.2, 2.4, 3.6…). Use to feed exposed scalar inputs without routing through a Math node.",
   facts: {

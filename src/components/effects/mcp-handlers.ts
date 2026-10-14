@@ -84,6 +84,8 @@ import {
   planTranslation,
   type PlanNodeInfo,
 } from "@/lib/glsl-translation";
+import { enclosingSkiaLayer, type SkiaLayerRef } from "@/engine/skia/layer-target";
+import type { SkiaExportEnv } from "@/lib/skia-export/editor";
 
 // Mutation log + graph snapshots so a timed-out tool call isn't a black
 // box: get_recent_edits (keyed by the summary the agent already sent) and
@@ -146,6 +148,9 @@ export interface McpStatus {
   scopeType: "root" | "layer" | "group";
   // Parent of the current scope ("root" when there isn't one).
   parentScope: string;
+  // "skia" when `scope` sits inside a Skia layer: insert_recipe / edit_group
+  // there accept only get_catalog({ target: "skia" }) types.
+  scopeTarget?: "default" | "skia";
 }
 
 export interface McpHandlerDeps {
@@ -202,16 +207,21 @@ export interface McpHandlerDeps {
 
 // Shared validate step (identical split to the generate/edit clients): hard
 // build/op issues + validator errors block, everything else is a warning.
+// `skiaLayer`: the Skia layer the fragment lands in (or is edited inside) —
+// the validator then rejects nodes without a Skia lowering.
 function validateFragment(
   nodes: GraphNode[],
   edges: Edge[],
   issues: { code: string; message: string }[],
-  hardCodes: ReadonlySet<string>
+  hardCodes: ReadonlySet<string>,
+  skiaLayer?: SkiaLayerRef | null
 ): { errors: string[]; warnings: string[] } {
   const valNodes: ValNode[] = nodes.map((n) => ({
     id: n.id,
     defType: n.data.defType,
     params: n.data.params,
+    parentId: n.data.parentId,
+    name: n.data.name,
   }));
   const valEdges: ValEdge[] = edges.map((e) => ({
     id: e.id,
@@ -220,7 +230,7 @@ function validateFragment(
     target: e.target,
     targetHandle: (e.targetHandle ?? "") as string,
   }));
-  const val = validateGraph(valNodes, valEdges);
+  const val = validateGraph(valNodes, valEdges, { skiaLayer });
   return {
     errors: [
       ...issues.filter((i) => hardCodes.has(i.code)).map((i) => i.message),
@@ -349,6 +359,34 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     return node;
   };
 
+  // The Skia layer a scope sits in (null outside one) — specdocs/
+  // 101326_skia-target.md §3.1.
+  const skiaLayerOf = (scopeId: string | undefined): SkiaLayerRef | null => {
+    const nodes = deps.nodesRef.current;
+    return enclosingSkiaLayer(scopeId, (id) => {
+      const n = nodes.find((x) => x.id === id);
+      return n
+        ? { type: n.data.defType, parentId: n.data.parentId, params: n.data.params, name: n.data.name }
+        : undefined;
+    });
+  };
+
+  // Export environment for the Skia tools: the composition canvas and the
+  // project timeline, as the editor's export action uses them.
+  const skiaEnv = (): SkiaExportEnv => ({
+    canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
+    fps: deps.status.fps,
+    frames: deps.status.loopFrames,
+  });
+  const skiaTargetId = (raw: unknown): string => {
+    const id = raw != null && String(raw).trim() ? String(raw).trim() : deps.status.selectedNodeId;
+    if (!id)
+      throw new Error(
+        "Pass `target` (an SkSL Shader, Skia Canvas, or Skia layer id from get_graph) — nothing is selected in the editor."
+      );
+    return nodeOrThrow(id).id;
+  };
+
   const glslInspectFor = (
     node: GraphNode | null,
     backend: EngineBackend | null
@@ -366,12 +404,17 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     // ---- context -----------------------------------------------------------
     get_status: () => ({ ...deps.status, rev: graphRev }),
 
-    get_catalog: (args) =>
-      buildCatalogDsl({
+    get_catalog: (args) => {
+      // target: "skia" → only what a Skia layer accepts (101326 §3.1).
+      if (args.target != null && args.target !== "skia" && args.target !== "default")
+        throw new Error(`Unknown catalog target "${String(args.target)}" — pass "skia" or omit it.`);
+      return buildCatalogDsl({
         mode: args.mode === "full" ? "full" : args.mode === "list" ? "list" : undefined,
         category: args.category as string | string[] | undefined,
         types: args.types as string | string[] | undefined,
-      }),
+        target: args.target === "skia" ? "skia" : undefined,
+      });
+    },
 
     get_graph: ({ scope, verbosity, params, since }) => {
       const nodes = deps.nodesRef.current;
@@ -651,13 +694,20 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         );
       const builtList: { rg: RecipeGraph; built: ReturnType<typeof buildRecipe> }[] = [];
       const allWarnings: string[] = [];
+      // The scope the recipe lands in decides whether Skia-layer rules apply.
+      const landing =
+        typeof scope === "string" && scope.trim() ? scope.trim() : deps.status.scope;
+      const skiaLayer = skiaLayerOf(
+        landing === "parent" ? deps.status.parentScope : landing === "root" ? undefined : landing
+      );
       for (const rg of list) {
         const built = buildRecipe(rg);
         const { errors, warnings } = validateFragment(
           built.nodes,
           built.edges,
           built.issues,
-          HARD_BUILD_CODES
+          HARD_BUILD_CODES,
+          skiaLayer
         );
         if (errors.length) {
           if (!dryRun)
@@ -829,7 +879,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         result.nodes,
         result.edges,
         result.issues,
-        HARD_OP_CODES
+        HARD_OP_CODES,
+        skiaLayerOf(String(groupId))
       );
       if (errors.length) {
         if (!dryRun)
@@ -1712,6 +1763,47 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         overall,
         metrics,
         summary,
+      };
+    },
+
+    // ---- React Native Skia (spec 101326_skia-target.md §3.7) ---------------
+    // Same resolution as the editor's "Export for React Native Skia…": an
+    // SkSL Shader, a Skia Canvas, or a Skia layer (→ the node feeding its
+    // Layer Output), on the flattened graph with the project timeline and
+    // the composition canvas. Default target: the selected node.
+    // Lazy like the editor's export action: the exporter + runtime string
+    // load on first use.
+    plan_skia_export: async ({ target }) => {
+      const id = skiaTargetId(target);
+      const { planSkiaExportForEditor } = await import("@/lib/skia-export/editor");
+      return planSkiaExportForEditor(deps.nodesRef.current, deps.edgesRef.current, id, skiaEnv());
+    },
+
+    export_skia: async ({ target }) => {
+      const id = skiaTargetId(target);
+      const { exportSkiaFromEditor, skiaBundleSlug } = await import("@/lib/skia-export/editor");
+      const { prepared, result } = exportSkiaFromEditor(
+        deps.nodesRef.current,
+        deps.edgesRef.current,
+        id,
+        skiaEnv()
+      );
+      if (!result.files)
+        throw new Error(
+          `Nothing exported — fix these and retry (plan_skia_export shows the full plan):\n- ${result.problems.join("\n- ")}`
+        );
+      const folder = skiaBundleSlug(prepared.request?.name ?? "toolbox-effect");
+      return {
+        ok: true,
+        target: prepared.target,
+        layer: prepared.layer,
+        name: prepared.request?.name,
+        folder,
+        files: result.files,
+        warnings: result.warnings,
+        note:
+          `Write every file verbatim into one folder of the React Native app (e.g. src/toolbox/${folder}/); index.ts is the entry point. ` +
+          "Files under assets/ ending in .b64 are base64: decode them to binary and drop the .b64 suffix.",
       };
     },
 

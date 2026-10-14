@@ -8,6 +8,7 @@ import {
   useUserNodePresets,
 } from "@/state/node-presets";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
+import { filterForSkiaLayer } from "@/engine/skia/layer-target";
 
 // Menu-bar dropdown that enumerates every registered node. Typed
 // categories (image/spline/point/audio) render as a column with a
@@ -22,6 +23,9 @@ interface Props {
   // Root scope is a strict layer chain — when the editor is at root the
   // menu offers only the Layer compound entry.
   atRoot?: boolean;
+  // Name of the Skia layer the scope sits in: the menu then offers only
+  // what that layer accepts (engine/skia/layer-target.ts).
+  skiaLayer?: string;
 }
 
 interface NodeEntry {
@@ -72,8 +76,13 @@ const TYPED_CATEGORIES: ReadonlySet<NodeCategory> = new Set([
   "audio",
 ]);
 
-export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
-  const userPresets = useUserNodePresets();
+export default function NodeBrowserDropdown({
+  onAdd,
+  onClose,
+  atRoot,
+  skiaLayer,
+}: Props) {
+  const allUserPresets = useUserNodePresets();
   const entries = useMemo<NodeEntry[]>(() => {
     // Strict root: only layers (the compositing chain) and Render Queue
     // (a batch organizer) live at root scope. "layer" is a compound the
@@ -120,8 +129,31 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
       name: "For Each Element",
       category: "utility",
     });
-    return list;
-  }, [atRoot]);
+    // Skia layer: only what it accepts — the compound zones above drop out
+    // with every def that has no Skia lowering.
+    return skiaLayer ? filterForSkiaLayer(list) : list;
+  }, [atRoot, skiaLayer]);
+
+  // Presets insert node-groups; inside a Skia layer only those whose every
+  // node is a Skia type are offered (same rule as NodeSearchPopup).
+  const presets = useMemo(
+    () =>
+      skiaLayer
+        ? filterForSkiaLayer(PRESETS.map((p) => ({ ...p, type: p.id })), (p) =>
+            p.build().nodes.map((n) => n.data.defType)
+          )
+        : PRESETS,
+    [skiaLayer]
+  );
+  const userPresets = useMemo(
+    () =>
+      skiaLayer
+        ? filterForSkiaLayer(allUserPresets.map((p) => ({ ...p, type: p.id })), (p) =>
+            p.fragment.nodes.map((n) => n.defType)
+          )
+        : allUserPresets,
+    [skiaLayer, allUserPresets]
+  );
 
   const byCategory = useMemo(() => {
     const m: Partial<Record<NodeCategory, NodeEntry[]>> = {};
@@ -150,6 +182,23 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
         maxHeight: 560,
       }}
     >
+      {skiaLayer && (
+        <div
+          style={{ minWidth: 120, maxWidth: 150, display: "flex", flexDirection: "column" }}
+        >
+          <ColumnHeader>Skia layer</ColumnHeader>
+          <div
+            style={{
+              padding: "3px 10px",
+              color: "var(--tb-t-violet-l-1)",
+              fontSize: 10,
+              lineHeight: 1.4,
+            }}
+          >
+            “{skiaLayer}” takes only nodes with a React Native Skia version.
+          </div>
+        </div>
+      )}
       {columns.map((cat) => {
         const list = byCategory[cat] ?? [];
         const typed = TYPED_CATEGORIES.has(cat);
@@ -198,7 +247,7 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
           these aren't node defs, so they sit outside the NodeCategory
           machinery. Shown at root too: onAddNode auto-wraps them into a
           new layer. */}
-      {(PRESETS.length > 0 || userPresets.length > 0) && (
+      {(presets.length > 0 || userPresets.length > 0) && (
         <div
           key="presets"
           style={{ minWidth: 150, display: "flex", flexDirection: "column" }}
@@ -208,7 +257,7 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
             style={{ flex: 1, overflowY: "auto", paddingRight: 2 }}
             className="thin-scrollbar"
           >
-            {PRESETS.map((p) => (
+            {presets.map((p) => (
               <NodeRow
                 key={p.id}
                 label={p.name}

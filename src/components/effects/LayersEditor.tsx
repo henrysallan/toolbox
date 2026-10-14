@@ -28,6 +28,8 @@ import {
 import type { ParamType } from "@/engine/types";
 import { resolvePromotedParams } from "@/state/graph-ops";
 import { readInputValues } from "@/engine/groups";
+import { readLayerTarget } from "@/engine/skia/layer-target";
+import SkiaLayerBadge from "./SkiaLayerBadge";
 import type { ClipBlock } from "@/engine/clips";
 import {
   clipSlipsOnInTrim,
@@ -1747,6 +1749,11 @@ export function LayersEditor({
                 >
                   {layer.data.name}
                 </span>
+                {readLayerTarget(layer.data.params) === "skia" && (
+                  <span style={{ marginRight: 8, display: "inline-flex" }}>
+                    <SkiaLayerBadge />
+                  </span>
+                )}
               </div>
 
               {/* Right: the in/out bar(s) on the timeline. A sliced

@@ -103,7 +103,9 @@ export const BRIDGED_TOOLS = [
       "user is looking at (or \"root\"); `scopeType` is root/layer/group; " +
       "`parentScope` is the enclosing id (or \"root\"). insert_recipe lands " +
       "in `scope` unless you pass `scope=` — use parentScope when replacing " +
-      "a group you're currently inside.",
+      "a group you're currently inside. `scopeTarget: \"skia\"` means the " +
+      "scope sits inside a Skia layer: build there only with " +
+      "get_catalog({ target: \"skia\" }) types.",
     inputSchema: {},
   },
   {
@@ -124,7 +126,12 @@ export const BRIDGED_TOOLS = [
       "`# flags:`, and `# !` gotchas — read them before wiring. canvas01 is " +
       "Y-down; uv01 (Gradient, v_uv in GLSL) is Y-up. The space/" +
       "flags preamble is on the index and on unfiltered/category dumps; " +
-      "`types=` returns just those nodes (no repeated tables).",
+      "`types=` returns just those nodes (no repeated tables). " +
+      '`target: "skia"` narrows any of these to the types a Skia layer ' +
+      "accepts (nodes with a React Native Skia lowering, plus group " +
+      "structure and reroutes) — inside a Skia layer (get_status " +
+      "scopeTarget, or a layer whose target param is \"skia\") insert_recipe " +
+      "and edit_group reject everything else with SKIA_LAYER_UNSUPPORTED.",
     inputSchema: {
       mode: z
         .enum(["list", "full"])
@@ -143,6 +150,12 @@ export const BRIDGED_TOOLS = [
         .optional()
         .describe(
           'Full DSL for these type strings only, e.g. ["circle","repeat"].'
+        ),
+      target: z
+        .enum(["skia"])
+        .optional()
+        .describe(
+          '"skia" = only the types a Skia layer accepts. Omit for the whole catalog.'
         ),
     },
   },
@@ -773,6 +786,56 @@ export const BRIDGED_TOOLS = [
         .number()
         .optional()
         .describe("Per-pixel max-channel error (0–1) counted as 'over' (default 0.02 ≈ 5/255)."),
+    },
+  },
+  // --- React Native Skia export (spec 101326_skia-target.md §3.7) -----------
+  {
+    name: "plan_skia_export",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Read-only plan for exporting to React Native Skia + Reanimated — the " +
+      "same resolution as the editor's \"Export for React Native Skia…\". " +
+      "`target` is an SkSL Shader node, a Skia Canvas node, or a Skia layer " +
+      "(resolves to the SkSL Shader / Skia Canvas feeding its Layer Output); " +
+      "default = the selected node. Returns `ok`, `problems` (why it can't " +
+      "export — relay them, they name the node to change), `warnings`, the " +
+      "resolved `target` and its `layer`, `canvas`, and `timeline` (fps, " +
+      "frames, seconds: the project scene length the exported clock loops " +
+      "over). For an SkSL Shader, `uniforms[]` lists every uniform with " +
+      "`animated`, `from` (which node drives it: a static channel row, an " +
+      "Animated Value track, a Color track, a Constant), the static `value` " +
+      "or the key count and first/last keyframe frames. Other targets list " +
+      "the `files` export_skia would write plus the bundle's `manifest`. " +
+      "Call this before export_skia.",
+    inputSchema: {
+      target: z
+        .string()
+        .optional()
+        .describe("SkSL Shader / Skia Canvas node id, or a Skia layer id. Default: the selected node."),
+    },
+  },
+  {
+    name: "export_skia",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Export a React Native Skia bundle and return its files as text — " +
+      "nothing is written by the editor; YOU write them. Same `target` as " +
+      "plan_skia_export. Result: `files` (relative path → contents: the " +
+      "SkSL program, the timeline worklet, toolbox-timeline.ts runtime, the " +
+      "component, manifest.json, index.ts), `folder` (a suggested folder " +
+      "name), `warnings`, and a `note`. Write every file verbatim into one " +
+      "folder of the app; `assets/*.b64` entries are base64 — decode to " +
+      "binary and drop the suffix. Fails with the plan's problems when the " +
+      "target can't export.",
+    inputSchema: {
+      target: z
+        .string()
+        .optional()
+        .describe("SkSL Shader / Skia Canvas node id, or a Skia layer id. Default: the selected node."),
     },
   },
 ];

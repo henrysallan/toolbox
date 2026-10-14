@@ -239,6 +239,8 @@ import {
   shouldExpandModel,
 } from "@/state/model-group-fragment";
 import { editorCanCoerce } from "@/engine/graph-validation";
+import { enclosingSkiaLayer } from "@/engine/skia/layer-target";
+import type { SkiaExportReport } from "@/lib/skia-export/editor";
 import { getPreset } from "@/state/presets";
 import {
   getUserNodePreset,
@@ -8479,6 +8481,25 @@ function EffectsShell({
   const loopFramesRef = useRef(loopFrames);
   loopFramesRef.current = loopFrames;
 
+  // The Skia layer the scope on screen sits in, if any (101326_skia-target.md
+  // §3.1) — the add-node menus then offer Skia nodes only, and get_status
+  // reports it as scopeTarget.
+  const skiaLayerScope = useMemo(
+    () =>
+      enclosingSkiaLayer(currentGroupId, (id) => {
+        const n = nodes.find((x) => x.id === id);
+        return n
+          ? {
+              type: n.data.defType,
+              parentId: n.data.parentId,
+              params: n.data.params,
+              name: n.data.name,
+            }
+          : undefined;
+      }),
+    [nodes, currentGroupId]
+  );
+
   // Claude MCP bridge handlers (spec 070926_claude-mcp-bridge.md; the ref +
   // connection live near flashToast above). Rebuilt every render so handlers
   // capture fresh state; assembled here because it needs the clock refs
@@ -8510,6 +8531,7 @@ function EffectsShell({
         (currentGroupId
           ? nodes.find((x) => x.id === currentGroupId)?.data.parentId
           : undefined) ?? "root",
+      scopeTarget: skiaLayerScope ? "skia" : "default",
     },
     nodesRef,
     edgesRef,
@@ -11698,15 +11720,80 @@ function EffectsShell({
     ]
   );
 
+  // "Export for React Native Skia…" (101326_skia-target.md §3.7) on SkSL
+  // Shader / Skia Canvas nodes and Skia layers: no render pass — the
+  // exporter reads the graph, so the playhead and the GL state stay put.
+  // Resolution, flatten and emission are lib/skia-export/editor (pure, in
+  // check-skia-layer); here only the zip download and the report the param
+  // panel lists under its button. Lazy-loaded: the runtime string and jszip
+  // stay out of the editor's first load.
+  const [skiaExportReport, setSkiaExportReport] =
+    useState<SkiaExportReport | null>(null);
+  const exportSkiaNode = useCallback(
+    async (nodeId: string) => {
+      const m = await import("@/lib/skia-export/editor");
+      const fps = fpsRef.current;
+      const lf = loopFramesRef.current;
+      const { prepared, result } = m.exportSkiaFromEditor(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        {
+          canvas: { width: canvasResRef.current[0], height: canvasResRef.current[1] },
+          fps,
+          frames: lf != null && lf > 0 ? lf : fps * 5,
+        }
+      );
+      const files = result.files;
+      setSkiaExportReport({
+        nodeId,
+        ok: !!files,
+        problems: result.problems,
+        warnings: result.warnings,
+        ...(files ? { files: Object.keys(files).length } : {}),
+      });
+      if (!files) {
+        const [first = "nothing to export", ...rest] = result.problems;
+        flashToast(
+          `React Native Skia export: ${first}${
+            rest.length ? ` (+${rest.length} more — see the param panel)` : ""
+          }`
+        );
+        return;
+      }
+      const name = prepared.request?.name ?? "toolbox-effect";
+      const slug = m.skiaBundleSlug(name);
+      try {
+        const zip = await m.buildSkiaZip(m.skiaZipEntries(files, slug), "blob");
+        downloadBlob(zip, `${slug}-rn-skia.zip`);
+        const w = result.warnings.length;
+        flashToast(
+          `Exported "${name}" for React Native Skia (${Object.keys(files).length} files${
+            w ? `, ${w} warning${w === 1 ? "" : "s"}` : ""
+          })`
+        );
+      } catch (err) {
+        const e = toError(err, "React Native Skia export failed");
+        console.error("React Native Skia export failed:", err);
+        flashToast(`React Native Skia export failed: ${e.message.split("\n")[0]}`);
+      }
+    },
+    [flashToast]
+  );
+
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg";
+          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg" | "skia";
         }>
       ).detail;
       if (!detail) return;
+      if (detail.kind === "skia") {
+        await exportSkiaNode(detail.id);
+        return;
+      }
       // The offline single-export kinds share offlineRenderingRef and the
       // time save/restore, so they must not overlap. Take a SYNCHRONOUS lock
       // here (before the first await) so a double-click's second event bails —
@@ -11744,6 +11831,7 @@ function EffectsShell({
     onOpenExportApp,
     renderQueue,
     exportSvgNode,
+    exportSkiaNode,
   ]);
 
   // --- Save / Load ----------------------------------------------------------
@@ -14136,6 +14224,7 @@ function EffectsShell({
       onNavigateScope={handleNavigateScope}
       onOpenProject={handleOpenProjectView}
       atRoot={currentGroupId == null}
+      skiaLayer={skiaLayerScope?.name}
       frameSignal={frameGraphSignal}
       cameraKey={nodeCameraKey(
         currentProject?.id,
@@ -14716,6 +14805,7 @@ function EffectsShell({
       }
       queueRender={queueRenderInfo}
       onSelectNode={handlePanelSelectNode}
+      skiaExportReport={skiaExportReport}
     />
   );
 
@@ -15084,6 +15174,7 @@ function EffectsShell({
         }
         onAddNode={(type) => onAddNode(type)}
         atRoot={currentGroupId == null}
+        skiaLayer={skiaLayerScope?.name}
         fullCanvas={fullCanvas}
         onToggleFullCanvas={() => setFullCanvas((v) => !v)}
         onEnterBrowserFullscreen={enterBrowserFullscreen}
