@@ -11,8 +11,10 @@ import {
   buildNodeCatalog,
   formatCatalogDsl,
   queryCatalog,
+  SKIA_CATALOG_DOC,
   type CatalogQuery,
 } from "@/engine/node-catalog";
+import { isOfferedInSkiaLayer } from "@/engine/skia/layer-target";
 import { validateGraph, type ValNode, type ValEdge } from "@/engine/graph-validation";
 import { buildRecipe, type RecipeGraph } from "@/state/recipe-builder";
 import type { GraphNode } from "@/state/graph-ops";
@@ -71,11 +73,25 @@ const defaultPost: PostFn = async (body) => {
 };
 
 export function buildCatalogDsl(query?: CatalogQuery): string {
+  if (query?.target === "skia") return buildSkiaCatalogDsl(query);
   const nodes = buildNodeCatalog(allNodeDefs());
   // No query → full DSL (in-app generate/edit still send the whole catalog).
   // MCP get_catalog always passes a query; omit mode to get the compact index.
   if (query == null) return formatCatalogDsl(nodes);
   return queryCatalog(nodes, query);
+}
+
+// get_catalog({ target: "skia" }): the same index / DSL over just the defs a
+// Skia layer accepts (specdocs/101326_skia-target.md §3.1). Compound zones
+// drop out on their own — their Input defs aren't Skia types.
+function buildSkiaCatalogDsl(query: CatalogQuery): string {
+  const nodes = buildNodeCatalog(allNodeDefs().filter(isOfferedInSkiaLayer));
+  if (nodes.length === 0) return `# ${SKIA_CATALOG_DOC}\n# No Skia node types are registered.`;
+  try {
+    return `# ${SKIA_CATALOG_DOC}\n${queryCatalog(nodes, query)}`;
+  } catch (e) {
+    throw new Error(`${(e as Error).message} (Skia layer catalog — only types with a Skia lowering.)`);
+  }
 }
 
 export async function generateRecipe(

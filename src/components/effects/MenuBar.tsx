@@ -128,6 +128,9 @@ export interface MenuBarProps {
   // True when the node editor shows root scope — the Node menu then
   // offers only the Layer entry (strict root).
   atRoot?: boolean;
+  // Name of the Skia layer the scope sits in — the Node menu then offers
+  // Skia nodes only (101326_skia-target.md §3.1).
+  skiaLayer?: string;
   // Window-menu state + actions. `fullCanvas` reflects whether the
   // editor's chrome is currently hidden so the toggle row can render
   // a checkmark; the two callbacks fire from the menu items.
@@ -233,6 +236,7 @@ export default function MenuBar({
   onCollaborators,
   onAddNode,
   atRoot,
+  skiaLayer,
   fullCanvas,
   onToggleFullCanvas,
   onEnterBrowserFullscreen,
@@ -765,6 +769,7 @@ export default function MenuBar({
                   onAdd={onAddNode}
                   onClose={() => setOpenId(null)}
                   atRoot={atRoot}
+                  skiaLayer={skiaLayer}
                 />
               ) : (
                 <MenuDropdown

@@ -95,6 +95,8 @@ export const skslShaderNode: NodeDefinition = {
   name: "SkSL Shader",
   category: "image",
   subcategory: "generator",
+  // Skia layers: already a runtime effect — it exports as itself.
+  skia: { class: "sksl" },
   description:
     "A Skia runtime shader (SkSL) rendered by Skia itself through CanvasKit — the same program React Native Skia runs on device, so the preview is the shipped shader rather than a translation. Write helpers plus `half4 main(float2 fragCoord)`: fragCoord is pixels Y-DOWN, iResolution.xy is the canvas size, iTime is seconds, wired images are iImage1..iImage4 (sample with iImage1.eval(xy)), and the return value is PREMULTIPLIED. Tunables are // comments synced into controls: // ch(\"k\", 0.5, 0, 1) → float k; // color(\"tint\", \"#ff8800\") → float4 tint (straight alpha, layout(color)); // toggle(\"on\", true) → int on (SkSL forbids bool uniforms); // pick(\"mode\", \"a\", \"b\") → int mode plus const int mode_a, mode_b. Skia compiles strict GLSL ES 1.0: no uint or bitwise ops, no while loops, constant loop bounds (break out early), no dFdx/fwidth. ch/toggle/pick/color channels keyframe directly (set_keyframes with the channel name; a wire still wins), and scalar/toggle/color channels are also wireable from keyframed Animated Value / Color nodes — both export as a Reanimated timeline.",
   searchAliases: ["skia", "sksl", "react native", "runtime effect", "shader", "canvaskit"],

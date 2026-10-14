@@ -34,6 +34,11 @@ import {
 } from "./time-offset";
 import { FOREACH_TYPE } from "./groups";
 import { withMaskInput } from "./conventions";
+import {
+  nonSkiaLayerMembers,
+  skiaLayerIssueMessage,
+  type SkiaLayerRef,
+} from "./skia/layer-target";
 
 // Minimal structural node shape — both the engine GraphNode ({id, type, params})
 // and the editor's Node<NodeDataPayload> ({id, data:{defType, params}}) adapt to
@@ -42,6 +47,18 @@ export interface ValNode {
   id: string;
   defType: string;
   params: Record<string, unknown>;
+  // Group nesting + display name. Optional: only the Skia-layer membership
+  // check reads them (a node whose parent chain reaches a Skia layer shell
+  // in the same set is inside that layer).
+  parentId?: string;
+  name?: string;
+}
+
+export interface ValidateOptions {
+  // The Skia layer every node of this set lands in when its parent chain
+  // leaves the set — a recipe committed into a Skia layer's scope, or a
+  // group inside one edited in place (specdocs/101326_skia-target.md §3.1).
+  skiaLayer?: SkiaLayerRef | null;
 }
 
 export interface ValEdge {
@@ -393,7 +410,11 @@ function outputTypeOf(
 // ---------------------------------------------------------------------------
 // Validate a flat graph of real nodes.
 // ---------------------------------------------------------------------------
-export function validateGraph(nodes: ValNode[], edges: ValEdge[]): ValResult {
+export function validateGraph(
+  nodes: ValNode[],
+  edges: ValEdge[],
+  opts?: ValidateOptions
+): ValResult {
   const issues: ValIssue[] = [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const err = (code: string, message: string, extra?: Partial<ValIssue>) =>
@@ -416,6 +437,14 @@ export function validateGraph(nodes: ValNode[], edges: ValEdge[]): ValResult {
         // A param check must never crash the validator.
       }
     }
+  }
+
+  // 1b. Skia layers take only nodes with a Skia lowering (def.skia) plus
+  // the structural utilities (engine/skia/layer-target.ts).
+  for (const { node, layer } of nonSkiaLayerMembers(nodes, opts?.skiaLayer)) {
+    err("SKIA_LAYER_UNSUPPORTED", skiaLayerIssueMessage(node, layer), {
+      nodeId: node.id,
+    });
   }
 
   // 2. Edges reference real nodes + well-formed handles.

@@ -23,6 +23,8 @@ export const animatedValueNode: NodeDefinition = {
   type: "animated-value",
   name: "Animated Value",
   category: "utility",
+  // Skia layers: a keyframe source the export replays as a timeline track.
+  skia: { class: "driver" },
   description:
     "A keyframable value with a wired clock: keyframe Value as usual, then wire a scalar into Time and the curve is sampled at that time instead of the playhead — offset it, stretch it, ping-pong it, or drive it from audio. Unwired, it behaves like a keyframed Constant. Unit sets whether Time is read as frames or seconds.",
   searchAliases: ["retime", "keyframes", "channel", "curve sample", "clock"],

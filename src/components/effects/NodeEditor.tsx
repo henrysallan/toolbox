@@ -68,6 +68,7 @@ import {
   zoneCollectsGrouped,
 } from "@/engine/groups";
 import { editorCanCoerce } from "@/engine/graph-validation";
+import { isSkiaExportTarget } from "@/engine/skia/layer-target";
 import type { SocketType } from "@/engine/types";
 import {
   combineSelectionMode,
@@ -290,6 +291,9 @@ interface Props {
   // True when the editor shows root scope (the strict layer chain) —
   // the add-node popup then offers only the Layer entry.
   atRoot?: boolean;
+  // Name of the Skia layer the scope sits in (101326_skia-target.md §3.1)
+  // — the add-node popup then offers Skia nodes only. Undefined elsewhere.
+  skiaLayer?: string;
   // Bump to re-frame the whole graph. The `fitView` prop only fires at
   // mount; opening a project swaps the node set in place, so the parent
   // increments this to ask the editor to fit the freshly-loaded graph
@@ -368,6 +372,7 @@ function NodeEditor({
   onNavigateScope,
   onOpenProject,
   atRoot,
+  skiaLayer,
   frameSignal,
   cameraKey: cameraKeyProp,
   paneId = "main",
@@ -3371,6 +3376,7 @@ function NodeEditor({
           x={nodePopup.x}
           y={nodePopup.y}
           atRoot={atRoot}
+          skiaLayer={skiaLayer}
           // Thread the pending-wire context through the popup so the
           // parent's onAddNode can auto-connect the new node back to
           // the source handle the user dragged from.
@@ -3576,6 +3582,17 @@ function NodeEditor({
               ? () => onMakeEditableNode(contextMenu.nodeId)
               : undefined;
           })()}
+          onExportSkia={(() => {
+            // SkSL Shader / Skia Canvas nodes and Skia layers — EffectsApp's
+            // effect-node-export listener runs it (101326_skia-target.md §3.7).
+            const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
+            if (!d || !isSkiaExportTarget(d.defType, d.params)) return undefined;
+            const id = contextMenu.nodeId;
+            return () =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-export", { detail: { id, kind: "skia" } })
+              );
+          })()}
         />
       )}
     </div>
@@ -3596,6 +3613,7 @@ function NodeContextMenu({
   onDetach,
   onEditWithAI,
   onMakeEditable,
+  onExportSkia,
   tint,
   bold,
   onSetTint,
@@ -3642,6 +3660,7 @@ function NodeContextMenu({
   onDetach?: () => void;
   onEditWithAI?: () => void;
   onMakeEditable?: () => void;
+  onExportSkia?: () => void;
   // Cosmetic styling (073026): current values of the clicked node, shown
   // as the checked swatch / Bold check. Absent handlers hide the rows.
   tint?: string | null;
@@ -3688,6 +3707,11 @@ function NodeContextMenu({
     // site) — bakes the evaluated spline into an editable Spline Draw node.
     ...(onMakeEditable
       ? [{ label: "Make Editable", onClick: onMakeEditable }]
+      : []),
+    // SkSL Shader / Skia Canvas nodes and Skia layers (gating at the call
+    // site) — downloads the React Native Skia bundle as a zip.
+    ...(onExportSkia
+      ? [{ label: "Export for React Native Skia…", onClick: onExportSkia }]
       : []),
     ...(wireMode
       ? [

@@ -5,6 +5,7 @@ import type {
   SocketType,
 } from "@/engine/types";
 import { readGroupInterface } from "@/engine/groups";
+import { LAYER_TARGETS } from "@/engine/skia/layer-target";
 import {
   svgExportStashKey,
   type SvgExportStash,
@@ -94,6 +95,22 @@ export const layerNode: NodeDefinition = {
       max: 1,
       step: 0.01,
       default: 1,
+    },
+    // Skia target (specdocs/101326_skia-target.md §3.1): "skia" limits the
+    // interior to nodes with a React Native Skia lowering and makes the
+    // layer exportable. Read through readLayerTarget, so saves from before
+    // this param read "default". Hidden from the generic param list — the
+    // panel's layer section renders it as a toggle; it is not keyframable
+    // or wireable — but set_param reaches it by name.
+    {
+      name: "target",
+      label: "Target",
+      type: "enum",
+      options: [...LAYER_TARGETS],
+      optionLabels: { default: "Default", skia: "Skia" },
+      control: "segmented",
+      default: "default",
+      hidden: true,
     },
   ],
   primaryOutput: "image",

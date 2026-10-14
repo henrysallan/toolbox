@@ -445,7 +445,18 @@ export interface CatalogQuery {
   mode?: CatalogMode;
   category?: string | string[];
   types?: string | string[];
+  // "skia": only the types a Skia layer accepts (def.skia + structural
+  // utilities, engine/skia/layer-target.ts). Applied by the catalog
+  // builder (buildCatalogDsl), which sees the defs; queryCatalog only
+  // sees catalog rows.
+  target?: "skia";
 }
+
+// First line of a get_catalog({ target: "skia" }) answer.
+export const SKIA_CATALOG_DOC =
+  "Skia layer catalog: only types with a React Native Skia lowering (NodeDefinition.skia) — the only " +
+  "types insert_recipe / edit_group accept inside a layer whose target is \"skia\". Group structure " +
+  "and reroutes stay available too.";
 
 function normalizeList(v: string | string[] | undefined | null): string[] {
   if (v == null || v === "") return [];

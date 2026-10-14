@@ -41,6 +41,12 @@ import {
   type GroupSocketSpec,
 } from "@/engine/groups";
 import { listGroupShellControls } from "@/state/graph-ops";
+import {
+  isSkiaExportTarget,
+  nonSkiaLayerMembers,
+  readLayerTarget,
+} from "@/engine/skia/layer-target";
+import type { SkiaExportReport } from "@/lib/skia-export/editor";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { liveGizmoKind } from "@/lib/live-gizmo";
 import { isFileParamType } from "@/lib/export-manifest";
@@ -415,6 +421,9 @@ interface Props {
   // Select a node on the canvas (used by the Render Queue rows' settings
   // button to jump to the wired Output node's params).
   onSelectNode?: (nodeId: string) => void;
+  // The last "Export for React Native Skia" attempt (EffectsApp) — listed
+  // under the export button while its node is selected.
+  skiaExportReport?: SkiaExportReport | null;
 }
 
 // Panel width (px) below which one-line param rows split into two lines.
@@ -760,6 +769,7 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
   sceneFrames,
   queueRender,
   onSelectNode,
+  skiaExportReport,
 }: NodeParamsBlockProps) {
 
   // Clock read from the playback store (clock-store spec, step 3): drives
@@ -1142,6 +1152,13 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 />
               </Section>
             )}
+          {def.type === LAYER_TYPE && (
+            <LayerTargetSection
+              layer={selected}
+              nodes={nodes}
+              onParamChange={onParamChange}
+            />
+          )}
           {(def.type === GROUP_TYPE || def.type === LAYER_TYPE) &&
             (() => {
               // The group/layer's interface, viewed from the shell — a
@@ -1337,6 +1354,14 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 </>
               );
             })()}
+          {isSkiaExportTarget(def.type, selected.data.params) && (
+            <SkiaExportAction
+              nodeId={selected.id}
+              report={
+                skiaExportReport?.nodeId === selected.id ? skiaExportReport : null
+              }
+            />
+          )}
           {def.type === "output" && onExportApp && (
             <button
               onClick={() => onExportApp(selected.id)}
@@ -2787,6 +2812,126 @@ function ExportSummary({
           ⚠ {warning}
         </div>
       ))}
+    </div>
+  );
+}
+
+// A layer shell's Skia target (101326_skia-target.md §3.1). The param is
+// hidden from the generic list — it is neither keyframable nor wireable —
+// and rendered here as a plain pill. Switching is non-destructive, so a
+// Skia layer lists the nodes already inside that have no Skia version.
+function LayerTargetSection({
+  layer,
+  nodes,
+  onParamChange,
+}: {
+  layer: Node<NodeDataPayload>;
+  nodes: Node<NodeDataPayload>[];
+  onParamChange: Props["onParamChange"];
+}) {
+  const param = getNodeDef(LAYER_TYPE)?.params.find((p) => p.name === "target");
+  const target = readLayerTarget(layer.data.params);
+  const strays = useMemo(
+    () =>
+      target === "skia"
+        ? nonSkiaLayerMembers(
+            nodes.map((n) => ({
+              id: n.id,
+              defType: n.data.defType,
+              parentId: n.data.parentId,
+              params: n.data.params,
+              name: n.data.name,
+            }))
+          ).filter((m) => m.layer.id === layer.id)
+        : [],
+    [nodes, layer.id, target]
+  );
+  if (!param) return null;
+  return (
+    <Section label="target">
+      <ParamRow
+        param={param}
+        value={target}
+        onChange={(v) => onParamChange(layer.id, "target", v)}
+      />
+      {target === "skia" && (
+        <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.45 }}>
+          Skia layer: the add-node menu offers only nodes with a React Native
+          Skia version, and the layer exports with the button below.
+          {strays.length > 0 && (
+            <div style={{ color: "var(--tb-a-amber-400)", marginTop: 4 }}>
+              {strays.length} node{strays.length === 1 ? "" : "s"} inside{" "}
+              {strays.length === 1 ? "has" : "have"} no Skia version and won’t
+              export:{" "}
+              {strays
+                .slice(0, 6)
+                .map((m) => m.node.name || m.node.defType)
+                .join(", ")}
+              {strays.length > 6 ? ", …" : ""}
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// "Export for React Native Skia →" on SkSL Shader / Skia Canvas nodes and
+// Skia layers. EffectsApp's effect-node-export listener runs the export and
+// downloads the zip; its report (problems / warnings of the last attempt on
+// this node) is listed underneath.
+function SkiaExportAction({
+  nodeId,
+  report,
+}: {
+  nodeId: string;
+  report: SkiaExportReport | null;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <button
+        onClick={() =>
+          window.dispatchEvent(
+            new CustomEvent("effect-node-export", {
+              detail: { id: nodeId, kind: "skia" },
+            })
+          )
+        }
+        style={{
+          background: "var(--tb-a-blue-900)",
+          border: "1px solid var(--tb-a-blue-700)",
+          color: "var(--tb-a-blue-200)",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "6px 10px",
+          borderRadius: 4,
+          cursor: "pointer",
+          textAlign: "center",
+          letterSpacing: 0.3,
+        }}
+        title="Download a React Native Skia + Reanimated bundle (zip): the SkSL program, its keyframes as a worklet timeline, and a ready-to-use component"
+      >
+        Export for React Native Skia →
+      </button>
+      {report && (report.problems.length > 0 || report.warnings.length > 0 || report.ok) && (
+        <div style={{ fontSize: 10, lineHeight: 1.45, display: "flex", flexDirection: "column", gap: 3 }}>
+          {report.ok && (
+            <div style={{ color: "var(--tb-a-emerald-400)" }}>
+              Exported {report.files ?? 0} files.
+            </div>
+          )}
+          {report.problems.map((p, i) => (
+            <div key={`p${i}`} style={{ color: "var(--tb-a-red-400)" }}>
+              • {p}
+            </div>
+          ))}
+          {report.warnings.map((w, i) => (
+            <div key={`w${i}`} style={{ color: "var(--tb-a-amber-400)" }}>
+              • {w}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

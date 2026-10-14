@@ -16,6 +16,7 @@ import {
 } from "@/state/node-presets";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { isAgentAvailable } from "@/lib/agent-bridge";
+import { filterForSkiaLayer } from "@/engine/skia/layer-target";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Display order + labels mirror NodeBrowserDropdown so the two add-
@@ -101,6 +102,9 @@ interface Props {
   // Root scope is a strict layer chain — when the editor is at root the
   // popup offers only the Layer compound entry.
   atRoot?: boolean;
+  // Name of the Skia layer the scope sits in: the popup then offers only
+  // what that layer accepts (engine/skia/layer-target.ts).
+  skiaLayer?: string;
 }
 
 export default function NodeSearchPopup({
@@ -110,6 +114,7 @@ export default function NodeSearchPopup({
   onClose,
   initialQuery = "",
   atRoot,
+  skiaLayer,
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const userPresets = useUserNodePresets();
@@ -235,7 +240,7 @@ export default function NodeSearchPopup({
         ...(userPresetRows as unknown as (typeof real)[number][]),
       ];
     }
-    return [
+    const all = [
       ...real,
       {
         type: "simulation-zone",
@@ -271,7 +276,24 @@ export default function NodeSearchPopup({
       ...(presetDefs() as unknown as (typeof real)[number][]),
       ...(userPresetRows as unknown as (typeof real)[number][]),
     ];
-  }, [atRoot, userPresetRows]);
+    if (!skiaLayer) return all;
+    // Skia layer: node defs (and compound zones) by their own type; presets
+    // by every node they would insert; the Assistant inserts nothing itself
+    // and builds from get_catalog({ target: "skia" }); AI Recipe generates
+    // from the full catalog, so it drops out.
+    return filterForSkiaLayer(all, (d) => {
+      if (d.type === "agent") return [];
+      if (d.type.startsWith("preset:")) {
+        const p = PRESETS.find((x) => `preset:${x.id}` === d.type);
+        return p ? p.build().nodes.map((n) => n.data.defType) : ["?"];
+      }
+      if (d.type.startsWith("user-preset:")) {
+        const p = userPresets.find((x) => `user-preset:${x.id}` === d.type);
+        return p ? p.fragment.nodes.map((n) => n.defType) : ["?"];
+      }
+      return null;
+    });
+  }, [atRoot, skiaLayer, userPresets, userPresetRows]);
   const byCategory = useMemo(() => {
     const m: Record<string, typeof defs> = {};
     for (const d of defs) (m[d.category] ??= []).push(d);
@@ -431,6 +453,20 @@ export default function NodeSearchPopup({
             boxSizing: "border-box",
           }}
         />
+        {skiaLayer && (
+          <div
+            title={`"${skiaLayer}" is a Skia layer: it only takes nodes with a React Native Skia version.`}
+            style={{
+              marginTop: 4,
+              padding: "2px 6px",
+              color: "var(--tb-t-violet-l-1)",
+              fontSize: 10,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Skia layer · Skia nodes only
+          </div>
+        )}
         {!normalized && (
           <div style={{ marginTop: 4 }}>
             {categories.map((cat) => {
@@ -483,7 +519,7 @@ export default function NodeSearchPopup({
           if (rightColumnNodes.length === 0) {
             return (
               <div style={{ color: "var(--tb-n-10)", padding: "4px 2px" }}>
-                {normalized ? "no matches" : ""}
+                {normalized ? (skiaLayer ? "no Skia node matches" : "no matches") : ""}
               </div>
             );
           }
