@@ -366,6 +366,7 @@ import { skiaDashNode } from "./skia/dash";
 import { skiaGradientFillNode } from "./skia/gradient-fill";
 import { skiaTextNode } from "./skia/text";
 import { skiaCopyToPointsNode } from "./skia/copy-to-points";
+import { skiaImageNode } from "./skia/image";
 
 let registered = false;
 
@@ -774,5 +775,6 @@ export function registerAllNodes() {
   registerNode(skiaGradientFillNode);
   registerNode(skiaTextNode);
   registerNode(skiaCopyToPointsNode);
+  registerNode(skiaImageNode);
   registered = true;
 }

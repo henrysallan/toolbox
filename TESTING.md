@@ -625,6 +625,56 @@ that pair). Offline node tests should push each input through
   instance (`gl_opq`) for pixels, or `--premul-a` plus `edge-band.cjs`
   for coverage; content-centre anchors can sit a readback texel apart
   (see above), so pixel comparisons use canvas-centre anchors.
+- `check-skia-assets` — images + assets in React Native Skia exports
+  (101326_skia-target.md §3.8 items 2–3, Wave 3 lane I). The one URL →
+  bytes seam (`engine/skia/asset-bytes.ts`: registered schemes — lane B's
+  `bake:` — then data:, then fetch; the preview's loader and every export
+  go through it) and the async pre-pass in front of the synchronous
+  `exportSkia` (`lib/skia-export/assets.ts`; `exportSkiaFromEditor` /
+  `planSkiaExportForEditor` are async since then). Image (Skia)'s IR (a
+  Group nest whose binds are each one param × a constant, the image leaf,
+  the blob: asset of the bitmap's original file) and three formulations of
+  Image Source's mapping — the drawing's Group nest, the shader's FIT_FS
+  port, the SkSL Shader export's ImageShader matrix — agreeing in CanvasKit
+  (≤ 2/255 inside the image) and in algebra (≤ 2e-15 against an independent
+  fitRects). A Skia Canvas export with an image draw, an image leaf fused
+  into Color Correction (Skia) and Geist text ships every file's bytes, the
+  OFL text, `assets.ts` requires, binary zip entries, manifest rows with
+  size + `bundled`; without bytes (or with a failing resolver) each asset is
+  a warning naming its node and quoting the reason, `assets.ts` maps it to
+  null and the bundle still type-checks. The SkSL Shader: `iImage1` from a
+  static Image Source + ramp / curve LUT children in declaration order, the
+  emitted `images.ts` imageMatrix bit-identical to the preview's
+  `imageLocalMatrix`, `luts.ts` the preview's bytes, LUT accessors exact at
+  texel centres on sRGB and ≤ 1/255 on Display P3, refusals (keyframed /
+  faded / wired / cover-and-transformed / EXR / computed images, wired
+  ramps), every animation mode type-checking; the editor (custom
+  `resolveAsset`), MCP (`.b64` entries) and CLI paths; and
+  `skia-harness/src/bundle-image` is today's export. Pixels against the GL
+  Image Source are compare:skia's (`--a image:<pair>n --b image:<pair>d|s`,
+  pairs cover / contain / trs / cvtrs, and `ccn` vs `ccs`), the web side
+  `parity:skia -- --bundle image`. Traps:
+  - **An SkSL Shader samples a static image file itself.** Image Source and
+    Image (Skia)'s preview tag their output (`ImageValue.skiaSource`); once
+    the asset loader has decoded the file the SkSL Shader binds an
+    ImageShader of it — what the export ships — instead of the 8-bit
+    readback. Until then (the first frame) it renders the readback, so a
+    harness that renders frames back to back must render once and await
+    `sceneAssetsSettled()` first (parity-page.ts and compare-page.ts do).
+  - **A browser canvas is not a lossless PNG encoder.** `putImageData` →
+    `convertToBlob` rounds half-alpha pixels through premultiplied storage,
+    so a fixture encoded that way differs from the same picture encoded in
+    Node (the first image parity read max 27/255 for exactly that).
+    Fixtures encode with `imageFixturePng` (pure JS, stored deflate).
+  - compare:skia's `max` on the image pairs reads ~214/255: the RGB of
+    near-transparent pixels, where the engine filters straight alpha and
+    Skia premultiplied. Read `edge-band.cjs` (premultiplied: ≤ 2/255).
+  - A worktree's harness needs `skia-harness/public/canvaskit.wasm`
+    (`setup-skia-web`, or copy the main checkout's): without it the web
+    export serves index.html for the wasm and the page never gets ready.
+  - Node's fetch takes data: and blob: URLs but not root-relative ones
+    (`/fonts/…`): the CLI and gates resolve through
+    `scripts/skia/node-assets.ts` (public/, offline unless `--fetch`).
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -664,7 +714,9 @@ that pair). Offline node tests should push each input through
     export:web`); `--write-golden` also writes toolbox's frames to
     `scripts/fixtures/skia/golden/` for the device lanes. Re-run it whenever
     the bundle is re-exported: the device lane refuses stale goldens.
-    `--bundle native | native-easings | native-scene` plays the
+    `--bundle image` plays `src/bundle-image` (an SkSL Shader sampling a
+    bundled image through ramp / curve LUTs, `export-skia.mts --fixture
+    image`). `--bundle native | native-easings | native-scene` plays the
     Reanimated-native slots instead (`export-skia.mts --animation
     native`): the page runs on a fake animation clock (`?clock=fake`,
     `skia-harness/fake-clock.ts`) that steps Reanimated's real frame loop

@@ -56,6 +56,8 @@ import {
   type DriverBinding,
 } from "./drivers";
 import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
+import type { SkiaExportAssets } from "./api";
+import { assetWarnings, type AssetUse } from "./asset-bundle";
 import { timelineSpringOf } from "./spring";
 
 export type BindValue = number | number[] | string;
@@ -99,6 +101,10 @@ export interface ScenePlan {
   bindFor: Map<Bind<unknown>, PlannedBind>;
   // Referenced assets only, in first-use order.
   assets: AssetIR[];
+  // The same with the drawings that use them (additive, Wave 3 lane I),
+  // and the resolved bytes the emitter bundles (SkiaExportRequest.assets).
+  assetUses?: AssetUse[];
+  assetBytes?: SkiaExportAssets;
   // Frames the sampler was run for (0 = never).
   sampledFrames: number;
   warnings: string[];
@@ -112,6 +118,8 @@ export interface ScenePlanOptions {
   // Sample every frame to verify structure and tracks (default: on when a
   // sampler is given).
   verify?: boolean;
+  // Asset bytes resolved before the export (SkiaExportRequest.assets).
+  assets?: SkiaExportAssets;
 }
 
 export interface ScenePlanResult {
@@ -248,8 +256,17 @@ export function skslDeclarations(sksl: string): { uniforms: string[]; children: 
   return { uniforms, children };
 }
 
-function validateScene(scene: SkiaScene, problems: string[], warnings: string[], assetsUsed: Map<string, AssetIR>) {
+function validateScene(
+  scene: SkiaScene,
+  problems: string[],
+  warnings: string[],
+  assetsUsed: Map<string, AssetIR>,
+  // Asset id → the drawings (SkiaNode ids) that use it.
+  assetOwners: Map<string, Set<string>> = new Map()
+) {
   if (scene.version !== SKIA_IR_VERSION) problems.push(`Scene IR version ${scene.version} — this exporter reads version ${SKIA_IR_VERSION}.`);
+  // The innermost SkiaNode with an id being visited (an asset's owner).
+  let drawId: string | undefined;
   // React Native Skia throws on a declared uniform without a value and binds
   // children by position.
   const program = (p: SkslProgramIR, where: string, content?: string) => {
@@ -272,6 +289,11 @@ function validateScene(scene: SkiaScene, problems: string[], warnings: string[],
       return;
     }
     if (!assetsUsed.has(id)) assetsUsed.set(id, a);
+    if (drawId) {
+      const set = assetOwners.get(id) ?? new Set<string>();
+      set.add(drawId);
+      assetOwners.set(id, set);
+    }
   };
   const shader = (s: ShaderIR, where: string) => {
     if (s.k === "runtime") {
@@ -297,6 +319,15 @@ function validateScene(scene: SkiaScene, problems: string[], warnings: string[],
     }
   };
   const visit = (n: SkiaNode, path: string) => {
+    const outer = drawId;
+    if (n && typeof n.id === "string") drawId = n.id;
+    try {
+      visitNode(n, path);
+    } finally {
+      drawId = outer;
+    }
+  };
+  const visitNode = (n: SkiaNode, path: string) => {
     const where = `${path} (${n.k}${n.id ? ` from ${n.id}` : ""})`;
     switch (n.k) {
       case "group":
@@ -693,7 +724,16 @@ export function planSceneExport(
   const warnings: string[] = [];
   const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges, warnings };
   const assetsUsed = new Map<string, AssetIR>();
-  validateScene(scene, problems, warnings, assetsUsed);
+  const assetOwners = new Map<string, Set<string>>();
+  validateScene(scene, problems, warnings, assetsUsed, assetOwners);
+  const assetUses: AssetUse[] = [...assetsUsed.values()].map((a) => ({
+    asset: a,
+    owners: [...(assetOwners.get(a.id) ?? [])].map((id) => {
+      const t = c.byId.get(id)?.type;
+      return t ? `${t} "${id}"` : `"${id}"`;
+    }),
+  }));
+  warnings.push(...assetWarnings(assetUses, opts.assets));
 
   const tl = opts.timeline;
   const frames = Math.max(1, Math.ceil(tl.sceneDurationTicks / tl.ticksPerFrame) + 1);
@@ -829,6 +869,8 @@ export function planSceneExport(
     binds,
     bindFor,
     assets: [...assetsUsed.values()],
+    assetUses,
+    ...(opts.assets ? { assetBytes: opts.assets } : {}),
     sampledFrames,
     warnings,
   };

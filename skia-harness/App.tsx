@@ -32,6 +32,7 @@ import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
 import * as AtlasScene from "./src/bundle-atlas";
 import * as Baked from "./src/bundle-baked";
+import * as ImageBundle from "./src/bundle-image";
 import * as NativeAurora from "./src/bundle-native";
 import { evaluateTrack as nativeAuroraTrack } from "./src/bundle-native/toolbox-timeline";
 import * as NativeEasings from "./src/bundle-native-easings";
@@ -55,7 +56,10 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 const SceneBundle = query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : null;
 // ?bundle=baked: the same SkSL Shader export with animation "baked"
 // (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
-const EffectBundle = query?.get("bundle") === "baked" ? Baked : Effect;
+// ?bundle=image: an SkSL Shader sampling a bundled image (iImage1, an
+// ImageShader of assets/iImage1.png) through ramp / curve LUT children
+// (src/bundle-image, `export-skia.mts --fixture image`).
+const EffectBundle = query?.get("bundle") === "baked" ? Baked : query?.get("bundle") === "image" ? ImageBundle : Effect;
 const { CANVAS, NAME, TIMELINE } = SceneBundle ?? EffectBundle;
 // (The atlas slot has no markers — its SEGMENTS is {} — so read every slot's
 // table as the Aurora one; the chrome lists only the names it really has.)

@@ -17,5 +17,9 @@ export {
   type ExportSegments,
   type ExportMarker,
 } from "./segments";
+// The async asset pre-pass + the one URL → bytes seam (Wave 3 lane I).
+export { collectSkiaExportAssets, resolveSkiaExportAssets, exportSkiaWithAssets, sceneAssetIds } from "./assets";
+export { type SkiaExportAssets } from "./api";
+export { registerSkiaAssetScheme, resolveSkiaAssetBytes, type SkiaAssetResolver } from "@/engine/skia/asset-bytes";
 // …and the Reanimated-native animation mode (animation: "native", M3 lane D).
 export { emitNativeEffect, emitNativeScene, NATIVE_EASINGS, type NativeEasingRow, type NativeEasingClass } from "./emit-native";

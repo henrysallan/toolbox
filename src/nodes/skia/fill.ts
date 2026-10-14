@@ -102,9 +102,13 @@ export const skiaFillNode: NodeDefinition = {
         }
       }
     }
+    // The images the fused program's leaves sample ride to the scene
+    // (SkiaShaderValue.assets → SkiaDrawValue.assets).
+    const assets = sv?.kind === "skia_shader" && paint.shader ? sv.assets : undefined;
     const out: SkiaDrawValue = {
       kind: "skia_draw",
       node: { k: "fill", id: nodeId, paint },
+      ...(assets ? { assets } : {}),
       ...(problems.length ? { problems } : {}),
     };
     return { primary: out };

@@ -12,11 +12,13 @@ import { registerAllNodes } from "@/nodes/index";
 import { createEngineBackend } from "@/engine/gl";
 import { evaluateGraph, type EvalCache } from "@/engine/evaluator";
 import { setCanvasKit, CANVASKIT_BASE } from "@/engine/skia/canvaskit";
+import { sceneAssetsSettled } from "@/engine/skia/scene-assets";
 import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import { auroraGraph, AURORA_TIMELINE } from "../fixtures/skia/aurora-graph";
 import { auroraSceneGraph } from "../fixtures/skia/aurora-scene-graph";
 import { easingsGraph, EASINGS_TIMELINE } from "../fixtures/skia/easings-graph";
 import { atlasGraph, ATLAS_TIMELINE } from "../fixtures/skia/atlas-graph";
+import { imageEffectGraph, imageFixtureReady, IMAGE_TIMELINE } from "../fixtures/skia/image-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -45,10 +47,12 @@ function fromB64(b64: string): Uint8Array {
 // (src/bundle-native-scene).
 // "atlas" (Copy to Points (Skia), atlas-graph.ts `combo_skc`) runs at 30 fps:
 // its frames are given at the capture's 60 Hz and rendered at that time.
+// "image" (Wave 3 lane I) renders image-graph.ts's SkSL Shader: an Image
+// Source into iImage1 + ramp / curve LUT channels (src/bundle-image).
 export async function renderToolbox(
   frames: number[],
   size: number,
-  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" = "effect"
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" = "effect"
 ): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
@@ -61,9 +65,19 @@ export async function renderToolbox(
         ? easingsGraph()
         : which === "atlas"
           ? { ...atlasGraph(), targetId: "combo_skc" }
-          : auroraGraph(AURORA_SKSL);
-  const { fps, ticksPerFrame } = which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : AURORA_TIMELINE;
+          : which === "image"
+            ? imageEffectGraph(await imageFixtureReady())
+            : auroraGraph(AURORA_SKSL);
+  const { fps, ticksPerFrame } =
+    which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : which === "image" ? IMAGE_TIMELINE : AURORA_TIMELINE;
   const out: string[] = [];
+  // Images / fonts load asynchronously (scene-assets.ts): one warm-up frame
+  // asks for them, and every frame below renders with them decoded.
+  {
+    const ctx = backend.makeContext(0, 0, undefined, false, { tick: 0, ticksPerFrame, fps }, true);
+    evaluateGraph(nodes, edges, ctx, new Map() as EvalCache, targetId);
+    await sceneAssetsSettled();
+  }
   for (const capture of frames) {
     const f = which === "atlas" ? (capture * fps) / 60 : capture;
     const ctx = backend.makeContext(f / fps, f, undefined, false, { tick: Math.round(f * ticksPerFrame), ticksPerFrame, fps }, true);

@@ -24,7 +24,8 @@ export interface SkiaFontFace {
 export const SKIA_FONTS: Record<string, SkiaFontFace> = {
   Geist: {
     family: "Geist",
-    asset: { id: "geist", kind: "font", mime: "font/ttf", url: "/fonts/Geist-Regular.ttf" },
+    // The OFL text ships beside the font in every exported bundle.
+    asset: { id: "geist", kind: "font", mime: "font/ttf", url: "/fonts/Geist-Regular.ttf", license: "/fonts/Geist-OFL.txt" },
     unitsPerEm: 1000,
     ascender: 1005,
     descender: 295,

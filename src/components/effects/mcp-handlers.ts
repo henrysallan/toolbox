@@ -1843,7 +1843,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const env = skiaEnv(animation);
       const id = skiaTargetId(target);
       const { exportSkiaFromEditor, skiaBundleSlug } = await import("@/lib/skia-export/editor");
-      const { prepared, result } = exportSkiaFromEditor(
+      const { prepared, result } = await exportSkiaFromEditor(
         deps.nodesRef.current,
         deps.edgesRef.current,
         id,
@@ -1869,7 +1869,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           (mode === "native"
             ? "Native mode: const animations = useToolboxAnimations(); <ToolboxEffect animations={animations} width height /> (animations.play / playSegment / stop). "
             : "const clock = useToolboxClock(); <ToolboxEffect time={clock.time} width height /> (clock.loopSegment / playAll / pause / play / seek). ") +
-          "Files under assets/ ending in .b64 are base64: decode them to binary and drop the .b64 suffix.",
+          "Files under assets/ ending in .b64 are base64: decode them to binary and drop the .b64 suffix (manifest.json's `assets` lists every image / font with its size and whether its bytes shipped; a warning names any that didn't).",
       };
     },
 

@@ -41,6 +41,8 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // effect = the M0 SkSL Shader bundle (skia-harness/src/bundle); scene = the
 // Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`); baked =
 // the effect bundle exported with `--animation baked` (src/bundle-baked);
+// image = an SkSL Shader sampling a bundled image + ramp / curve LUT
+// children (src/bundle-image, `--fixture image`, Wave 3 lane I);
 // native / native-easings / native-scene = Reanimated-native exports
 // (`--animation native`: src/bundle-native = Aurora, src/bundle-native-
 // easings = every easing kind, src/bundle-native-scene = Aurora as a Skia
@@ -83,11 +85,11 @@ if (
   !(SIZE > 0) ||
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }

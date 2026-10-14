@@ -43,7 +43,7 @@
 // either end of the timeline) is a `tbxCut*` easing: toolbox's own curve
 // over the cut as the fraction of its move, so it stays exact.
 
-import { emitSkiaBundle } from "./emit";
+import { effectChildrenCode, effectComponentImports, effectFillJsx, emitSkiaBundle } from "./emit";
 import { timelineConstSource } from "./emit-shared";
 import type { SkiaExportPlan } from "./plan";
 import { emitSceneBundle, sampleKeys, type SceneDriver } from "./scene-emit";
@@ -1072,20 +1072,24 @@ export function emitNativeEffect(plan: SkiaExportPlan, runtimeSource: string, se
   files["toolbox-native.ts"] = mod.helpers;
   files["toolbox-timeline.ts"] = runtimeSource;
   files["toolbox-clock.ts"] = base["toolbox-clock.ts"];
+  // Child shaders (images, LUTs): emit.ts's, with their files.
+  const kids = effectChildrenCode(plan, (what) => HEADER(what, edit));
+  if (kids) Object.assign(files, kids.files);
   files["ToolboxEffect.tsx"] =
     HEADER("the React Native Skia component (Reanimated-native animations)", edit) +
-    `\nimport React from "react";\n` +
-    `import { Canvas, Fill, Shader, Skia, type CanvasRef } from "react-native-skia";\n` +
+    effectComponentImports(kids) +
     `import { useDerivedValue } from "react-native-reanimated";\n` +
     `import type { ToolboxAnimations } from "./animations";\n` +
     `import { SKSL } from "./effect";\n` +
+    (kids ? `${kids.imports.join("\n")}\n` : "") +
     `\nconst effect = Skia.RuntimeEffect.Make(SKSL);\n` +
     `if (!effect) throw new Error("toolbox export: the SkSL program did not compile on this Skia build");\n` +
     `\nexport interface ToolboxEffectProps {\n  // useToolboxAnimations() — the uniforms read its shared values.\n  animations: ToolboxAnimations;\n  width: number;\n  height: number;\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +
     `\nexport function ToolboxEffect({ animations, width, height, canvasRef }: ToolboxEffectProps) {\n` +
     `  const A = animations.values;\n` +
     `  const uniforms = useDerivedValue(() => ({\n    iResolution: [width, height, 1],\n    iTime: ${clock ? `A.${clock}.value, // the scene clock (seconds)` : "0, // the program never reads iTime"}\n${fields}\n  }));\n` +
-    `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n      <Fill>\n        <Shader source={effect!} uniforms={uniforms} />\n      </Fill>\n    </Canvas>\n  );\n}\n`;
+    (kids?.hooks.length ? kids.hooks.map((h) => `  ${h}\n`).join("") : "") +
+    `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n${effectFillJsx(kids)}\n    </Canvas>\n  );\n}\n`;
   files["manifest.json"] = withManifest(base["manifest.json"], nativeManifest(planner, values, clock, segs));
   files["index.ts"] =
     HEADER("barrel", edit) +

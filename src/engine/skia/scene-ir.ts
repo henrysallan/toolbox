@@ -265,6 +265,10 @@ export interface AssetIR {
   url: string;
   width?: number;
   height?: number;
+  // The licence text that must ship beside the bytes (a font's OFL file),
+  // by URL like `url`; the exporter writes it next to the asset. Additive
+  // (2026-10-14, Wave 3 lane I).
+  license?: string;
 }
 
 export interface SkiaScene {

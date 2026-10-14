@@ -382,7 +382,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
       prep.request.name === "Aurora Layer" &&
       prep.request.runtimeSource === RUNTIME
   );
-  const viaEditor = ed.exportSkiaFromEditor(nodes, edges, L.layer.id, ENV).result;
+  const viaEditor = (await ed.exportSkiaFromEditor(nodes, edges, L.layer.id, ENV)).result;
   const direct = exportSkia({
     nodes: fixture.nodes,
     edges: fixture.edges,
@@ -402,7 +402,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
     `${fileNames(viaEditor.files)} vs ${fileNames(direct.files)} ${JSON.stringify(viaEditor.problems)}`
   );
   check("the bundle ships the runtime verbatim", viaEditor.files?.["toolbox-timeline.ts"] === RUNTIME);
-  const viaNode = ed.exportSkiaFromEditor(nodes, edges, "aurora", ENV).result;
+  const viaNode = (await ed.exportSkiaFromEditor(nodes, edges, "aurora", ENV)).result;
   check(
     "exporting the SkSL node directly gives the same timeline, under the node's own name",
     !!viaNode.files &&
@@ -416,7 +416,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
   check("a default layer is refused", !pDefault.request && !!pDefault.problems[0]?.includes("default layer"), pDefault.problems[0]);
   check(
     "…but its SkSL Shader still exports on its own",
-    !!ed.exportSkiaFromEditor(D.nodes, D.edges, "aurora", ENV).result.files
+    !!(await ed.exportSkiaFromEditor(D.nodes, D.edges, "aurora", ENV)).result.files
   );
   const E = auroraInLayer("Empty");
   const unwired = E.edges.filter((e) => e.target !== E.L.groupOutput.id);
@@ -439,7 +439,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
   // A layer slid along the comp timeline exports on its own clock — say so.
   const C = auroraInLayer("Late");
   C.L.layer.data.clips = [{ inTick: 30_000, outTick: 300_000, sourceInTick: 0, enabled: true }];
-  const late = ed.exportSkiaFromEditor(C.nodes, C.edges, C.L.layer.id, ENV).result;
+  const late = (await ed.exportSkiaFromEditor(C.nodes, C.edges, C.L.layer.id, ENV)).result;
   check(
     "a layer that starts late exports with a clock warning",
     !!late.files && late.warnings.some((w) => w.includes("starts at frame 30")),
@@ -447,7 +447,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
   );
 
   // The plan summary (MCP plan_skia_export).
-  const plan = ed.planSkiaExportForEditor(nodes, edges, L.layer.id, ENV);
+  const plan = await ed.planSkiaExportForEditor(nodes, edges, L.layer.id, ENV);
   const u = (name: string) => plan.uniforms?.find((x) => x.name === name);
   check(
     "plan: ok, target, layer and timeline length",
@@ -469,7 +469,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
     !!plan.uniforms?.some((x) => !x.animated && x.value !== undefined && x.from.startsWith("static")),
     JSON.stringify(plan.uniforms?.filter((x) => !x.animated))
   );
-  const planBad = ed.planSkiaExportForEditor(D.nodes, D.edges, D.L.layer.id, ENV);
+  const planBad = await ed.planSkiaExportForEditor(D.nodes, D.edges, D.L.layer.id, ENV);
   check("plan of a refusal is not ok and lists the problem", !planBad.ok && planBad.problems.length === 1);
   // Anything but an SkSL Shader goes through exportSkia — the scene
   // exporter's skia-canvas branch reports here once it lands.
@@ -484,7 +484,7 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
   cvEdges.push(edge("cv", "out:primary", W.L.groupOutput.id, "in:image"));
   const cvNodes = [...W.nodes, canvasNode];
   const cvPrep = ed.prepareSkiaExport(cvNodes, cvEdges, W.L.layer.id, ENV);
-  const cvPlan = ed.planSkiaExportForEditor(cvNodes, cvEdges, W.L.layer.id, ENV);
+  const cvPlan = await ed.planSkiaExportForEditor(cvNodes, cvEdges, W.L.layer.id, ENV);
   const cvDirect = (() => {
     if (!cvPrep.request) return null;
     try {

@@ -33,7 +33,9 @@
 
 import type { CanvasKit, RuntimeEffect } from "canvaskit-wasm";
 import type { ExprInput } from "../types";
-import { channelKind, type ExprChannelValue } from "../expr-channels";
+import { buildCurveLut, buildRampLut, channelKind, type ExprChannelValue } from "../expr-channels";
+import type { ColorRampStop } from "../color-ramp";
+import type { CurvePoint } from "../float-curve";
 import { colorManagementSksl } from "./library/color-management";
 
 export const SKSL_CHILD_NAMES = ["iImage1", "iImage2", "iImage3", "iImage4"] as const;
@@ -79,19 +81,57 @@ function optionIdent(opt: string): string | null {
   return s || null;
 }
 
+// A ramp / curve channel's lookup table, a child shader (§3.8 item 2, Wave
+// 3 lane I): `uniform shader tbx_lut_<name>;` holding a 256×1 RGBA8
+// unpremultiplied sRGB image (skslLutBytes), read by the accessor the
+// channel's name becomes — `float4 ink(float t)` for a ramp (straight
+// alpha, sRGB, like GLSL Expression's `vec4 ink(float t)`), `float
+// falloff(float x)` for a curve. Sampled at texel CENTRES with linear
+// filtering (x = clamp(t, 0, 1) · 255 + 0.5 px, GLSL Expression's
+// LUT_COORD) and colour-managed like every child sample (tbx_cm_child), so
+// the preview and React Native read the same 256 entries on any canvas.
+export interface SkslLut {
+  name: string;
+  child: string;
+  kind: "ramp" | "curve";
+}
+
+export const SKSL_LUT_SIZE = 256;
+export const skslLutChild = (channel: string) => `tbx_lut_${channel}`;
+
+// The LUT a ramp / curve channel value bakes to: 256 × RGBA8 (row-major,
+// unpremultiplied, sRGB). Ramps are the GLSL Expression LUT
+// (expr-channels.buildRampLut) quantized to bytes; curves are gray with
+// alpha 1 (gray survives a colour-space conversion unchanged).
+export function skslLutBytes(kind: "ramp" | "curve", value: unknown): Uint8Array {
+  const lut =
+    kind === "ramp"
+      ? buildRampLut(Array.isArray(value) ? (value as ColorRampStop[]) : [], SKSL_LUT_SIZE)
+      : buildCurveLut(Array.isArray(value) ? (value as CurvePoint[]) : [], SKSL_LUT_SIZE);
+  const out = new Uint8Array(SKSL_LUT_SIZE * 4);
+  for (let i = 0; i < out.length; i++) {
+    const v = lut[i];
+    out[i] = Math.round(Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0)) * 255);
+  }
+  return out;
+}
+
 // Channel kinds → SkSL declarations. Toggles are ints because SkSL forbids
 // bool uniforms (read them as `on != 0`); colors are plain float4 holding
 // the authored sRGB numbers — NOT layout(color), which would hand the
 // user's sRGB math working-space (P3) numbers on a P3 canvas; the wrapper
-// main converts the result instead.
-// Ramps and curves have no M0 lowering (they become child gradient shaders
-// in M2) and are reported, not silently dropped.
+// main converts the result instead. Ramps and curves are LUT children
+// (SkslLut): their `uniform shader` line is here, their accessor after the
+// color-management helper (lutAccessor).
 export function skslChannelDecls(entries: ExprInput[]): {
   lines: string[];
+  // Always empty since ramp / curve channels lower to LUTs (kept for callers).
   unsupported: string[];
+  luts: SkslLut[];
 } {
   const lines: string[] = [];
   const unsupported: string[] = [];
+  const luts: SkslLut[] = [];
   for (const e of entries) {
     switch (channelKind(e)) {
       case "scalar":
@@ -115,12 +155,25 @@ export function skslChannelDecls(entries: ExprInput[]): {
         lines.push(`uniform float4 ${e.name};  // straight alpha, sRGB numbers`);
         break;
       case "ramp":
-      case "curve":
-        unsupported.push(e.name);
+      case "curve": {
+        const kind = channelKind(e) as "ramp" | "curve";
+        const child = skslLutChild(e.name);
+        lines.push(`uniform shader ${child};  // ${kind} "${e.name}": ${SKSL_LUT_SIZE}×1 lookup table`);
+        luts.push({ name: e.name, child, kind });
         break;
+      }
     }
   }
-  return { lines, unsupported };
+  return { lines, unsupported, luts };
+}
+
+// The accessor a LUT channel's name becomes (defined after the
+// color-management helper, which it calls).
+function lutAccessor(l: SkslLut): string {
+  const at = `${l.child}.eval(float2(clamp(t, 0.0, 1.0) * ${(SKSL_LUT_SIZE - 1).toFixed(1)} + 0.5, 0.5))`;
+  return l.kind === "ramp"
+    ? `float4 ${l.name}(float t) { return tbx_cm_child(float4(${at})); }  // ramp: straight alpha, sRGB`
+    : `float ${l.name}(float t) { return tbx_cm_child(float4(${at})).r; }  // curve`;
 }
 
 // Children the source samples, in iImage order. Declaring an unreferenced
@@ -145,9 +198,13 @@ export interface SkslProgram {
   preludeLines: number;
   // Lines of the user's source; anything after them is the wrapper.
   sourceLines: number;
+  // The iImageN children the source samples, in declaration order.
   children: string[];
+  // Ramp / curve LUT children, declared after them (child order =
+  // children, then luts) — additive, Wave 3 lane I.
+  luts: SkslLut[];
   channels: ExprInput[];
-  // Channel names with no SkSL lowering yet (ramp / curve).
+  // Channel names with no SkSL lowering (none since ramp / curve became LUTs).
   unsupported: string[];
 }
 
@@ -175,7 +232,7 @@ export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
   const source = typeof params.expression === "string" ? params.expression : "";
   const channels = skslChannels(params);
   const children = referencedChildren(source);
-  const { lines, unsupported } = skslChannelDecls(channels);
+  const { lines, unsupported, luts } = skslChannelDecls(channels);
   const prelude = [
     "// Prelude owned by the toolbox SkSL Shader node.",
     "uniform float3 iResolution;  // xy = canvas size, z = 1",
@@ -185,6 +242,7 @@ export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
     "// Color management: your code runs on sRGB numbers on any canvas.",
     ...colorManagementSksl().split("\n"),
     ...children.map((c) => `half4 ${skslChildEval(c)}(float2 p) { return tbx_cm_premul_in(${c}.eval(p)); }  // ${c}.eval(p), in sRGB`),
+    ...luts.map(lutAccessor),
     SKSL_SOURCE_MARKER,
   ];
   const { code, hasMain } = rewriteSkslSource(source);
@@ -205,6 +263,7 @@ export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
     preludeLines: prelude.length,
     sourceLines: source.split("\n").length,
     children,
+    luts,
     channels: channels.filter((c) => !unsupported.includes(c.name)),
     unsupported,
   };
