@@ -585,7 +585,57 @@ that pair). Offline node tests should push each input through
   callees when created, so calling a worklet declared further down the
   file throws "Cannot access … before initialization" on device and on
   React Native web — while every Node gate (which hoists) passes.
+- `check-skia-atlas` — Copy to Points (Skia) (`skia-copy-to-points`,
+  101326_skia-target.md §3.4 "built and measured"; fixture
+  `scripts/fixtures/skia/atlas-graph.ts`). Defs: the mirror reuses Copy to
+  Points' own ParamDefs; Point / Grid / Space Fill / Voronoi are offered in
+  Skia layers and evaluate with NO GL (Voronoi skips its image when
+  `ctx.gl` has no `createTexture` — the exporter's data-only sampler).
+  Placement: every copy of both strategies — groups (outer
+  T(p)·R(add)·S(mul) × inner R(rot)·S(scale)·T(−anchor), composed with the
+  renderer's own `transformMatrix`) and atlas (`composeAtlasXforms` over the
+  sprite sheet) — lands where the GL vertex shader puts it (≤ 1e-9 px,
+  canvas-centre and custom anchors, 256² and 320×180, non-uniform scale on
+  groups). Strategy: auto picks groups below `ATLAS_AUTO_MIN` (16) and an
+  atlas from it; RSXform has one scale, so non-uniform per-point scale
+  draws groups even when atlas is forced; spline / point modes are the GL
+  node's own output (through `coerceValue`). Anchors: `sceneBounds` (cubic
+  extrema, strokes, group transforms, clips; fills and text unbounded) and
+  `glContentCenter` against the GL node's readback EMULATED on a CanvasKit
+  raster (128-px bilinear taps, 8-bit, one-texel pad) — equal for circles,
+  stroked rects and blobs; the fixture star's narrow tips are printed, not
+  held (a readback texel sees 2 of its 4 source pixels, so it can miss a
+  tip: 2 px at 512²). Pixels (CPU): atlas ≡ groups at integer offsets
+  (≤ 2/255 premultiplied), the sheet rasterises at the surface's density
+  (k = 2 still ≡ groups), the texture cache renders a sheet once, rotated /
+  scaled copies agree in ink mass and centroid. Export: keyframed Scale × /
+  Rotate + over static points are TRACKS in both strategies (the atlas's
+  `rotate` / `scale` over static xforms — never N×4 floats per frame);
+  moving points are SAMPLED; an animated instance under an atlas is
+  refused with the fix named (the sheet renders once) and exports under
+  groups; the emitted `useRSXformBuffer` worklet, extracted from the TSX
+  and run on the emitted `timeline.ts`, reproduces the preview's xforms
+  bit for bit at every frame; emitted worklets call only functions
+  declared above them; the bundle type-checks in skia-harness; and
+  `skia-harness/src/bundle-atlas` is today's export (`npx tsx
+  scripts/export-skia.mts --fixture atlas --out skia-harness/src/bundle-atlas`).
+  Traps: the GL Copy to Points' image mode writes PREMULTIPLIED rgb into
+  its straight-alpha output and bilinear-samples a straight texture, so
+  its anti-aliased edges come out dark — compare vs GL with an opaque
+  instance (`gl_opq`) for pixels, or `--premul-a` plus `edge-band.cjs`
+  for coverage; content-centre anchors can sit a readback texel apart
+  (see above), so pixel comparisons use canvas-centre anchors.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
+  - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
+    — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
+    CanvasKit WebGL (Ganesh, RN web's renderer) in an offscreen Electron
+    window: real node, scenes sampled first, each frame drawn + flushed +
+    1-px readPixels (GPU wait), sheets from a texture cache (their one-time
+    raster is the `first` column). Electron's `performance.now()` is 0.1 ms
+    coarse, so the mean is one timed run over all frames. Reuse ONE WebGL
+    context — Chromium drops the oldest past ~16 ("Too many active WebGL
+    contexts") and later rows then measure a lost context. Writes
+    `scripts/.skia-compare-out/atlas-bench[-static].json`.
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
     (`export const fixture`, contract in `scripts/skia/fixture.ts`) through
@@ -606,6 +656,9 @@ that pair). Offline node tests should push each input through
     per-frame change. The shapes pairs (`shapes-graph.ts`) read interior
     0/255 and band p95 ≤ 56/255: Chromium's canvas 2D (the generators'
     own raster) anti-aliases in coarse coverage steps, CanvasKit finely.
+    `--premul-a` divides side A's alpha back out of its rgb before scoring
+    (and in `f<N>-a.png`) — for a side that stores premultiplied colour in
+    a straight image, which the GL Copy to Points' image mode does.
   - `npm run parity:skia [-- --write-golden]` — toolbox vs the exported
     bundle on RN Skia's web target (needs `npm --prefix skia-harness run
     export:web`); `--write-golden` also writes toolbox's frames to
@@ -621,6 +674,14 @@ that pair). Offline node tests should push each input through
     fake vsync to model a real display. Trap: React Native web's rAF
     timestamps and `performance.now()` differ within a frame, so without
     the fake clock a native run measures the browser, not Reanimated.
+    `--bundle atlas` plays Copy to Points (Skia) (`skia-harness/src/
+    bundle-atlas`, `export-skia.mts --fixture atlas`: useTexture sprite
+    sheets, a useRSXformBuffer driven by tracks, vector copy groups); the
+    fixture is 30 fps, so its default frames 0,20,…,120 (60 Hz capture
+    times) are its own frames 0,10,…,60 — pass even frames only. The
+    harness web build needs `skia-harness/public/canvaskit.wasm`
+    (gitignored; copy `node_modules/canvaskit-wasm/bin/full/canvaskit.wasm`
+    in a fresh worktree) or the page never gets ready.
   - `npm run parity:skia:device -- --platform ios|android` — the same
     frames captured on the iOS Simulator / Android emulator through the
     harness's deep-link capture mode, scored against the goldens. Needs

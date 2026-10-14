@@ -44,7 +44,7 @@ const { exportSkia, exportSkiaScene } = await import("@/lib/skia-export");
 const out = arg("out");
 if (!out) {
   console.error(
-    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
   );
   process.exit(2);
 }
@@ -108,8 +108,18 @@ if (sceneFile) {
     timeline = fx.EASINGS_TIMELINE;
     canvas = { width: fx.EASINGS_SIZE, height: fx.EASINGS_SIZE };
     name = "Easings";
+  } else if (fixture === "atlas") {
+    // Copy to Points (Skia), atlas-graph.ts `combo_skc`: two sprite-sheet
+    // atlases (static, keyframed spin / zoom → tracks) and a vector copy
+    // group on a moving point (sampled) — the harness's ?bundle=atlas slot.
+    const fx = await import("./fixtures/skia/atlas-graph.ts");
+    ({ nodes, edges } = fx.atlasGraph());
+    targetId = "combo_skc";
+    timeline = fx.ATLAS_EXPORT_TIMELINE;
+    canvas = { width: fx.ATLAS_SIZE, height: fx.ATLAS_SIZE };
+    name = "Copy to Points (Skia)";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas)`);
   } else {
     const file = arg("graph");
     const node = arg("node");

@@ -1,3 +1,4 @@
+import type { Image } from "canvaskit-wasm";
 import type { NodeDefinition, RenderContext, SkiaDrawValue } from "@/engine/types";
 import { canvasKit, canvasKitError, canvasKitReady, ensureCanvasKit } from "@/engine/skia/canvaskit";
 import { SKIA_IR_VERSION, type RGBA, type SkiaScene } from "@/engine/skia/scene-ir";
@@ -21,6 +22,9 @@ import { hexToRgba01 } from "@/engine/spline-fill";
 
 interface CanvasState {
   lastWarned?: string | null;
+  // Atlas sprite sheets drawn from a sub-scene (scene-render.ts
+  // textureCache): rendered once, as React Native Skia's useTexture does.
+  textures?: Map<string, Image>;
 }
 
 function getState(ctx: RenderContext, nodeId: string): CanvasState {
@@ -130,7 +134,7 @@ export const skiaCanvasNode: NodeDefinition = {
     };
     let problems: string[] = [];
     const out = renderSkiaToImage(ctx, kit, ctx.width, ctx.height, (canvas) => {
-      const r = renderScene(kit, canvas, scene, { assets: makeSceneAssetResolver(kit) });
+      const r = renderScene(kit, canvas, scene, { assets: makeSceneAssetResolver(kit), textureCache: (state.textures ??= new Map()) });
       problems = r.problems;
       return r.release;
     });
@@ -144,6 +148,14 @@ export const skiaCanvasNode: NodeDefinition = {
   },
 
   dispose(ctx, nodeId) {
+    const s = ctx.state[`skia-canvas:${nodeId}`] as CanvasState | undefined;
+    for (const img of s?.textures?.values() ?? []) {
+      try {
+        img.delete();
+      } catch {
+        /* its context is gone */
+      }
+    }
     delete ctx.state[`skia-canvas:${nodeId}`];
     lastProblems.delete(nodeId);
   },

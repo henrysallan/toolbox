@@ -334,9 +334,21 @@ function validateScene(scene: SkiaScene, problems: string[], warnings: string[],
         return;
       }
       case "atlas":
-        noteAsset(n.asset, ["image"], where);
+        if (n.texture) {
+          // A sub-scene sprite sheet (RN useTexture): its programs and
+          // assets ship like the rest of the scene; its binds must be
+          // static (checked once the binds are planned).
+          const r = n.texture.rect;
+          if (!Array.isArray(r) || r.length !== 4 || r.some((v) => !Number.isFinite(v)) || r[2] <= 0 || r[3] <= 0) {
+            problems.push(`${where}: the sprite sheet's rect must be 4 finite numbers with a positive size.`);
+          }
+          visit(n.texture.node, `${path}.texture.node`);
+        } else noteAsset(n.asset, ["image"], where);
         if (Array.isArray(n.xforms.v) && n.xforms.v.length !== n.sprites.length * 4) {
           problems.push(`${where}: ${n.sprites.length} sprites need ${n.sprites.length * 4} xform floats, got ${n.xforms.v.length}.`);
+        }
+        if ((n.rotate || n.scale) && !(Array.isArray(n.pivots?.v) && n.pivots.v.length === n.sprites.length * 2)) {
+          problems.push(`${where}: a sprite spin / zoom needs ${n.sprites.length * 2} pivot floats.`);
         }
         return;
       default:
@@ -780,6 +792,20 @@ export function planSceneExport(
     } else plan = r;
     return { id, path: fb.path, role: fb.role, plan };
   });
+
+  // An atlas sprite sheet drawn from a sub-scene renders ONCE (RN
+  // useTexture): nothing inside it may animate. (Lane A, 2026-10-14.)
+  const sheetMoves = binds.filter((b) => /\.texture\.node(\.|$)/.test(b.path) && b.plan.kind !== "static" && b.plan.kind !== "refused");
+  if (sheetMoves.length) {
+    const first = sheetMoves[0];
+    let at: unknown = { root: scene.root };
+    for (const key of first.path.split(".texture.node")[0].split(".")) at = (at as Record<string, unknown> | undefined)?.[key];
+    const id = (at as { id?: unknown } | undefined)?.id;
+    const owner = typeof id === "string" ? id : undefined;
+    problems.push(
+      `${first.path} animates (${(first.plan as { from?: string }).from ?? first.plan.kind})${sheetMoves.length > 1 ? ` (+${sheetMoves.length - 1} more)` : ""}, but it sits in an atlas sprite sheet${owner ? ` drawn by ${owner}` : ""}, which renders once — set that Copy to Points (Skia) strategy to groups to animate the instance.`
+    );
+  }
 
   // (After a failed sampling run the one structure problem stands for every
   // derived bind it stranded.)

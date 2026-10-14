@@ -35,6 +35,8 @@ export const gridNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Pure CPU data: offered in Skia layers (feeds Copy to Points (Skia)).
+  skia: { class: "native" },
   inputs: [],
   params: [
     {

@@ -618,6 +618,10 @@ export const spaceFillNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // A seeded CPU walk: offered in Skia layers (the lines feed Skia Shape,
+  // the tips Copy to Points (Skia)). The masks stay unwired there — no
+  // Skia node makes one.
+  skia: { class: "native" },
   noMaskInput: true,
   inputs: [
     { name: "region", label: "Region", type: "mask", required: false },

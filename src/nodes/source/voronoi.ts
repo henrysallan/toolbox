@@ -938,6 +938,10 @@ export const voronoiNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Offered in Skia layers for its CPU geometry (cells / edges / neighbors
+  // → Skia Shape, centers / vertices → Copy to Points (Skia)); the image
+  // output has no Skia consumer there.
+  skia: { class: "native" },
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },
     { name: "warp", label: "Warp", type: "image", required: false },
@@ -1267,6 +1271,18 @@ export const voronoiNode: NodeDefinition = {
     const state = getState(ctx, nodeId);
     const src = srcOf(params);
     const output = ctx.allocImage();
+    // A data-only evaluation has no GL (the Skia exporter's scene sampler,
+    // which runs Skia layers — where Voronoi feeds Skia Shape / Copy to
+    // Points (Skia)): the cell geometry is CPU work, so the aux outputs
+    // still come out; only the image is skipped.
+    const hasGl = typeof ctx.gl?.createTexture === "function";
+    const geometryOnly = () => {
+      const geo = state.geo!;
+      return {
+        primary: output,
+        aux: { cells: geo.cells, edges: geo.edges, vertices: geo.vertices, centers: geo.centers, neighbors: geo.neighbors },
+      };
+    };
 
     const mode = modeToInt((params.mode as string) ?? "f2-f1");
     const metric = metricToInt((params.metric as string) ?? "euclidean");
@@ -1320,6 +1336,7 @@ export const voronoiNode: NodeDefinition = {
         );
         state.geoKey = geoKey;
       }
+      if (!hasGl) return geometryOnly();
 
       // Optional UV input — same protocol as the noise node.
       const uvIn = inputs.uv_in;
@@ -1428,7 +1445,7 @@ export const voronoiNode: NodeDefinition = {
 
         const densityIn = inputs.density;
         const density: DensityBuffer | null =
-          placement === "image" && densityIn && densityIn.kind === "image"
+          hasGl && placement === "image" && densityIn && densityIn.kind === "image"
             ? readbackDensity(ctx, densityIn as ImageValue, state, DENSITY_RES)
             : null;
         // Cheap content hash of the readback so an unchanged density
@@ -1462,12 +1479,13 @@ export const voronoiNode: NodeDefinition = {
 
       if (state.geoKey !== geoKey || !state.geo) {
         const pts = positions ?? new Float32Array(0);
-        uploadPoints(ctx, state, pts, count);
+        if (hasGl) uploadPoints(ctx, state, pts, count);
         state.geo = wrapGeo(
           pointSetGeometry(pts, count, aspect, ids, seedInt, edgeBow)
         );
         state.geoKey = geoKey;
       }
+      if (!hasGl) return geometryOnly();
 
       const prog = ctx.getShader("voronoi/points-fs", POINTS_FS);
       ctx.drawFullscreen(prog, output, (gl) => {

@@ -179,10 +179,21 @@ export function stats(pa: Uint8Array | Uint8ClampedArray, pb: Uint8Array | Uint8
   return { maxSteps, identical: identical / (w * h) };
 }
 
+// A side that wrote premultiplied rgb into its straight image (`--premul-a`:
+// the GL Copy to Points' image-mode blending), made straight again.
+function unpremultiply(px: Uint8ClampedArray): Uint8ClampedArray {
+  for (let i = 0; i < px.length; i += 4) {
+    const a = px[i + 3];
+    if (a === 0 || a === 255) continue;
+    for (let c = 0; c < 3; c++) px[i + c] = Math.min(255, Math.round((px[i + c] * 255) / a));
+  }
+  return px;
+}
+
 // One frame: render A and B at analysis size, score them, hand back the
 // three images (A, B, |A−B| heat) as base64 RGBA for the main process.
-export function frame(f: number, aw: number, ah: number, threshold?: number) {
-  const pa = renderSide("A", f, aw, ah);
+export function frame(f: number, aw: number, ah: number, threshold?: number, premulA = false) {
+  const pa = premulA ? unpremultiply(renderSide("A", f, aw, ah)) : renderSide("A", f, aw, ah);
   const pb = renderSide("B", f, aw, ah);
   const metrics = { ...compareRgba(pa, pb, aw, ah, threshold ? { threshold } : {}), ...stats(pa, pb, aw, ah) };
   return { metrics, a: toB64(pa), b: toB64(pb), heat: toB64(diffHeatRgba(pa, pb, aw, ah)) };

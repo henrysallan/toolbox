@@ -29,6 +29,8 @@ export const pointNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Pure CPU data: offered in Skia layers (feeds Copy to Points (Skia)).
+  skia: { class: "native" },
   // When `position` is connected, its vec2 value overrides the x/y
   // params so you can drive Point's location from any vec2 source
   // (Sample Along Path, Cursor.velocity_vec, Combine Vec2, etc.)

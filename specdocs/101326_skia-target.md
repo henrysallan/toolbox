@@ -543,6 +543,132 @@ type Bind<T> = { value: T } | { track: TimelineTrack } | { expr: WorkletExpr };
   Paths with animated geometry use `usePathValue` / `usePathInterpolation`
   when topology matches, otherwise per-frame `PathData` via the worklet.
 
+#### 3.4a built and measured: Copy to Points → Atlas (Wave 3 lane A, 2026-10-14)
+
+`skia-copy-to-points` (`src/nodes/skia/copy-to-points.ts`) mirrors Copy to
+Points with its own ParamDefs plus `strategy` (auto / groups / atlas). Image
+and text modes take a Skia drawing (`skia_draw`) and draw one copy per point;
+spline and point modes run the GL node's own CPU path and output a spline /
+points for Skia Shape. Point / Grid / Space Fill / Voronoi are now offered in
+Skia layers; Voronoi skips its GL image when the context has no GL (the
+exporter's data-only sampler), so its centers / vertices / cells still come
+out. Each copy is the GL vertex shader's transform in scene px,
+`p + R(rotation + rotate_add)·S(scale·scale_mul)·(x − anchor)`. The uniform
+modulation is a separate factor about `p`, so keyframed Scale × / Rotate + over
+static points ship as two tracks.
+
+- **groups:** two Groups per copy. The outer one is `T(p)·R(add)·S(mul)`
+  (direct binds → tracks); the inner one is `R(rot)·S(scale)·T(−anchor)`
+  (derived → static or sampled). Rotations and uniform scales commute, so the
+  product is the GL transform exactly. The emitter writes the shared
+  instance once, as `const E0 = (…)`, and every copy references `{E0}`. A
+  Fill inside the instance is clipped to the canvas, matching the GL node's
+  canvas-sized instance. Other content is not clipped.
+- **atlas:** the instance is rasterised once into a sprite sheet: its
+  analytic box (`engine/skia/scene-bounds.ts`) plus 2 px, or the canvas for
+  unbounded drawings. One `<Atlas>` then draws it with an RSXform per copy.
+  RSXform has a single scale, so non-uniform per-point scale falls back to
+  groups.
+- **Additive IR** (`scene-ir.ts` atlas):
+  - `texture?: { node, rect }` — the sheet as a sub-scene. Preview: an
+    offscreen surface at the surface's density, cached across frames.
+    Export: `useTexture(<Group scale AK translate −rect>…)`, with
+    `AK = PixelRatio × root scale`, so the sheet is crisp at 3×. Sprite rects
+    are multiplied by AK and xform scales divided by AK. Two atlases of one
+    drawing share one texture.
+  - `pivots? / rotate? / scale?` — a uniform spin / zoom about each sprite's
+    pivot, `T(p)·R·S·T(−p)·xform`. In the export it is one
+    `useRSXformBuffer` whose worklet repeats `composeAtlasXforms`, with the
+    spin / zoom as one derived value.
+- **Planner refusals:** a sheet renders once, so any non-static bind inside a
+  `texture` refuses the export and tells the user to switch the strategy to
+  groups.
+- **Content centre:** the GL node anchors on an alpha bbox read back at
+  128 px. `glContentCenter` reproduces that grid from the analytic box. It is
+  exact for circles, rects and blobs, but up to one readback texel off
+  (4 px at 512²) where a narrow tip falls between the readback's taps.
+
+**Exactness** — compare:skia, real engine, 512², frames 0/20/40/60
+(Rotate + / Scale × keyframed), Apple M5 Pro (ANGLE Metal), CanvasKit 0.41.0:
+
+| case | atlas vs GL Copy to Points | groups vs GL Copy to Points |
+|---|---|---|
+| opaque instance (`gl_opq`: star over a full-canvas fill, 3×3 grid) | **MATCH**, max 1/255, 99.96–99.97 % identical; edge band max 1/255 | MATCH by meanAbs (0.0007), but edge band p95 88/255, max 177/255 (vector edges vs a resampled raster) |
+| star on transparency, canvas-centre anchor (`gridc`, `--premul-a`) | alpha meanAbs 0.0000, interior identical, band p95 25/255, max 64/255 | alpha 0.0029, interior identical, band p95 49/255, max 122/255 |
+| content-centre anchor (grid / Voronoi / Point) | band p95 ≈ 214–226/255: the star's tips put the GL anchor one readback texel away (above) | same |
+
+Pixel equality against the GL node needs an opaque instance. The GL image
+mode's anti-aliased edges are wrong on transparency: it writes premultiplied
+colour into its straight output, and it bilinear-samples a straight texture.
+Coverage (alpha) still matches; colour on edges doesn't. This is a native bug,
+filed as a task, and is what `compare:skia --premul-a` partly undoes.
+
+Atlas vs groups within Skia (`gridc`): CLOSE (meanAbs 0.011), interior
+identical, band p95 44/255. CPU (check:skia-atlas): ≤ 2/255 at integer
+placement, and the same at a 2× surface. Rotated / scaled copies agree in ink
+mass to ≤ 1 % and centroid to ≤ 0.05 px.
+
+**Cost** — `npm run bench:skia-atlas`: CanvasKit WebGL (RN web's Ganesh), the
+same M5 Pro, 512², star instance (two AA paths), mean ms per frame including
+the GPU wait, over 120 frames:
+
+| copies | 1 | 4 | 16 | 64 | 256 | 1,024 | 4,096 |
+|---|---|---|---|---|---|---|---|
+| groups (Rotate + animated) | 0.54 | 0.59 | 1.35 | 4.34 | 14.8 | 54.3 | 213 |
+| atlas (Rotate + animated) | 0.29 | 0.24 | 0.32 | 0.27 | 0.31 | 0.34 | 0.62 |
+| groups / atlas (static) | 0.49 / 0.29 | 0.60 / 0.26 | 1.33 / 0.27 | 4.35 / 0.29 | 14.6 / 0.31 | 52.4 / 0.52 | 216 / 0.62 |
+
+- Groups cost about 0.45 ms plus 0.05 ms per copy. The atlas is flat; its
+  one-time sheet raster costs about 1 ms on the first frame.
+- **There is no cost crossover on the web target:** the atlas is cheaper at
+  every N (0.54× at 1, 0.24× at 16, 0.06× at 64).
+- **`auto` picks groups below `ATLAS_AUTO_MIN` = 16 copies.** There they stay
+  ≤ 1.35 ms (about 8 % of a 60 Hz frame here), and they buy vector edges:
+  crisp under scale-up and at device density, a drawing that may animate, no
+  texture memory.
+- **From 16 copies, `auto` picks the atlas.** Groups there cost ≥ 4× the atlas
+  and grow linearly.
+
+Device Graphite and the RN reconciler / Reanimated mapper cost are not
+measured. Animated group transforms are one derived value per copy; the atlas
+is one RSXform buffer.
+
+Export size for 1,600 copies (a 40×40 grid):
+
+| | atlas | groups |
+|---|---|---|
+| static: export time | 57 ms | 2.0 s |
+| static: ToolboxScene.tsx | 79 KB | 474 KB |
+| static: binds | 17 | 35,200 |
+| moving points (keyframed grid width): timeline.ts | 7.3 MB of sampled xforms + pivots (the planner warns) | 63 KB |
+| moving points: per-frame JS | one RSXform buffer | 1,601 `useDerivedValue`s (one per copy) |
+
+In the groups bundle, columns share one series.
+
+**Web parity** (`parity:skia -- --bundle atlas`, `skia-harness/src/bundle-atlas`):
+
+| measure | result |
+|---|---|
+| verdict | **MATCH** on 7/7 frames (0–60) |
+| scene | two atlases (static; tracks) + a groups copy (sampled) |
+| meanAbs | 3e-5 |
+| identical pixels | 99.18–99.57 % |
+| differing pixels | about 1,200, all on sprite edges, ±1 premultiplied step (max 23/255 straight rgb at alpha 11) |
+| motion check | f0 vs f60 meanAbs 0.116 |
+
+RN web rasterises the sheet in its own OffscreenCanvas WebGL context; the
+exact source of the step is not isolated.
+
+Open:
+- In image mode, `tint_attr` / `opacity_attr` (atlas `colors`) and variant
+  picks are not mirrored.
+- Image-asset instances still go through a texture; lane I's `skia-image`
+  could feed its asset straight into the atlas.
+- Moving points under an atlas ship N×4 floats per frame. Pivot-relative
+  xforms would halve that, and lane P's procedural drivers could remove it.
+- `auto` can't see whether the instance animates, so that case is refused
+  with the fix named.
+
 ### 3.5 Animation export: three shapes from one track IR
 
 a. **Worklet timeline (default, built in M0).** Exact, one clock, app

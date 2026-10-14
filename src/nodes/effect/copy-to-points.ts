@@ -657,7 +657,7 @@ function pointsBoundsCenter(pts: Point[]): [number, number] | null {
 // Fisher–Yates (seeded by pick_seed) for when the producer's order
 // creates visible stacking patterns. Variant assignment stays keyed on
 // the point's own index, so reordering never reshuffles variants.
-function buildDrawOrder(
+export function buildDrawOrder(
   pts: PointsValue,
   mode: string,
   seed: number

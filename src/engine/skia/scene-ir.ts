@@ -234,6 +234,24 @@ export type SkiaNode =
       sprites: [number, number, number, number][];
       // 4 floats per sprite: scos, ssin, tx, ty (RSXform).
       xforms: Bind<number[]>;
+      // ---- Additive (2026-10-14, Wave 3 lane A: Copy to Points (Skia)) ----
+      // The sprite sheet drawn from a SUB-SCENE instead of an image asset:
+      // `node` rasterised once into an offscreen image covering `rect`
+      // ([x, y, w, h] in scene px; texture (0, 0) = scene (x, y)) — React
+      // Native Skia's useTexture. `asset` then only names the texture (it
+      // is not in scene.assets). The sub-scene's binds must be static: a
+      // texture renders once. Sprites and xforms stay in scene px; a
+      // consumer may raster the texture at a device scale k (crisp at 3×)
+      // and divides the sprite rects / xform scales by k itself.
+      texture?: { node: SkiaNode; rect: [number, number, number, number] };
+      // A uniform spin / zoom every sprite takes about its own pivot (2
+      // floats per sprite, scene px) on top of `xforms`:
+      //   xform'ᵢ = T(pivotᵢ) · R(rotate) · S(scale) · T(−pivotᵢ) · xformᵢ
+      // so a keyframed modulation ships as two tracks over static xforms.
+      // Absent rotate = 0, scale = 1; pivots are required with either.
+      pivots?: Bind<number[]>;
+      rotate?: Bind<number>;
+      scale?: Bind<number>;
     };
 
 // ---- scene + assets ------------------------------------------------------------------------

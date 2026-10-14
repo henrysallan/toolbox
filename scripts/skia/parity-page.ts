@@ -16,6 +16,7 @@ import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import { auroraGraph, AURORA_TIMELINE } from "../fixtures/skia/aurora-graph";
 import { auroraSceneGraph } from "../fixtures/skia/aurora-scene-graph";
 import { easingsGraph, EASINGS_TIMELINE } from "../fixtures/skia/easings-graph";
+import { atlasGraph, ATLAS_TIMELINE } from "../fixtures/skia/atlas-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -42,10 +43,12 @@ function fromB64(b64: string): Uint8Array {
 // "native-easings" the every-easing node (easings-graph.ts,
 // src/bundle-native-easings), "native-scene" the Skia-layer Aurora
 // (src/bundle-native-scene).
+// "atlas" (Copy to Points (Skia), atlas-graph.ts `combo_skc`) runs at 30 fps:
+// its frames are given at the capture's 60 Hz and rendered at that time.
 export async function renderToolbox(
   frames: number[],
   size: number,
-  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" = "effect"
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" = "effect"
 ): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
@@ -56,11 +59,14 @@ export async function renderToolbox(
       ? { ...auroraSceneGraph(AURORA_SKSL), targetId: "skc" }
       : which === "native-easings"
         ? easingsGraph()
-        : auroraGraph(AURORA_SKSL);
-  const { fps, ticksPerFrame } = which === "native-easings" ? EASINGS_TIMELINE : AURORA_TIMELINE;
+        : which === "atlas"
+          ? { ...atlasGraph(), targetId: "combo_skc" }
+          : auroraGraph(AURORA_SKSL);
+  const { fps, ticksPerFrame } = which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : AURORA_TIMELINE;
   const out: string[] = [];
-  for (const f of frames) {
-    const ctx = backend.makeContext(f / fps, f, undefined, false, { tick: f * ticksPerFrame, ticksPerFrame, fps }, true);
+  for (const capture of frames) {
+    const f = which === "atlas" ? (capture * fps) / 60 : capture;
+    const ctx = backend.makeContext(f / fps, f, undefined, false, { tick: Math.round(f * ticksPerFrame), ticksPerFrame, fps }, true);
     const r = evaluateGraph(nodes, edges, ctx, new Map() as EvalCache, targetId);
     const img = r.outputs.get(targetId)?.primary;
     if (!img || img.kind !== "image") throw new Error(`frame ${f}: no image (${JSON.stringify(r.errors)})`);

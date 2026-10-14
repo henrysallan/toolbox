@@ -38,6 +38,12 @@
 //                    fill type, stroke and every path effect), so `trim`
 //                    entries apply first wherever they sit in pathEffects;
 //                    several compose into one interval.
+//   atlas            RN <Atlas> (drawAtlas: linear sampling, no mipmaps,
+//                    the inherited paint). A `texture` sheet is a sub-scene
+//                    rendered on its own (fresh paint stack) into an
+//                    offscreen surface at the surface's density — RN
+//                    useTexture — then pivots / rotate / scale post-compose
+//                    each RSXform (composeAtlasXforms).
 //
 // Filter / effect arrays are in APPLICATION ORDER: index 0 sees the
 // content (or path) first and each later entry wraps the previous one.
@@ -123,6 +129,59 @@ export interface SceneRenderOptions {
   // assumed to map scene px 1:1 to device px unless the caller concats a
   // scale first and says so here).
   surfaceSize?: [number, number];
+  // Atlas sprite sheets drawn from a sub-scene (`atlas.texture`), keyed by
+  // the sub-scene: reused across frames as React Native Skia's useTexture
+  // renders once. Caller-owned (images stay valid for the canvas's GPU
+  // context); entries over the cap are deleted oldest first. Absent: every
+  // frame rasterises its sheets again. Additive (2026-10-14, lane A).
+  textureCache?: Map<string, Image>;
+}
+
+// Sprite sheets larger than this on a side are refused (GPU texture limits
+// on phones start at 4096).
+export const ATLAS_TEXTURE_MAX = 4096;
+const ATLAS_TEXTURE_CACHE = 16;
+
+// The RSXforms an atlas draws (scene-ir.ts `atlas`): each xform (scos,
+// ssin, tx, ty) post-composed with the uniform spin / zoom about its pivot,
+//   x' = T(p) · R(rotate) · S(scale) · T(−p) · x,
+// then its scale divided by k (the sheet is rasterised k× denser). The
+// exported bundle's worklet does exactly this arithmetic, in this order
+// (scene-emit.ts atlas), so the two agree to the last float.
+export function composeAtlasXforms(
+  xforms: readonly number[],
+  o: { pivots?: readonly number[]; rotate?: number; scale?: number; k?: number } = {}
+): number[] {
+  const n = Math.floor(xforms.length / 4);
+  const out = new Array<number>(n * 4);
+  const k = o.k ?? 1;
+  const mod = o.pivots && (o.rotate !== undefined || o.scale !== undefined);
+  const s = o.scale ?? 1;
+  const c = Math.cos(o.rotate ?? 0) * s;
+  const d = Math.sin(o.rotate ?? 0) * s;
+  for (let i = 0; i < n; i++) {
+    let a = xforms[i * 4];
+    let b = xforms[i * 4 + 1];
+    let tx = xforms[i * 4 + 2];
+    let ty = xforms[i * 4 + 3];
+    if (mod) {
+      const px = o.pivots![i * 2];
+      const py = o.pivots![i * 2 + 1];
+      const na = c * a - d * b;
+      const nb = d * a + c * b;
+      const ntx = px + c * (tx - px) - d * (ty - py);
+      const nty = py + d * (tx - px) + c * (ty - py);
+      a = na;
+      b = nb;
+      tx = ntx;
+      ty = nty;
+    }
+    out[i * 4] = a / k;
+    out[i * 4 + 1] = b / k;
+    out[i * 4 + 2] = tx;
+    out[i * 4 + 3] = ty;
+  }
+  return out;
 }
 
 export interface SceneRenderResult {
@@ -485,7 +544,7 @@ class SceneRenderer {
           this.drawText(node, pc);
           break;
         case "atlas":
-          this.drawAtlas(node, pc);
+          this.drawAtlas(node, pc, depth);
           break;
         default:
           this.problem(`unknown draw node kind "${String((node as { k?: unknown }).k)}"`);
@@ -938,23 +997,123 @@ class SceneRenderer {
     this.canvas.drawText(text, x + dx, y, paint, font);
   }
 
-  // Sprites are [x, y, w, h] in atlas-image px; xforms are RSXforms (scos,
-  // ssin, tx, ty), one per sprite.
-  private drawAtlas(node: Extract<SkiaNode, { k: "atlas" }>, pc: PaintCtx): void {
+  // Sprites are [x, y, w, h] in sheet px; xforms are RSXforms (scos, ssin,
+  // tx, ty), one per sprite, mapping a sprite's local px (from its rect's
+  // top-left) to scene px. The sheet is an image asset, or a sub-scene
+  // rasterised offscreen over `texture.rect` (RN useTexture) at the
+  // surface's scale k — then sprite rects × k and xform scales ÷ k, so the
+  // sheet is crisp at device resolution. pivots / rotate / scale
+  // post-compose a uniform spin / zoom about each sprite's pivot
+  // (composeAtlasXforms). Sampling is linear without mipmaps: RN's
+  // drawAtlas default on web (JsiSkCanvas.ts) and native (JsiSkCanvas.h).
+  private drawAtlas(node: Extract<SkiaNode, { k: "atlas" }>, pc: PaintCtx, depth: number): void {
     const what = this.label(node);
-    const img = this.imageAsset(node.asset, what);
-    if (!img) return;
     const sprites = Array.isArray(node.sprites) ? node.sprites : [];
     const xf = node.xforms?.v;
     if (!Array.isArray(xf) || xf.length !== sprites.length * 4 || xf.some((v) => !Number.isFinite(v))) {
       this.problem(`${what}: xforms must hold 4 finite numbers per sprite (${sprites.length} sprites)`);
       return;
     }
+    let pivots: number[] | undefined;
+    if (node.rotate || node.scale) {
+      const pv = node.pivots?.v;
+      if (!Array.isArray(pv) || pv.length !== sprites.length * 2 || pv.some((v) => !Number.isFinite(v))) {
+        this.problem(`${what}: rotate / scale need 2 finite pivot numbers per sprite (${sprites.length} sprites)`);
+        return;
+      }
+      pivots = pv;
+    }
+    const rotate = node.rotate ? this.num(node.rotate, 0, `${what} rotate`) : undefined;
+    const scale = node.scale ? this.num(node.scale, 1, `${what} scale`) : undefined;
+    let img: Image | null;
+    let k = 1;
+    if (node.texture) {
+      const t = this.atlasTexture(node, depth);
+      if (!t) return;
+      img = t.image;
+      k = t.k;
+    } else {
+      img = this.imageAsset(node.asset, what);
+    }
+    if (!img) return;
     const rects = new Float32Array(sprites.length * 4);
     sprites.forEach((s, i) => {
-      rects.set([s[0], s[1], s[0] + s[2], s[1] + s[3]], i * 4);
+      rects.set([s[0] * k, s[1] * k, (s[0] + s[2]) * k, (s[1] + s[3]) * k], i * 4);
     });
-    this.canvas.drawAtlas(img, rects, Float32Array.from(xf), this.paint(undefined, pc, what));
+    const out = composeAtlasXforms(xf, { pivots, rotate, scale, k });
+    this.canvas.drawAtlas(img, rects, Float32Array.from(out), this.paint(undefined, pc, what));
+  }
+
+  // The sub-scene sprite sheet: rendered into an offscreen surface of the
+  // parent canvas's kind (GPU on the editor's WebGL surface, raster on a
+  // CPU surface) at k = surface px per scene px, then snapshotted. With a
+  // caller-owned `textureCache` it renders once per distinct sub-scene —
+  // what RN's useTexture does — unless something in it is still loading.
+  private atlasTexture(node: Extract<SkiaNode, { k: "atlas" }>, depth: number): { image: Image; k: number } | null {
+    const what = this.label(node);
+    const t = node.texture!;
+    const r = t.rect;
+    if (!Array.isArray(r) || r.length !== 4 || r.some((v) => !Number.isFinite(v)) || r[2] <= 0 || r[3] <= 0) {
+      this.problem(`${what}: texture.rect must be 4 finite numbers with a positive size`);
+      return null;
+    }
+    const k0 = this.size[0] / (this.scene.width || 1);
+    const k = Number.isFinite(k0) && k0 > 0 ? k0 : 1;
+    const tw = Math.max(1, Math.ceil(r[2] * k));
+    const th = Math.max(1, Math.ceil(r[3] * k));
+    if (tw > ATLAS_TEXTURE_MAX || th > ATLAS_TEXTURE_MAX) {
+      this.problem(`${what}: the sprite sheet would be ${tw}×${th} px — over ${ATLAS_TEXTURE_MAX} px on a side`);
+      return null;
+    }
+    const cache = this.opts.textureCache;
+    const key = cache ? JSON.stringify([tw, th, k, r, t.node]) : "";
+    const hit = cache?.get(key);
+    if (hit && !(hit as Partial<EmbindObject<string>>).isDeleted?.()) return { image: hit, k };
+    const { kit } = this;
+    const surf = this.track(
+      this.canvas.makeSurface({
+        width: tw,
+        height: th,
+        colorType: kit.ColorType.RGBA_8888,
+        alphaType: kit.AlphaType.Premul,
+        colorSpace: kit.ColorSpace.SRGB,
+      })
+    );
+    if (!surf) {
+      this.problem(`${what}: could not allocate the ${tw}×${th} sprite sheet`);
+      return null;
+    }
+    const c = surf.getCanvas();
+    c.clear(kit.TRANSPARENT);
+    c.scale(k, k);
+    c.translate(-r[0], -r[1]);
+    const parent = this.canvas;
+    const pendingBefore = this.pending.size;
+    const problemsBefore = this.problems.size;
+    this.canvas = c;
+    try {
+      this.drawNode(t.node, { opacity: 1 }, depth + 1);
+    } finally {
+      this.canvas = parent;
+    }
+    const image = surf.makeImageSnapshot();
+    if (cache && this.pending.size === pendingBefore && this.problems.size === problemsBefore) {
+      cache.set(key, image);
+      // A small LRU: the oldest sheet goes once the cache outgrows its cap.
+      while (cache.size > ATLAS_TEXTURE_CACHE) {
+        const oldest = cache.keys().next().value as string;
+        const img = cache.get(oldest);
+        cache.delete(oldest);
+        try {
+          img?.delete();
+        } catch {
+          /* already gone */
+        }
+      }
+    } else {
+      this.track(image);
+    }
+    return { image, k };
   }
 
   // ---- paint ----

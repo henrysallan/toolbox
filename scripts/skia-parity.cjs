@@ -44,7 +44,8 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // native / native-easings / native-scene = Reanimated-native exports
 // (`--animation native`: src/bundle-native = Aurora, src/bundle-native-
 // easings = every easing kind, src/bundle-native-scene = Aurora as a Skia
-// layer). The native pages run on the harness's fake clock
+// layer); atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`:
+// sprite-sheet atlases + vector copy groups). The native pages run on the harness's fake clock
 // (?clock=fake): each capture steps Reanimated frame by frame from play(),
 // so frames must ascend, and the run also reports every animated value's
 // drift from the worklet-mode curve at every frame (drift.json).
@@ -59,7 +60,15 @@ const SEED = Number(H.arg("seed", "1"));
 const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${JITTER ? `-jitter${JITTER}` : ""}` : "");
 const BUNDLE_DIR = path.join(OUT, ".bundle");
 
-const DEFAULT_FRAMES = BUNDLE === "native-easings" ? "0,10,30,57,58,90,120,150,151,163,200,240,299" : "0,45,90,120,150,200,240,299";
+// atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`): a 30 fps
+// fixture, so its default frames (60 Hz, as every capture time is f / 60)
+// land on its own frames 0, 10, … 60.
+const DEFAULT_FRAMES =
+  BUNDLE === "native-easings"
+    ? "0,10,30,57,58,90,120,150,151,163,200,240,299"
+    : BUNDLE === "atlas"
+      ? "0,20,40,60,80,100,120"
+      : "0,45,90,120,150,200,240,299";
 const FRAMES = H.arg("frames", DEFAULT_FRAMES).split(",").map(Number);
 const SIZE = Number(H.arg("size", "512"));
 const WRITE_GOLDEN = H.flag("write-golden");
@@ -74,11 +83,11 @@ if (
   !(SIZE > 0) ||
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }

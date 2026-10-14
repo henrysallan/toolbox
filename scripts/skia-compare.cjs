@@ -23,6 +23,10 @@
 //   --expect B          exit 0 only if every frame is within band B:
 //                       match (default) | close | off (never fails on pixels)
 //   --out DIR           output dir (default scripts/.skia-compare-out/<a>-vs-<b>)
+//   --premul-a          side A writes PREMULTIPLIED rgb into its straight image
+//                       (the GL Copy to Points' image mode blends that way — a
+//                       native bug, spec §3.4 built and measured): divide its
+//                       alpha out before scoring, and in f<N>-a.png
 //   --timeout MS        per-frame render timeout (default 60000)
 //   --verbose           echo every page console line
 //
@@ -52,7 +56,7 @@ function usage(msg) {
   console.error(
     "usage: npm run compare:skia -- --a <fixture>:<node>[:<handle>] --b <fixture>:<node>[:<handle>]\n" +
       "         [--frames 0,45] [--size 512|WxH] [--analysis 256] [--threshold 0.02]\n" +
-      "         [--expect match|close|off] [--out dir] [--timeout ms] [--verbose]\n" +
+      "         [--expect match|close|off] [--premul-a] [--out dir] [--timeout ms] [--verbose]\n" +
       "fixtures: " +
       (fs.existsSync(FIXTURES)
         ? fs
@@ -90,7 +94,7 @@ function parseSize(raw) {
   return [w, h];
 }
 
-let A, B, framesArg, sizeArg, analysisArg, threshold, expect, outArg, timeoutMs, verbose;
+let A, B, framesArg, sizeArg, analysisArg, threshold, expect, outArg, timeoutMs, verbose, premulA;
 try {
   if (H.flag("help") || H.flag("h")) usage();
   A = parseSide("a");
@@ -103,6 +107,7 @@ try {
   outArg = H.arg("out");
   timeoutMs = Number(H.arg("timeout", "60000"));
   verbose = H.flag("verbose");
+  premulA = H.flag("premul-a");
 } catch (e) {
   usage(e.message);
 }
@@ -223,7 +228,7 @@ app.whenReady().then(async () => {
     fs.mkdirSync(OUT, { recursive: true });
     const rows = [];
     for (const f of list) {
-      const r = await call(`frame(${f}, ${aw}, ${ah}${threshold ? `, ${threshold}` : ""})`, `frame ${f}`);
+      const r = await call(`frame(${f}, ${aw}, ${ah}, ${threshold ?? "undefined"}, ${premulA ? "true" : "false"})`, `frame ${f}`);
       writePng(path.join(OUT, `f${f}-a.png`), r.a, aw, ah);
       writePng(path.join(OUT, `f${f}-b.png`), r.b, aw, ah);
       writePng(path.join(OUT, `f${f}-heat.png`), r.heat, aw, ah);
@@ -245,6 +250,7 @@ app.whenReady().then(async () => {
       canvas: { width: w, height: h },
       analysis: { width: aw, height: ah },
       threshold: threshold ?? 0.02,
+      premulA: !!premulA,
       canvasKit: { version: ck.version, build },
       renderer: prepA.renderer,
       frames: list,

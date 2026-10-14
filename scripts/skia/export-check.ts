@@ -76,6 +76,10 @@ function programsOf(node: SkiaNode, where: string, out: { where: string; program
     case "text":
       paint(node.paint, `${where}.paint`);
       break;
+    case "atlas":
+      // A sub-scene sprite sheet ships its programs like the scene does.
+      if (node.texture) programsOf(node.texture.node, `${where}.texture.node`, out);
+      break;
     default:
       break;
   }

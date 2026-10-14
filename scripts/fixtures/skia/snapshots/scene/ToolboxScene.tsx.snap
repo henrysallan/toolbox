@@ -135,7 +135,7 @@ const K9 = parsePath("M160 400L134.562 410.58L132.361 438.042L114.438 417.119L87
 const K11 = toPoints([10, 10, 20, 20, 30, 10]);
 const K12 = Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false);
 const PATHS_b126 = PATH_b126.v.map(parsePath);
-const K18 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
+const K19 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
 const K21 = parsePath("M400 400 L500 400 L450 500 Z");
 
 export interface ToolboxSceneGroupProps {
@@ -170,12 +170,12 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
   const D15 = useDerivedValue(() => 156 - textAdvance(FONT14, B.value.b133) / 2);
   const TF16 = useTypeface(ASSET_SOURCES["inter"]);
   const D17 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
-  const XF19 = useRSXformBuffer(2, (xf, i) => {
+  const IMG18 = useImage(ASSET_SOURCES["sprites"]);
+  const XF20 = useRSXformBuffer(2, (xf, i) => {
     "worklet";
-    const a = B.value.b144;
-    xf.set(a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]);
+    const A = B.value.b144;
+    xf.set(A[i * 4], A[i * 4 + 1], A[i * 4 + 2], A[i * 4 + 3]);
   });
-  const IMG20 = useImage(ASSET_SOURCES["sprites"]);
   const FONTS22 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
   const D23 = useDerivedValue(() => makeParagraph(FONTS22, "inter", B.value.b161, 20, TextAlign.Center, B.value.b3, 1));
   const D24 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
@@ -302,7 +302,7 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
         <Image image={IMG13} x={16} y={16} width={48} height={48} fit="contain" />
         <Text font={FONT14} text={select(B, "b133")} x={D15} y={480} color={[1, 1, 1, 1]} />
         <Text font={D17} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
-        <Atlas image={IMG20} sprites={K18} transforms={XF19} />
+        <Atlas image={IMG18} sprites={K19} transforms={XF20} />
         <Rect x={400} y={16} width={96} height={96}>
           <ImageShader
             image={IMG13}

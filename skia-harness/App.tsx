@@ -30,6 +30,7 @@ import { useSharedValue, type SharedValue } from "react-native-reanimated";
 import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
+import * as AtlasScene from "./src/bundle-atlas";
 import * as Baked from "./src/bundle-baked";
 import * as NativeAurora from "./src/bundle-native";
 import { evaluateTrack as nativeAuroraTrack } from "./src/bundle-native/toolbox-timeline";
@@ -45,16 +46,23 @@ const query =
     ? new URLSearchParams(window.location.search)
     : null;
 const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
-// Which export plays: the M0 SkSL Shader bundle (src/bundle) or the
-// Skia-layer scene bundle (src/bundle-scene) with ?bundle=scene. Fixed for
+// Which export plays: the M0 SkSL Shader bundle (src/bundle) or a
+// Skia-layer scene bundle (src/bundle-scene with ?bundle=scene). Fixed for
 // the page's lifetime, so the hook choice below is stable.
-const SCENE = query?.get("bundle") === "scene";
+// ?bundle=atlas: Copy to Points (Skia) — sprite-sheet atlases (useTexture +
+// useRSXformBuffer) and vector copy groups in one scene (src/bundle-atlas,
+// `export-skia.mts --fixture atlas`).
+const SceneBundle = query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : null;
 // ?bundle=baked: the same SkSL Shader export with animation "baked"
 // (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
 const EffectBundle = query?.get("bundle") === "baked" ? Baked : Effect;
-const { CANVAS, NAME, TIMELINE, SEGMENTS } = SCENE ? Scene : EffectBundle;
-const ToolboxEffect = SCENE ? Scene.ToolboxScene : EffectBundle.ToolboxEffect;
-const useToolboxClock = SCENE ? Scene.useToolboxClock : EffectBundle.useToolboxClock;
+const { CANVAS, NAME, TIMELINE } = SceneBundle ?? EffectBundle;
+// (The atlas slot has no markers — its SEGMENTS is {} — so read every slot's
+// table as the Aurora one; the chrome lists only the names it really has.)
+const SEGMENTS = (SceneBundle ?? EffectBundle).SEGMENTS as typeof Effect.SEGMENTS;
+const ToolboxEffect = SceneBundle ? SceneBundle.ToolboxScene : EffectBundle.ToolboxEffect;
+// (Likewise its SegmentName is `never`.)
+const useToolboxClock = (SceneBundle ? SceneBundle.useToolboxClock : EffectBundle.useToolboxClock) as typeof Effect.useToolboxClock;
 // Native-mode slots (animation: "native" exports, native-harness.tsx):
 // ?bundle=native (Aurora, src/bundle-native), ?bundle=native-easings (every
 // easing kind, src/bundle-native-easings) and ?bundle=native-scene (Aurora

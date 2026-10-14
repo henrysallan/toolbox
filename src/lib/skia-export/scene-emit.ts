@@ -34,6 +34,7 @@
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
 import { isColorManagedSksl } from "@/engine/skia/library/color-management";
+import { composeAtlasXforms } from "@/engine/skia/scene-render";
 import {
   SKIA_IR_VERSION,
   type Bind,
@@ -169,6 +170,10 @@ interface El {
   tag: string;
   props: [string, string | El][];
   children: El[];
+  // A JSX expression child (`{E0}`) instead of an element: a drawing
+  // emitted once and reused (Copy to Points (Skia)'s instance under N
+  // copy groups).
+  expr?: string;
 }
 
 const el = (tag: string, props: [string, string | El | undefined][] = [], children: El[] = []): El => ({
@@ -177,7 +182,10 @@ const el = (tag: string, props: [string, string | El | undefined][] = [], childr
   children,
 });
 
+const exprEl = (code: string): El => ({ tag: "", props: [], children: [], expr: code });
+
 function renderEl(e: El, indent: string): string {
+  if (e.expr !== undefined) return `${indent}{${e.expr}}`;
   const inner = indent + "  ";
   const propText = (k: string, v: string | El, pIndent: string) => {
     if (typeof v !== "string") return `${k}={${renderEl(v, pIndent).trimStart()}}`;
@@ -242,10 +250,54 @@ class SceneEmitter {
   private assetHooks = new Map<string, string>();
   needB = false;
   needF = false;
+  // `import { PixelRatio } from "react-native"` (atlas sprite sheets).
+  needPixelRatio = false;
   readonly keys: Map<string, string>;
+  // Drawing nodes the tree holds more than once (one instance under N copy
+  // groups): emitted once as `const E<k> = (…)` and referenced as {E<k>}.
+  private shared = new Map<SkiaNode, number>();
+  private sharedEl = new Map<SkiaNode, El>();
+  // Render-phase hook values (loaded images / fonts) the walk references —
+  // collected while emitting a sprite sheet's sub-scene, whose texture must
+  // re-render when they land.
+  private renderRefs: Set<string> | null = null;
+  private atlasScaleName: string | null = null;
+  // Sprite-sheet textures by drawing and rect (two atlases of one drawing
+  // share one useTexture).
+  private sheets = new Map<SkiaNode, Map<string, string>>();
 
   constructor(private plan: ScenePlan) {
     this.keys = sampleKeys(plan);
+    const seen = new Map<SkiaNode, number>();
+    const visit = (n: SkiaNode | undefined) => {
+      if (!n || typeof n !== "object") return;
+      const c = (seen.get(n) ?? 0) + 1;
+      seen.set(n, c);
+      if (c > 1) return;
+      if (n.k === "group") n.children.forEach(visit);
+      if (n.k === "atlas" && n.texture) visit(n.texture.node);
+    };
+    visit(plan.scene.root);
+    for (const [n, c] of seen) if (c > 1) this.shared.set(n, c);
+  }
+
+  private noteRender(name: string): string {
+    this.renderRefs?.add(name);
+    return name;
+  }
+
+  // Device px per scene px for sprite sheets (crisp at 3×): the canvas's
+  // pixel ratio × the root group's scale, rounded so a 1:1 web canvas is
+  // exactly 1.
+  private atlasScale(): string {
+    if (!this.atlasScaleName) {
+      this.atlasScaleName = "AK";
+      this.needPixelRatio = true;
+      this.hooks.push(
+        `// Device px per toolbox px — atlas sprite sheets rasterise at this density.\n  const AK = Math.round(PixelRatio.get() * Math.max(width / CANVAS.width, height / CANVAS.height) * 1e6) / 1e6;`
+      );
+    }
+    return this.atlasScaleName;
   }
 
   // The sampleBinds key an animated bind reads (null: not animated).
@@ -396,12 +448,12 @@ class SceneEmitter {
 
   image(asset: string): string {
     const hit = this.assetHooks.get(`img:${asset}`);
-    if (hit) return hit;
+    if (hit) return this.noteRender(hit);
     const name = this.name("IMG");
     this.rn.add("useImage");
     this.hooks.push(`const ${name} = useImage(ASSET_SOURCES[${lit(asset)}]);`);
     this.assetHooks.set(`img:${asset}`, name);
-    return name;
+    return this.noteRender(name);
   }
 
   font(asset: string, size: Bind<number>): V {
@@ -415,7 +467,7 @@ class SceneEmitter {
         this.hooks.push(`const ${name} = useFont(ASSET_SOURCES[${lit(asset)}], ${sv.code});`);
         this.assetHooks.set(key, name);
       }
-      return { kind: "render", code: name };
+      return { kind: "render", code: this.noteRender(name) };
     }
     let tf = this.assetHooks.get(`tf:${asset}`);
     if (!tf) {
@@ -424,6 +476,7 @@ class SceneEmitter {
       this.hooks.push(`const ${tf} = useTypeface(ASSET_SOURCES[${lit(asset)}]);`);
       this.assetHooks.set(`tf:${asset}`, tf);
     }
+    this.noteRender(tf);
     this.rn.add("Skia");
     return this.composite([{ kind: "render", code: tf }, sv], ([t, s]) => `${t} ? Skia.Font(${t}, ${s}) : null`);
   }
@@ -437,7 +490,7 @@ class SceneEmitter {
       this.hooks.push(`const ${name} = useFonts({ ${JSON.stringify(asset)}: [ASSET_SOURCES[${lit(asset)}]] });`);
       this.assetHooks.set(`fonts:${asset}`, name);
     }
-    return { kind: "render", code: name };
+    return { kind: "render", code: this.noteRender(name) };
   }
 
   effect(p: SkslProgramIR, where: string): string {
@@ -715,6 +768,21 @@ class SceneEmitter {
   }
 
   node(n: SkiaNode, path: string): El {
+    if (!this.shared.has(n)) return this.drawNode(n, path);
+    const hit = this.sharedEl.get(n);
+    if (hit) return hit;
+    // First sight of a drawing the tree repeats: build it once as a
+    // component-scope element (its hooks are already above it) and hand
+    // every place that draws it a reference.
+    const name = this.name("E");
+    const e = this.drawNode(n, path);
+    this.hooks.push(`// ${path}${n.id ? ` (${n.id})` : ""}, drawn ${this.shared.get(n)}×.\n  const ${name} = (\n${renderEl(e, "    ")}\n  );`);
+    const ref = exprEl(name);
+    this.sharedEl.set(n, ref);
+    return ref;
+  }
+
+  private drawNode(n: SkiaNode, path: string): El {
     const where = n.id ? `${path} (${n.id})` : path;
     switch (n.k) {
       case "group": {
@@ -797,28 +865,136 @@ class SceneEmitter {
         }
         return el("Text", [["font", prop(font)], ["text", prop(this.bind(n.text))], ["x", prop(x)], ["y", prop(this.bind(n.y))], ...p.props], p.children);
       }
-      case "atlas": {
-        this.rn.add("Atlas");
-        this.rn.add("rect");
-        const sprites = this.composite([], () => `[${n.sprites.map((r) => `rect(${r.map(lit).join(", ")})`).join(", ")}]`, { hoist: true });
-        const xv = this.bind(n.xforms);
-        let xforms: string;
-        if (xv.kind === "anim") {
-          xforms = this.name("XF");
-          this.rn.add("useRSXformBuffer");
-          this.hooks.push(
-            `const ${xforms} = useRSXformBuffer(${n.sprites.length}, (xf, i) => {\n    "worklet";\n    const a = ${xv.inner};\n    xf.set(a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]);\n  });`
-          );
-        } else {
-          this.rn.add("Skia");
-          const a = (this.plan.bindFor.get(n.xforms)?.plan as { value?: number[] })?.value ?? n.xforms.v;
-          const xs: string[] = [];
-          for (let i = 0; i + 3 < a.length; i += 4) xs.push(`Skia.RSXform(${lit(a[i])}, ${lit(a[i + 1])}, ${lit(a[i + 2])}, ${lit(a[i + 3])})`);
-          xforms = prop(this.composite([], () => `[${xs.join(", ")}]`, { hoist: true }));
-        }
-        return el("Atlas", [["image", this.image(n.asset)], ["sprites", prop(sprites)], ["transforms", xforms]]);
-      }
+      case "atlas":
+        return this.atlas(n, path);
     }
+  }
+
+  // <Atlas>: the sheet is an image asset (useImage) or a sub-scene
+  // rasterised once (useTexture) at the device density AK, whose sprite
+  // rects × AK and xform scales ÷ AK. RSXforms: static ones are built once
+  // (per AK); animated ones — or a modulation (pivots / rotate / scale) —
+  // fill a useRSXformBuffer whose worklet repeats composeAtlasXforms
+  // (scene-render.ts) operation for operation.
+  private atlas(n: Extract<SkiaNode, { k: "atlas" }>, path: string): El {
+    this.rn.add("Atlas");
+    this.rn.add("rect");
+    this.rn.add("Skia");
+    const N = n.sprites.length;
+    const tex = n.texture;
+    let image: string;
+    let ak = "";
+    const sheetKey = tex ? JSON.stringify(tex.rect) : "";
+    const sameSheet = tex ? this.sheets.get(tex.node)?.get(sheetKey) : undefined;
+    if (tex && sameSheet) {
+      // The same drawing over the same rect: one texture for both atlases.
+      ak = this.atlasScale();
+      image = sameSheet;
+    } else if (tex) {
+      ak = this.atlasScale();
+      this.rn.add("useTexture");
+      const refs = new Set<string>();
+      const outerRefs = this.renderRefs;
+      const outerOpacity = this.groupOpacity;
+      this.renderRefs = refs;
+      this.groupOpacity = []; // the sheet renders on its own, not under our groups
+      const inner = this.node(tex.node, `${path}.texture.node`);
+      this.renderRefs = outerRefs;
+      this.groupOpacity = outerOpacity;
+      for (const r of refs) outerRefs?.add(r);
+      const [x, y, w, h] = tex.rect;
+      const size = this.name("SZ");
+      this.hooks.push(`const ${size} = React.useMemo(() => ({ width: Math.ceil(${lit(w)} * ${ak}), height: Math.ceil(${lit(h)} * ${ak}) }), [${ak}]);`);
+      const sheet = renderEl(el("Group", [["transform", `[{ scale: ${ak} }, { translateX: ${lit(-x)} }, { translateY: ${lit(-y)} }]`]], [inner]), "    ");
+      image = this.name("TEX");
+      this.hooks.push(`// ${path}: the sprite sheet, rendered once (and again when its assets land).\n  const ${image} = useTexture(\n${sheet},\n    ${size},\n    [${[size, ...refs].join(", ")}]\n  );`);
+      if (!this.sheets.has(tex.node)) this.sheets.set(tex.node, new Map());
+      this.sheets.get(tex.node)!.set(sheetKey, image);
+    } else {
+      image = this.image(n.asset);
+    }
+
+    // Sprites: identical rects (Copy to Points' one instance) compactly.
+    const same = n.sprites.every((s) => s.every((v, i) => v === n.sprites[0][i]));
+    const rectCode = (r: [number, number, number, number]) =>
+      ak ? `rect(${r.map((v) => (v === 0 ? "0" : `${lit(v)} * ${ak}`)).join(", ")})` : `rect(${r.map(lit).join(", ")})`;
+    const spriteList = same && N > 1 ? `Array.from({ length: ${N} }, () => ${rectCode(n.sprites[0])})` : `[${n.sprites.map(rectCode).join(", ")}]`;
+    let sprites: string;
+    if (ak) {
+      sprites = this.name("SP");
+      this.hooks.push(`const ${sprites} = React.useMemo(() => ${spriteList}, [${ak}]);`);
+    } else {
+      sprites = this.name("K");
+      this.consts.push(`const ${sprites} = ${spriteList};`);
+    }
+
+    const div = (code: string) => (ak ? `${code} / ${ak}` : code);
+    const xv = this.bind(n.xforms);
+    const mod = !!(n.rotate || n.scale);
+    const pv = mod && n.pivots ? this.bind(n.pivots) : null;
+    const rv = n.rotate ? this.bind(n.rotate) : null;
+    const sv = n.scale ? this.bind(n.scale) : null;
+    const staticOf = <T,>(b: Bind<T> | undefined): T | undefined => {
+      if (!b) return undefined;
+      const p = this.plan.bindFor.get(b)?.plan as { kind?: string; value?: T } | undefined;
+      return p?.kind === "static" ? p.value : b.v;
+    };
+    let xforms: string;
+    if (![xv, pv, rv, sv].some((v) => v?.kind === "anim")) {
+      // Everything static: compose at export, divide by AK at run time.
+      const data = composeAtlasXforms(staticOf(n.xforms) ?? [], mod ? { pivots: staticOf(n.pivots), rotate: staticOf(n.rotate), scale: staticOf(n.scale) } : {});
+      const dataName = this.name("XD");
+      this.consts.push(`// ${path}: ${N} RSXforms (scos, ssin, tx, ty), toolbox px.\nconst ${dataName} = ${lit(data)};`);
+      const build = `Array.from({ length: ${N} }, (_, i) => Skia.RSXform(${div(`${dataName}[i * 4]`)}, ${div(`${dataName}[i * 4 + 1]`)}, ${dataName}[i * 4 + 2], ${dataName}[i * 4 + 3]))`;
+      xforms = this.name("XF");
+      if (ak) this.hooks.push(`const ${xforms} = React.useMemo(() => ${build}, [${ak}]);`);
+      else this.consts.push(`const ${xforms} = ${build};`);
+    } else {
+      this.rn.add("useRSXformBuffer");
+      // Static parts as module data the worklet captures.
+      const data = (v: V, b: Bind<number[]> | undefined, label: string) => {
+        if (v.kind === "anim") return v.inner;
+        const name = this.name(label);
+        this.consts.push(`const ${name} = ${lit(staticOf(b) ?? [])};`);
+        return name;
+      };
+      const A = data(xv, n.xforms, "XA");
+      let lines = [`const A = ${A};`];
+      if (mod) {
+        const P = data(pv!, n.pivots, "XP");
+        const r = rv ? (rv.kind === "anim" ? rv.inner : rv.kind === "static" ? rv.code : "0") : "0";
+        const s = sv ? (sv.kind === "anim" ? sv.inner : sv.kind === "static" ? sv.code : "1") : "1";
+        let M: string;
+        if (rv?.kind === "anim" || sv?.kind === "anim") {
+          M = this.name("XM");
+          this.rea.add("useDerivedValue");
+          this.hooks.push(`const ${M} = useDerivedValue(() => [Math.cos(${r}) * ${s}, Math.sin(${r}) * ${s}]);`);
+          M = `${M}.value`;
+        } else {
+          M = this.name("XM");
+          this.consts.push(`const ${M} = [Math.cos(${r}) * ${s}, Math.sin(${r}) * ${s}];`);
+        }
+        lines = [
+          ...lines,
+          `const P = ${P};`,
+          `const M = ${M};`,
+          `const c = M[0];`,
+          `const d = M[1];`,
+          `const a = A[i * 4];`,
+          `const b = A[i * 4 + 1];`,
+          `const tx = A[i * 4 + 2];`,
+          `const ty = A[i * 4 + 3];`,
+          `const px = P[i * 2];`,
+          `const py = P[i * 2 + 1];`,
+          `xf.set(${div("(c * a - d * b)")}, ${div("(d * a + c * b)")}, px + c * (tx - px) - d * (ty - py), py + d * (tx - px) + c * (ty - py));`,
+        ];
+      } else {
+        lines.push(`xf.set(${div("A[i * 4]")}, ${div("A[i * 4 + 1]")}, A[i * 4 + 2], A[i * 4 + 3]);`);
+      }
+      xforms = this.name("XF");
+      this.hooks.push(`const ${xforms} = useRSXformBuffer(${N}, (xf, i) => {\n    "worklet";\n${lines.map((l) => `    ${l}`).join("\n")}\n  });`);
+    }
+    return el("Atlas", [["image", image], ["sprites", sprites], ["transforms", xforms]]);
   }
 }
 
@@ -1038,6 +1214,7 @@ export function emitSceneBundle(
   files["ToolboxScene.tsx"] =
     HEADER("the React Native Skia scene") +
     `\nimport React from "react";\n` +
+    (em.needPixelRatio ? `import { PixelRatio } from "react-native";\n` : "") +
     `import {\n  ${[...rnNames, ...rnTypes].join(",\n  ")},\n} from "react-native-skia";\n` +
     (reaImports.length ? `import { ${reaImports.join(", ")} } from "react-native-reanimated";\n` : "") +
     (em.effects.length ? `import { ${em.effects.map((_, i) => `SKSL_${i}`).join(", ")} } from "./effects";\n` : "") +

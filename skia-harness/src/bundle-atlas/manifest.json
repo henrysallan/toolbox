@@ -1,0 +1,60 @@
+{
+  "format": 3,
+  "kind": "scene",
+  "name": "Copy to Points (Skia)",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 30,
+    "ticksPerFrame": 1000,
+    "durationTicks": 60000,
+    "durationSec": 2,
+    "frames": 61
+  },
+  "segments": [],
+  "markers": [],
+  "sampledFrames": 61,
+  "webPlayable": true,
+  "bindCounts": {
+    "static": 64,
+    "track": 2,
+    "sampled": 1
+  },
+  "binds": [
+    {
+      "id": "b40",
+      "path": "root.children.1.rotate",
+      "kind": "track",
+      "sample": "b40",
+      "from": "keyframes ska_grid.rotate_add_default (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b41",
+      "path": "root.children.1.scale",
+      "kind": "track",
+      "sample": "b41",
+      "from": "keyframes ska_grid.scale_mul_default (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b42",
+      "path": "root.children.2.children.0.transform.translate.0",
+      "kind": "sampled",
+      "sample": "b42",
+      "role": "number",
+      "from": "derived from skg_pt's inputs (pt is keyframed); sampled 61 frames",
+      "distinct": 61
+    }
+  ],
+  "programs": [],
+  "assets": [],
+  "warnings": []
+}
