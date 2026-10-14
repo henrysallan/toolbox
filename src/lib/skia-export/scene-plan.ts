@@ -58,6 +58,7 @@ import {
 import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
 import type { SkiaExportAssets } from "./api";
 import { assetWarnings, type AssetUse } from "./asset-bundle";
+import { lowerSceneGradients } from "@/engine/skia/library/gradient-program";
 import { timelineSpringOf } from "./spring";
 
 export type BindValue = number | number[] | string;
@@ -715,11 +716,26 @@ function programReadsTime(scene: SkiaScene, path: string): boolean {
 }
 
 export function planSceneExport(
-  scene: SkiaScene,
+  rawScene: SkiaScene,
   nodes: GraphNode[],
   edges: GraphEdge[],
-  opts: ScenePlanOptions
+  rawOpts: ScenePlanOptions
 ): ScenePlanResult {
+  // Gradients ship as their color-managed programs, never as React Native
+  // Skia's gradient components: Skia interpolates those in the canvas's
+  // working space, which shifts them on a Display P3 iPhone (library/
+  // gradient-program.ts). The preview draws the same programs.
+  const scene = lowerSceneGradients(rawScene);
+  const rawSample = rawOpts.sampleAt;
+  const opts: ScenePlanOptions = rawSample
+    ? {
+        ...rawOpts,
+        sampleAt: (tick) => {
+          const s = rawSample(tick);
+          return s ? lowerSceneGradients(s) : s;
+        },
+      }
+    : rawOpts;
   const problems: string[] = [];
   const warnings: string[] = [];
   const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges, warnings };

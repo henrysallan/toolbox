@@ -515,6 +515,9 @@ that pair). Offline node tests should push each input through
   the baked if-trees (a GPU takes one), which is why the per-frame
   renders are small (`BAKED_SIZE`, default 32). Web parity is
   `npm run parity:skia -- --bundle baked` (skia-harness/src/bundle-baked).
+  Since gradients plan as color-managed programs (lane C, 2026-10-14) the
+  scene fixture's gradient child bakes its keyframed stop color (the baker
+  adds the program an iTime); baked vs worklet at every frame, 0/255.
 - `check-skia-segments` — timeline markers → named segments → the exported
   clock (101326_skia-target.md §3.5a, M3). The marker model
   (`lib/timeline-markers.ts`: save sanitizer, ruler edits, the strict
@@ -544,8 +547,9 @@ that pair). Offline node tests should push each input through
   (101326_skia-target.md §5.5, `engine/skia/library/color-management.ts`).
   Every registered library function (minimal fused program), every program
   of every family fixture (fused chains, SDF programs, a program child),
-  the SkSL Shader node (default source, a user shader sampling iImage1 —
-  plus its main / `iImageN.eval` rewrite and error-line mapping), baked
+  the SkSL Shader node (default source, a user shader sampling iImage1,
+  one sampling it from helpers / in parentheses / across comments — plus
+  its main / `iImageN.eval` rewrite and error-line mapping), baked
   programs (`animation: "baked"`) and a chain with image / color leaves and
   an SDF program child render on CanvasKit CPU surfaces in sRGB 8-bit,
   Display P3 F32 and Display P3 8-bit. Held to 1/255: P3 F32 read back as
@@ -554,14 +558,42 @@ that pair). Offline node tests should push each input through
   off (no drift), and with the intrinsics stubbed to identities (an
   untagged surface). NEGATIVE controls: the same programs uncorrected on
   P3 (up to ~116/255), a literal color, the old `layout(color)` style.
-  Native drawing is reported, not held: Skia converts solids and images
-  (≤ 1/255) but interpolates gradients and blends in the working space
-  (~24–100/255 on P3). Traps it hit: Skia's CPU backend skips a color
-  intrinsic inside a conditional once a child was sampled (the helper
-  never branches around them), and CanvasKit 0.41.0's F32 `readPixels`
-  returns an array 4× too long (slice it). Programs that are slow on the
-  CPU backend (Kuwahara, Flow Blur, Lyapunov) render smaller (`CM_SIZE`,
-  default 32, is the cap).
+  Native drawing (2026-10-14, Wave 3 lane C): Skia converts solids and
+  images itself (held ≤ 1/255) but interpolates gradients and blends in the
+  working space, so every gradient is LOWERED — the renderer and the
+  exporter both draw `engine/skia/library/gradient-program.ts`'s
+  color-managed program instead of a native gradient. 48 gradients (each
+  kind × tile, Skia's degenerate rules, hard / unsorted / out-of-range /
+  translucent stops, 49 stops) are held to Skia's own native gradient on
+  sRGB (≤ 1/255) and like every program on P3 — also a gradient inside a
+  Copy to Points (Skia) sprite sheet (`atlas.texture`, lowered in preview
+  and export) and a gradient leaf beside an image leaf (the image leaf and
+  the scene's assets untouched); the native gradients' P3
+  shift (up to 48/255; red → blue 24/255) is the negative control. Native
+  blend modes can't be lowered on device — React Native Skia 3.4 exposes no
+  runtime blender (the gate re-checks its sources) — so each mode's P3
+  shift is measured and printed (exact: the Porter-Duff selectors; srcOver /
+  srcATop only for an opaque source; the color blends 55–255/255; Merge
+  (Skia) is exact). The SkSL Shader rewrite is token-based: SkSL rejects
+  shader-typed parameters, locals, arrays and ternaries (asserted), so
+  `iImageN` is the only shader value, and its samples are converted in
+  helpers, in parentheses and across comments too. Traps it hit: Skia's
+  CPU backend skips a color intrinsic inside a conditional once a child
+  was sampled (the helper never branches around them); CanvasKit 0.41.0's
+  F32 `readPixels` returns an array 4× too long (slice it); CanvasKit's JS
+  `MakeSweepGradient` reads `endAngle` 0 as 360 (`M=M||360` — React Native
+  Skia web inherits it, a device doesn't), so a collapsed sweep is only
+  comparable as the program; a gradient whose t = 0 edge runs exactly
+  through pixel centres flips sides on float noise (the corpus sits off the
+  grid); the CPU backend runs a runtime gradient ~100× slower than a
+  native one (GPU: ~2×, spec §4) — the cost line is CPU-relative only; and
+  `compileSksl`'s cache is per CanvasKit instance — gates run several in one
+  process (`checkExportable` makes its own), and an effect compiled by one
+  fails in another with embind's "Expected null or instance of Shader, got
+  an instance of Shader" (check-skia-paint hit it once gradients became
+  programs).
+  Programs that are slow on the CPU backend (Kuwahara, Flow Blur,
+  Lyapunov) render smaller (`CM_SIZE`, default 32, is the cap).
 - `check-skia-native` — the Reanimated-native export mode
   (`animation: "native"`, src/lib/skia-export/emit-native.ts; spec §3.5c).
   The easing table against Reanimated's own Easing (exact rows bit-equal
@@ -574,6 +606,15 @@ that pair). Offline node tests should push each input through
   lag — with ±0.05 / ±1 ms jittered clocks reported, not asserted; the
   same for `playSegment(name)` over every marker segment of every bundle
   (the easings fixture's markers cut key segments mid-curve: `tbxCut*`);
+  `playSegment(name, { from: "current" })` from another frame's values
+  (`playNativeFromCurrent` in `scripts/skia/native-drift.ts`): scalars
+  start exactly where they are, colors within 1/255 of the color on screen
+  (before lane C they jumped to the segment's start color, up to 236/255),
+  a color's fade runs on its first move's timing and easing, and every
+  value joins from "start"'s frames by the end of that move and stays —
+  the transcription and Reanimated's real sources alike (8-bit snapped
+  colors can coincide with toolbox's frame for a frame mid-fade, so "joins"
+  means the LAST differing frame, not the first equal one);
   `colorAt` ≡ evaluateTrack's colors; refusals; the emitted bundles
   type-check in skia-harness; the `skia-harness/src/bundle-native*` slots
   are today's export; and no worklet in the shipped runtime or an emitted
@@ -675,6 +716,18 @@ that pair). Offline node tests should push each input through
   - Node's fetch takes data: and blob: URLs but not root-relative ones
     (`/fonts/…`): the CLI and gates resolve through
     `scripts/skia/node-assets.ts` (public/, offline unless `--fetch`).
+- `check-skia-merge` — Merge (Skia), the merge & blend family: Merge's
+  `layers` param and sockets, the 8-slot cap, all 29 formulas against a CPU
+  reference on float surfaces, Skia's native blend modes measured against
+  them, and export (keyframed layer opacity → tracks). Since 2026-10-14
+  (lane C) also the layer-stack UX it shares with Merge
+  (`nodes/effect/merge.ts`: `mergeLayersParam`, `growMergeLayersOnWire`,
+  `newMergeLayer` — what EffectsApp / EffectNode call for any node with a
+  `merge_layers` param): wiring the last open layer appends one, up to the
+  param's `max` (8 enabled layers on Merge (Skia), none on Merge), a wired
+  mask alone doesn't fill a layer, disabled layers take no slot, and the
+  grown stack resolves its new sockets. The node header's "+", the row eyes
+  and the effect itself running on a wire change are live-app questions.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -723,7 +776,15 @@ that pair). Offline node tests should push each input through
     one 60 Hz frame at a time from `play()`, so frames must ascend; it also
     prints every value's drift from the worklet curve at every frame and
     writes `native-values.json`. `--jitter <ms> [--seed n]` wobbles the
-    fake vsync to model a real display. Trap: React Native web's rAF
+    fake vsync to model a real display. `--segment <name>` (native only)
+    plays `playSegment(name)` instead of `play()` (the page's `?segment=`):
+    frames count from the segment's start (default: eight spread over it),
+    toolbox renders the same frames of the timeline offset by the segment's
+    start, drift is measured there too, and the output lands in
+    `parity-out/<bundle>-<segment>/`. The motion check accepts a quiet
+    segment that moves less than 0.01 meanAbs only when the device moved
+    exactly as much as toolbox did between the same two frames.
+    Trap: React Native web's rAF
     timestamps and `performance.now()` differ within a frame, so without
     the fake clock a native run measures the browser, not Reanimated.
     `--bundle atlas` plays Copy to Points (Skia) (`skia-harness/src/

@@ -165,6 +165,7 @@
         "steps": 3
       }
     ],
+    "fromCurrent": "playSegment(name, { from: \"current\" }): a scalar's first step runs from its current value; a color fades from the color on screen (offset in its OKLab / RGB mixing space) over the segment's first move, with that move's timing and easing (<key>FromSegmentAnimation, colorFrom).",
     "values": [
       {
         "key": "b4",

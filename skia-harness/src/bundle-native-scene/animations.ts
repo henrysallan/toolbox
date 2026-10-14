@@ -331,9 +331,11 @@ export interface PlaySegmentOptions {
   // Repeat the segment until stop() / another play.
   loop?: boolean;
   // "start" (default): every value jumps to its value at the segment's start
-  // first — the frames toolbox shows. "current": scalar values animate on
-  // from where they are (an interruption); colors still start at the
-  // segment's start.
+  // first — the frames toolbox shows. "current": every value animates on
+  // from where it is (an interruption): a scalar's first step runs from its
+  // current value, and a color leaves the color on screen along the
+  // segment's first move (colorFrom), joining toolbox's frames when that
+  // move ends. A value that doesn't move in the segment jumps.
   from?: "start" | "current";
 }
 

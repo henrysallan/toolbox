@@ -382,6 +382,45 @@ export function newLayerId(): string {
   return `lyr-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// ---- layer-stack nodes (Merge, Merge (Skia)) ------------------------------------
+//
+// A node whose inputs are a Merge-style layer stack — a `merge_layers`
+// param whose layers mint `layer:<id>` / `mask:<id>` sockets — gets Merge's
+// node UX in the editor: the header's "+" appends a layer, each layer row
+// carries an eye that flips `enabled`, and wiring the last open layer grows
+// the stack by one (EffectsApp / EffectNode). The param's optional `max` is
+// the most ENABLED layers the node can composite (Merge (Skia): its 8 fixed
+// shader slots); growing on wire stops there instead of minting a layer the
+// node would report as unsupported. "+" still adds past it: that is an
+// explicit edit, and the node says what to do.
+
+// The node's layer-stack param, or null for every other node.
+export function mergeLayersParam(def: Pick<NodeDefinition, "params"> | null | undefined): NodeDefinition["params"][number] | null {
+  return def?.params.find((p) => p.type === "merge_layers") ?? null;
+}
+
+// A fresh layer as "+" and grow-on-wire append it.
+export function newMergeLayer(id: string = newLayerId()): MergeLayer {
+  return { id, mode: "normal", opacity: 1 };
+}
+
+// The stack after a wiring change: one layer appended when every layer's
+// image socket is wired (so there is always an open one) and the enabled
+// count is under `max`; null when nothing changes. Grow-only — layers carry
+// user state (mode, opacity, enabled), so an emptied one stays until the
+// user removes it. `connected` holds the node's wired input names.
+export function growMergeLayersOnWire(
+  layers: readonly MergeLayer[],
+  connected: ReadonlySet<string>,
+  max?: number,
+  id: string = newLayerId()
+): MergeLayer[] | null {
+  if (!layers.every((l) => connected.has(`layer:${l.id}`))) return null;
+  const enabled = layers.filter((l) => l.enabled !== false).length;
+  if (typeof max === "number" && Number.isFinite(max) && enabled >= max) return null;
+  return [...layers, newMergeLayer(id)];
+}
+
 // Id of the single layer `makeInstanceNode` seeds. Recipe `layers: [...]`
 // replaces this stack (fresh ids) rather than keeping it as slot 0.
 export const DEFAULT_MERGE_LAYER_ID = "lyr-initial";

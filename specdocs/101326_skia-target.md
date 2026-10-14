@@ -118,6 +118,10 @@ ES 1.00 rules. Probe results (`RuntimeEffect.Make`):
 | `layout(color) uniform float4` | OK (sRGB → working space on non-sRGB surfaces) — no longer used (§5.5) |
 | `toLinearSrgb` / `fromLinearSrgb` (half3) | OK (probed on sRGB, Display P3 and Adobe RGB surfaces, 2026-10-14). **CPU backend bug:** inside a conditional, after a child was sampled, the conversion is skipped — call them unconditionally and select the result |
 | `uniform shader x; x.eval(p)` | OK |
+| `(x).eval(p)`, comments / line breaks between `x`, `.`, `eval`, `(` | OK — so a source rewrite must work on tokens, not a regex (2026-10-14) |
+| shader-typed function parameter (`float4 f(shader s, float2 p)`) | **rejected** ("parameters of type 'shader' not allowed"); shader locals ("must be global"), shader arrays and ternaries of shaders too — a program's only shader values are its `uniform shader` globals |
+| `RuntimeEffect.MakeForBlender` (runtime blender) | OK in CanvasKit; **not exposed by React Native Skia 3.4** (`RuntimeEffect.Make` is MakeForShader only, paint `blendMode` takes the enum; its web build uses MakeForBlender internally for plusDarker / plusLighter only) |
+| CanvasKit's JS `MakeSweepGradient(…, startAngle, endAngle)` | the wrapper reads `endAngle` 0 as 360 (`M=M\|\|360`); Skia itself (a device) treats start = end as a collapsed sweep |
 
 Semantics: `main` receives **local** coordinates, Y-down, pixel centres at
 +0.5. The return value is **premultiplied**: an unpremultiplied return with
@@ -382,7 +386,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 - Device bands: CI lanes ready, not yet run.
 - ~~The P3 decision (§2b).~~ Decided and built 2026-10-14 (§5.5).
 - `tbx.warp.texel` and `tbx.gather.edge` should become one shared helper.
-- Merge (Skia) has no grow-on-wire / "+" layer button.
+- ~~Merge (Skia) has no grow-on-wire / "+" layer button.~~ Done 2026-10-14 (Wave 3 lane C, §2e).
 
 **Additive contract proposals collected (none applied):**
 - `defineSkslNode`:
@@ -417,14 +421,35 @@ The owner asked to "switch to p3 and then do the m3 work" and chose "identical e
 - **Device runs (CI dispatch, owner's OK).** Each needs an on-device run to confirm:
   - P3 on-screen colours: CI snapshots are untagged and can't see them; Metal's fp16 intrinsics may add ~0.5/255.
   - Native mode under real iOS / Android vsync, and at 120 Hz.
-- **Native drawing on P3.** Native gradients (up to ~24/255), translucent overlaps (~28/255) and native group blend modes (up to ~100/255) still shift. Lowering them to programs would close it (fused Gradient (Skia) / Merge (Skia) are exact).
+- **Native drawing on P3.** ~~Native gradients (up to ~24/255)~~ lowered to color-managed programs, ≤ 1/255 (§2e). Translucent overlaps (~28–38/255) and native group / draw blend modes (srcOver-family exact for an opaque source; the color blends 55–255/255, per mode in §4) still shift: React Native Skia 3.4 exposes no runtime blender, so they can't be lowered on device. Fused Merge (Skia) is exact.
 - **Native mode:**
-  - `playSegment(…, { from: "current" })` starts colours at the segment start;
-  - segment playback is verified offline, not by harness pixels;
+  - ~~`playSegment(…, { from: "current" })` starts colours at the segment start~~ — colours now continue from the colour on screen (§2e, §3.5c);
+  - ~~segment playback is verified offline, not by harness pixels~~ — `parity:skia -- --bundle native* --segment <name>` captures it (§2e);
   - each window edge inside a key segment adds a cut easing (89 in the easings fixture).
 - **Baked mode:** a scene's binds outside programs stay on the worklet timeline (warned in the manifest).
-- **SkSL Shader:** an `iImageN` passed into a user helper function is sampled without conversion (direct `iImageN.eval` is converted).
-- **Still carried from §2c:** font / image assets in bundles, filter-stage splitting, the shared texel helper, Merge (Skia) grow-on-wire.
+- ~~**SkSL Shader:** an `iImageN` passed into a user helper function is sampled without conversion~~ — SkSL can't pass a shader into a function at all (§1.2); the holes were parenthesized and comment-split samples, now converted (§2e).
+- **Still carried from §2c:** font / image assets in bundles, filter-stage splitting, the shared texel helper.
+
+## 2e. Wave 3 (M4) results
+
+### Lane C: carried polish (2026-10-14)
+
+| item | what shipped | measured | gate |
+|---|---|---|---|
+| P3: native gradients | Every gradient ShaderIR (linear / radial / sweep / conical, as leaves too) draws and exports as a color-managed runtime program (`engine/skia/library/gradient-program.ts`): Skia's gradient semantics on sRGB numbers — unpremultiplied piecewise-linear stops, positions pinned monotonic, the four tiles, Skia's degenerate rules — then `tbx_cm_out`. The renderer (`scene-render.ts`) and the exporter (`planSceneExport` → `lowerSceneGradients`) lower the same way, always (one export for iOS and Android) — inside Copy to Points (Skia) sprite sheets (`atlas.texture`) too, beside lane I's image leaves, assets untouched; the IR is unchanged. Stop colors stay their own Binds (tracks stay tracks); positions pack four to a float4. | P3 vs sRGB: native up to 48/255 (red → blue 24/255) → **≤ 1/255** on 48 gradients; vs Skia's native gradient on sRGB ≤ 1/255; GPU preview (`compare:skia` Gradient Fill pairs vs Rasterize Spline) interior 0/255. Cost below. | `check:skia-color-management` §6a, `check:skia-scene`, `check:skia-scene-export` |
+| P3: blend modes | Researched, not lowerable on device: React Native Skia 3.4 has no runtime blender API (§1.2); the gate re-checks its sources on every bump. Each of the 29 modes measured on P3 (§4). | exact on P3: src, dst, dstOver, srcIn, dstIn, srcOut, dstOut, dstATop, xor, clear; srcOver / srcATop for an opaque source only (38/255 at 50 %); the rest 55–255/255 | `check:skia-color-management` §6b |
+| SkSL Shader samples | The `main` / `iImageN.eval(` rewrite works on tokens: a sample in a helper, `(iImage1).eval`, comments or line breaks between its tokens, and `main /* … */ (` are all converted (the regex left the last three raw). Ordinary sources rewrite to the same text (no bundle changed). | helper / paren / comment samples P3 ≡ sRGB ≤ 1/255; the same samples unconverted 31/255 | `check:skia-color-management` §3 |
+| Merge (Skia) grow-on-wire | The layer-stack UX keys on the `merge_layers` param, not `defType === "merge"`: the header "+", the per-row eyes and grow-on-wire work on Merge (Skia); grow-on-wire stops at the param's `max` (8 enabled layers on Merge (Skia)). | — (UI: live-app question) | `check:skia-merge` §1 |
+| Native `from: "current"` colours | A colour's offset from the segment's start colour (in its OKLab / RGB mixing space) fades by a weight running 1 → 0 over the segment's first move with that move's timing and easing; colorAt exactly at weight 0. §3.5c. | colours start within 0/255 of the colour on screen (they jumped up to 236/255); join toolbox's frames by the end of the first move; the fade equals 1 − the move's eased fraction to 1e-9 — transcription and Reanimated's real sources | `check:skia-native` §3c |
+| Harness segment capture | `native-harness.tsx ?segment=<name>` plays `playSegment(name)`; `parity:skia -- --bundle native* --segment <name>` scores those frames against toolbox's at the segment's offset. | all 11 segments of the 3 native slots (Aurora intro / loop / flash, easings intro / rise / mid / settle / tail, scene intro / loop / flash): **MATCH**, max 1/255, ≥ 99.95 % identical, drift ≤ 8.7e-6 of range, 0 frames late | `parity:skia -- --segment` |
+
+**Gradient program cost.** GPU, Chromium WebGL2 (ANGLE Metal, Apple M5 Pro; CanvasKit 0.41.0 Ganesh), ms per full 1024² fill (40 fills × 40 frames, flush + 1-px readback; a solid fill 0.010): linear 2 stops native 0.026 / program 0.056 (2.2×); radial 6 stops 0.030 / 0.063 (2.1×); sweep 6 stops 0.037 / 0.078 (2.1×); conical 6 stops 0.039 / 0.094 (2.4×); linear 17 stops 0.038 / 0.088 (2.3×); linear 49 stops (an OKLab Gradient Fill) 0.047 / 0.152 (3.2×; 7.0× with a first, linear-chain ramp — the shipped ramp is a binary if-tree to the stop interval). Uniforms: n stops take n + ⌈n/4⌉ + 2 vec4 slots (49 stops: 66 uniforms, 252 floats). CanvasKit's CPU raster runs the program ~100× slower than a native gradient (the gates render small). Device GPUs: not measured (no Xcode here, §5.4).
+
+**Not done / for the integrator:**
+- Blend modes stay native (no device API); a scene with a non-srcOver draw blend shifts on P3 by the §4 per-mode numbers. A future RN Skia with `MakeForBlender` would make the lowering a renderer + emitter change (the gate fails then, on purpose).
+- `scene-emit.ts`'s LinearGradient / RadialGradient / SweepGradient / TwoPointConicalGradient emitters are now unreachable from `exportSkia` (plans are lowered) and kept for hand-built plans. `checkExportable` (scripts/skia/export-check.ts) compiles the lowered programs, so every family gate checks them.
+- Baked mode gains gradients: their animated stops / geometry are program uniforms now, so the baker bakes them (adding an iTime) instead of leaving them on the worklet as native gradient props were — the scene fixture's keyframed stop color, baked vs worklet at every frame: 0/255 (`check:skia-baked`).
+- A one-off Electron WebGL page measured the cost above (not committed); `check:skia-color-management` prints CPU-relative times only.
 
 ## 3. Design for the full implementation
 
@@ -709,11 +734,32 @@ MARKERS) and manifest segments like every bundle. The component takes
 `animations` instead of `time`. A scene keeps its sampled binds and `iTime`
 in `sampleBinds`, read from a native linear-clock shared value.
 `playSegment(name, { loop, from })` plays every value over one SEGMENTS
-window from its value at the segment start (`from: "current"`: scalars
-animate on from where they are — an interruption). A window edge inside a
+window from its value at the segment start (`from: "current"`: every value
+animates on from where it is — an interruption; colours since Wave 3 lane C,
+below). A window edge inside a
 key segment — a marker mid-curve, keys before frame 0 or past the end — is
 a `tbxCut*` worklet easing that replays toolbox's curve over the cut as the
 fraction of its move, so cuts stay exact (the easings fixture has 89).
+
+`from: "current"`, measured (lane C, 2026-10-14). A scalar's first step is
+a withTiming / withSpring from wherever the value is, so it runs from there
+to its target along the step's own curve. A colour is a mix of per-segment
+progresses, which can't start anywhere else, so it gets the same motion
+explicitly: `colorOffset` takes the colour on screen minus the segment's
+start colour in the track's mixing space (OKLab or gamma RGB, lerpColor's),
+and `colorFrom` adds it back weighted by `<key>FromWeight`, which
+`<key>FromSegmentAnimation(segment)` runs 1 → 0 over the window's first
+move with that move's timing and easing — a linear glide over a lead before
+the first key (a scalar's lead wait), a stepped wait for a hold, withSpring
+for a spring, the move's own withTiming otherwise. At weight 0 `colorFrom`
+is `colorAt`, so `from: "start"` and `play()` are bit-identical to before.
+`check-skia-native` §3c, every segment of the three slots, interrupted from
+the values 37 % of the timeline away: scalars start exactly where they are,
+colours within 0/255 of the colour on screen (they used to jump up to
+236/255), the fade equals 1 − the move's eased fraction to 1e-9 (a lead:
+linear to 1e-5, the 1 µs frame margin), and every value joins from
+"start"'s frames by the end of that move — the transcription and
+Reanimated 4.7's real sources play the same doubles.
 
 | toolbox | emitted | class | measured vs `easeOf` |
 |---|---|---|---|
@@ -789,7 +835,12 @@ Choreographer `frameTimeNanos`), nor 120 Hz.
 Segments (lane B markers), offline on a steady clock with Reanimated's real
 sources: every `playSegment` of all three bundles (Aurora `intro` / `loop` /
 the `flash` range; the easings fixture's five, cut mid-curve) within 7.5e-6
-of range of the worklet clock's `playSegment`, no frame of lag.
+of range of the worklet clock's `playSegment`, no frame of lag. On the
+harness (lane C: `parity:skia -- --bundle native* --segment <name>`, React
+Native web, Reanimated's real frame loop on the fake 60 Hz clock): all 11
+segments MATCH toolbox's frames at the segment's offset, 8 frames each,
+max 1/255, ≥ 99.95 % identical pixels, drift ≤ 8.7e-6 of range, 0 frames
+late.
 
 **When to use which.** Worklet (default): playback that must match the
 editor frame for frame whatever the display does — scrubbing (`seek`), long
@@ -1008,11 +1059,14 @@ exactly; the copy script reads only from `node_modules/canvaskit-wasm`.
 | color uniforms | identical | identical (plain sRGB numbers; the program converts its result) | §5.5 |
 | procedural colors on a Display P3 canvas | identical (sRGB canvas: conversions skipped, byte-identical) | **≤ 1/255** (CanvasKit P3 surfaces, every generated program: `check:skia-color-management`); fp16 intrinsics on Metal add ≤ ~0.5/255, to confirm on device | §5.5; uncorrected the same programs differ by up to 116/255 |
 | 8-bit P3 surface vs the sRGB color | — | ≤ 8/255 in saturated darks (the surface's own quantization; native drawing shares it) | an 8-bit P3 step is coarse where sRGB's encoding is steep |
-| native gradients / blends / translucent overlaps on P3 | — | **shift** up to ~24/255 (red → blue gradient), ~28/255 (50 % pink over green), Merge-style native blendModes up to ~100/255 | Skia interpolates and blends in the working space; RN exposes no interpolation color space — fused programs (Merge (Skia), Gradient (Skia)) are exact |
+| gradients (any ShaderIR gradient) on P3 | identical to Skia's native gradient on sRGB (≤ 1/255) | **≤ 1/255** (lowered to color-managed programs, Wave 3 lane C; native: up to 48/255, red → blue 24/255) | `gradient-program.ts`; ~2× a native gradient's GPU time (3.2× at 49 stops, §2e) |
+| native blend modes / translucent overlaps on P3 | — | **shift**: translucent srcOver ~28–38/255; per mode below | Skia blends in the working space; RN Skia 3.4 has no runtime blender — Merge (Skia) is exact |
 | native paths/AA | n/a in M0 | ≤ 1 px edge differences | Graphite AA vs Ganesh |
 | text | n/a | layout differences possible | Paragraph + bundled fonts only |
 | baked-in-shader timeline | — | ≤ 1e-6 per value | fp32 vs double |
 | Reanimated `Easing` transitions | — | exact for most presets; expo/elastic via worklet easings | §1.3 |
+
+Native blend modes on a Display P3 canvas vs sRGB (CanvasKit CPU, P3 F32 read back as sRGB; an sRGB source image blended over an opaque sRGB image; max /255, opaque source / 50 % source — `check:skia-color-management` §6b): src, dst, dstOver, srcIn, dstIn, srcOut, dstOut, dstATop, xor, clear ≤ 1 / ≤ 1; srcOver 1 / 38; srcATop 1 / 38; plus 208 / 132; modulate 68 / 34; screen 141 / 95; overlay 113 / 73; darken 88 / 77; lighten 64 / 25; colorDodge 255 / 158; colorBurn 255 / 128; hardLight 147 / 78; softLight 110 / 70; difference 120 / 65; exclusion 130 / 109; multiply 68 / 65; hue 66 / 51; saturation 75 / 60; color 60 / 44; luminosity 55 / 39.
 
 ---
 
@@ -1039,7 +1093,11 @@ exactly; the copy script reads only from `node_modules/canvaskit-wasm`.
    of sRGB numbers (never `layout(color)`). A probe (`fromLinearSrgb(0.5, 0,
    0)`) skips the conversions where sRGB numbers already are working-space
    numbers — sRGB canvases and untagged surfaces — so toolbox, Android and
-   the web are byte-identical to before. Native drawing is Skia's to convert.
+   the web are byte-identical to before. Native drawing is Skia's to convert
+   — except gradients, which Skia interpolates in the working space: since
+   Wave 3 lane C every gradient is lowered to a color-managed program
+   (`library/gradient-program.ts`) by the renderer and the exporter alike.
+   Blend modes stay native (no runtime blender in RN Skia 3.4; §4 per mode).
    Manifests say `colorManaged: true`.
 6. **Version policy:** `react-native-skia` and `canvaskit-wasm` are bumped
    together in one PR that re-runs `parity:skia` and the CI device lanes.

@@ -109,6 +109,8 @@ import type {
   TransformIR,
 } from "./scene-ir";
 import { compileSksl, packUniforms, stripComments, type SkslUniformValues } from "./sksl-program";
+import { gradientProgram, isGradientShader, type GradientShaderIR } from "./library/gradient-program";
+import { bindStatic } from "./scene-ir";
 
 // ---- public API -------------------------------------------------------------------
 
@@ -135,6 +137,11 @@ export interface SceneRenderOptions {
   // context); entries over the cap are deleted oldest first. Absent: every
   // frame rasterises its sheets again. Additive (2026-10-14, lane A).
   textureCache?: Map<string, Image>;
+  // Draw gradients with Skia's native gradient shaders instead of their
+  // color-managed programs (library/gradient-program.ts) — what scenes drew
+  // before 2026-10-14 lane C. Gates only: the export always ships the
+  // program, so the preview must too.
+  nativeGradients?: boolean;
 }
 
 // Sprite sheets larger than this on a side are refused (GPU texture limits
@@ -1217,12 +1224,55 @@ class SceneRenderer {
     };
   }
 
+  // A gradient as the color-managed program the exporter ships
+  // (library/gradient-program.ts): its values checked and sanitized the way
+  // the native path reads them, then bound statically — the preview draws
+  // the current tick.
+  private gradient(ir: GradientShaderIR, what: string, depth: number): Shader | null {
+    const st = this.stops(ir.stops, what);
+    if (!st) return null;
+    const b = <T,>(v: T) => bindStatic(v);
+    const xy = (v: BindXY | undefined, name: string): BindXY => {
+      const [x, y] = this.xy(v, [0, 0], `${what} ${name}`);
+      return [b(x), b(y)];
+    };
+    const stops = st.colors.map((c, i) => ({ pos: b(st.pos[i]), color: b([c[0], c[1], c[2], c[3]] as RGBA) }));
+    const tile = (t: TileMode | undefined) => {
+      this.tile(t, "clamp", what); // reports an unknown mode
+      return t === "repeat" || t === "mirror" || t === "decal" ? t : undefined;
+    };
+    let clean: GradientShaderIR;
+    switch (ir.k) {
+      case "linear":
+        clean = { k: "linear", start: xy(ir.start, "start"), end: xy(ir.end, "end"), stops, tile: tile(ir.tile) };
+        break;
+      case "radial":
+        clean = { k: "radial", c: xy(ir.c, "c"), r: b(this.num(ir.r, 0, `${what} r`)), stops, tile: tile(ir.tile) };
+        break;
+      case "sweep":
+        clean = { k: "sweep", c: xy(ir.c, "c"), start: b(this.num(ir.start, 0, `${what} start`)), end: b(this.num(ir.end, 2 * Math.PI, `${what} end`)), stops };
+        break;
+      default:
+        clean = {
+          k: "conical",
+          c0: xy(ir.c0, "c0"),
+          r0: b(this.num(ir.r0, 0, `${what} r0`)),
+          c1: xy(ir.c1, "c1"),
+          r1: b(this.num(ir.r1, 0, `${what} r1`)),
+          stops,
+          tile: tile(ir.tile),
+        };
+    }
+    return this.program(gradientProgram(clean), what, depth);
+  }
+
   private shader(ir: ShaderIR, what: string, depth: number): Shader | null {
     const { kit } = this;
     if (depth > MAX_DEPTH) {
       this.problem(`${what}: shader tree deeper than ${MAX_DEPTH} — cycle?`);
       return null;
     }
+    if (isGradientShader(ir) && !this.opts.nativeGradients) return this.gradient(ir, what, depth);
     switch (ir?.k) {
       case "color":
         return this.track(kit.Shader.MakeColor(this.color(ir.color, `${what} color`), kit.ColorSpace.SRGB));

@@ -142,7 +142,7 @@ const skiaMergeBase = defineSkslNode({
   facts: {
     gotchas: [
       "Formulas are Merge's, derived from its BLEND_FS at load (straight-alpha source-over; mix = normal). An unwired base renders opaque black, like Merge.",
-      "At most 8 enabled layers per node (fixed shader slots); more is reported unsupported, so chain a second Merge (Skia) after this one. Disabled or unwired layers are skipped.",
+      "At most 8 enabled layers (fixed shader slots): more is reported, so chain a second Merge (Skia). Wiring the last open layer adds one, as on Merge, up to 8; disabled / unwired layers are skipped.",
       "A mask socket takes any Skia shader and mattes by Rec.709 luma × alpha (the engine's image → mask rule); maskInvert only applies while that mask is wired.",
       "Layer opacity keyframes (layer_opacity:<id>) export as timeline tracks; the evaluator clamps them to 0..1, so an overshooting curve exports sampled per frame instead.",
       "Pick Merge (Skia) for parity with a default-layer Merge and for the 14 modes Skia lacks: subtract, divide, average, vivid/pin/linear light, hard mix, lighter/darker color, linear burn, etc.",
@@ -178,7 +178,11 @@ const skiaMergeBase = defineSkslNode({
     // One blend dispatch + source-over per wired layer.
     cost: 1,
   },
-  params: mirrorParams(mergeNode, ["layers"]),
+  // Merge's `layers` param, capped: `max` is the most enabled layers the
+  // fixed slots take, so the editor's grow-on-wire stops at 8 (the node
+  // header's "+" and the per-row eyes work as on Merge — nodes/effect/
+  // merge.ts growMergeLayersOnWire).
+  params: mirrorParams(mergeNode, ["layers"]).map((p) => ({ ...p, max: N })),
   // The factory's fixed inputs are the function's slots; the def below
   // replaces the sockets with Merge's and routes them onto these.
   inputs: [

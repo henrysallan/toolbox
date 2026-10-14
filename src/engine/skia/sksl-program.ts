@@ -10,10 +10,12 @@
 //
 // Color management (library/color-management.ts, spec §5 decision 5): the
 // user's math runs on sRGB numbers on any canvas. The source's `main` is
-// renamed `tbx_user_main` and `iImageN.eval(` becomes `tbx_eval_iImageN(`
-// (code only, comments untouched, no line moves), the prelude defines those
-// sampling helpers (working space → sRGB), and a `main` appended after the
-// source hands the user's premultiplied result to the destination's working
+// renamed `tbx_user_main` and every `iImageN.eval(` — in main or a helper,
+// parenthesized or split by comments — becomes `tbx_eval_iImageN(` (code
+// only, comments untouched, no line moves; SkSL has no other shader-typed
+// values, see rewriteSkslSource), the prelude defines those sampling
+// helpers (working space → sRGB), and a `main` appended after the source
+// hands the user's premultiplied result to the destination's working
 // space. Identity on an sRGB canvas, so the preview is unchanged.
 //
 // Contract (shaders.skia.org-compatible names, so playground shaders paste):
@@ -208,23 +210,110 @@ export interface SkslProgram {
   unsupported: string[];
 }
 
-// The user's source with `main(` renamed and `iImageN.eval(` pointed at the
-// color-managed samplers — in code only (comments are left alone) and
-// without adding or removing a line break, so error lines still map 1:1.
+// ---- the source rewrite --------------------------------------------------------
+//
+// SkSL's only shader-typed values in this node are the prelude's iImage1..4
+// globals: Skia rejects shader-typed function parameters ("parameters of
+// type 'shader' not allowed"), shader locals ("must be global"), shader
+// arrays and ternaries of shaders (probed in CanvasKit 0.41.0; guarded by
+// check:skia-color-management). So every `.eval(` on a shader is an
+// `iImageN.eval(` — in main or in any helper — however it is spelled: the
+// receiver may sit in parentheses (`(iImage1).eval(p)`) and comments or
+// line breaks may separate any two of its tokens. The rewrite works on
+// tokens, not a regex over the text, so none of those spellings escapes
+// the color-managed sampler, and none escapes main's rename either (a
+// `main /* … */ (` used to keep its name and skip the wrapper).
+
+type SkslToken = { k: "trivia" | "word" | "punct"; s: string };
+
+// Comments and whitespace are trivia; an unterminated `/*` is code (Skia
+// reports it), as the old comment split treated it.
+function tokenizeSksl(source: string): SkslToken[] {
+  const out: SkslToken[] = [];
+  const re = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|\s+)|([A-Za-z_][A-Za-z0-9_]*)|([0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?|\.[0-9]+(?:[eE][-+]?[0-9]+)?)|([\s\S])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source))) {
+    if (m[1] !== undefined) out.push({ k: "trivia", s: m[1] });
+    else if (m[2] !== undefined) out.push({ k: "word", s: m[2] });
+    else if (m[3] !== undefined) out.push({ k: "word", s: m[3] });
+    else out.push({ k: "punct", s: m[4] });
+  }
+  return out;
+}
+
+const isComment = (t: SkslToken) => t.k === "trivia" && t.s.startsWith("/");
+
+// What a replaced span keeps of its trivia: comments verbatim (they stay
+// comments) and whitespace's line breaks, so the code after it keeps its
+// line. A span with neither (the usual `iImage1.eval(`) collapses to
+// nothing — the program text is what the old regex rewrite produced.
+const keepTrivia = (ts: SkslToken[]) => ts.filter((t) => t.k === "trivia").map((t) => (isComment(t) ? t.s : t.s.replace(/[^\n]/g, ""))).join("");
+
+// The user's source with `main(` renamed and every `iImageN.eval(` pointed
+// at the color-managed samplers — in code only (comments are left alone)
+// and without adding or removing a line break, so error lines still map
+// 1:1.
 export function rewriteSkslSource(source: string): { code: string; hasMain: boolean } {
+  const ts = tokenizeSksl(source);
   let hasMain = false;
-  const code = source
-    .split(/(\/\*[\s\S]*?\*\/|\/\/[^\n]*)/)
-    .map((part, i) => {
-      if (i % 2 === 1) return part; // a comment
-      return part
-        .replace(/\bmain(\s*\()/g, (_m, paren: string) => {
-          hasMain = true;
-          return `${SKSL_USER_MAIN}${paren}`;
-        })
-        .replace(/\b(iImage[1-4])\s*\.\s*eval\s*\(/g, (m: string, child: string) => `${skslChildEval(child)}${m.replace(/[^\n]/g, "")}(`);
-    })
-    .join("");
+  // Index of the next / previous non-trivia token.
+  const next = (i: number) => {
+    let j = i + 1;
+    while (j < ts.length && ts[j].k === "trivia") j++;
+    return j;
+  };
+  const prev = (i: number) => {
+    let j = i - 1;
+    while (j >= 0 && ts[j].k === "trivia") j--;
+    return j;
+  };
+  // [from, to] inclusive token ranges to replace, by `from`.
+  const edits = new Map<number, { to: number; text: string }>();
+  for (let i = 0; i < ts.length; i++) {
+    const t = ts[i];
+    if (t.k !== "word") continue;
+    // main( — the user's entry point, renamed; its trivia stays put.
+    if (t.s === "main" && ts[next(i)]?.s === "(" && ts[prev(i)]?.s !== ".") {
+      hasMain = true;
+      edits.set(i, { to: i, text: SKSL_USER_MAIN });
+      continue;
+    }
+    // <receiver> . eval (  where the receiver is iImageN in any number of
+    // balanced parentheses.
+    if (t.s !== "eval") continue;
+    const open = next(i);
+    if (ts[open]?.s !== "(") continue;
+    const dot = prev(i);
+    if (ts[dot]?.s !== ".") continue;
+    let r = prev(dot);
+    let closes = 0;
+    while (r >= 0 && ts[r].s === ")") {
+      closes++;
+      r = prev(r);
+    }
+    const child = ts[r];
+    if (!child || child.k !== "word" || !(SKSL_CHILD_NAMES as readonly string[]).includes(child.s)) continue;
+    // A receiver can't be a member (`x.iImage1`): Skia would reject it.
+    if (ts[prev(r)]?.s === "." && closes === 0) continue;
+    let from = r;
+    let opens = 0;
+    while (opens < closes) {
+      const p = prev(from);
+      if (p < 0 || ts[p].s !== "(") break;
+      from = p;
+      opens++;
+    }
+    if (opens !== closes) continue;
+    edits.set(from, { to: open, text: `${skslChildEval(child.s)}${keepTrivia(ts.slice(from, open))}(` });
+  }
+  let code = "";
+  for (let i = 0; i < ts.length; i++) {
+    const e = edits.get(i);
+    if (e) {
+      code += e.text;
+      i = e.to;
+    } else code += ts[i].s;
+  }
   return { code, hasMain };
 }
 
@@ -332,13 +421,22 @@ export type SkslCompileResult =
   | { effect: RuntimeEffect; error: null }
   | { effect: null; error: string };
 
-const compileCache = new Map<string, SkslCompileResult>();
+// Per CanvasKit instance: an effect belongs to the instance that compiled
+// it (embind rejects it in another — "Expected null or instance of Shader,
+// got an instance of Shader"), and Node gates run several instances in one
+// process (checkExportable makes its own).
+const compileCaches = new WeakMap<CanvasKit, Map<string, SkslCompileResult>>();
 const COMPILE_CACHE_CAP = 64;
 
 // Cached by full program text: a typing user mints one entry per distinct
 // source, the oldest effect is deleted past the cap. Failures cache too, so a
 // broken shader costs one compile, not one per frame.
 export function compileSksl(kit: CanvasKit, sksl: string): SkslCompileResult {
+  let compileCache = compileCaches.get(kit);
+  if (!compileCache) {
+    compileCache = new Map();
+    compileCaches.set(kit, compileCache);
+  }
   const hit = compileCache.get(sksl);
   if (hit) {
     compileCache.delete(sksl);

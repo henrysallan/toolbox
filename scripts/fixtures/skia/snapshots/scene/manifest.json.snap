@@ -23,7 +23,7 @@
   "sampledFrames": 61,
   "webPlayable": false,
   "bindCounts": {
-    "static": 153,
+    "static": 149,
     "clock": 1,
     "track": 18,
     "sampled": 8
@@ -45,16 +45,24 @@
       "keys": 2
     },
     {
-      "id": "b9",
-      "path": "root.children.0.paint.shader.program.children.0.shader.stops.0.color",
+      "id": "b8",
+      "path": "root.children.0.paint.shader.program.children.0.shader.program.uniforms.tbx_g_c0",
       "kind": "track",
-      "sample": "b9",
+      "sample": "b8",
       "from": "Color col.color (2 keys, rgb)",
       "keys": 2
     },
     {
-      "id": "b12",
+      "id": "b11",
       "path": "root.children.1.transform.translate.0",
+      "kind": "track",
+      "sample": "b11",
+      "from": "keyframes scene.center (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b12",
+      "path": "root.children.1.transform.translate.1",
       "kind": "track",
       "sample": "b12",
       "from": "keyframes scene.center (3 keys)",
@@ -62,47 +70,39 @@
     },
     {
       "id": "b13",
-      "path": "root.children.1.transform.translate.1",
-      "kind": "track",
-      "sample": "b13",
-      "from": "keyframes scene.center (3 keys)",
-      "keys": 3
-    },
-    {
-      "id": "b14",
       "path": "root.children.1.transform.rotate",
       "kind": "track",
-      "sample": "b14",
+      "sample": "b13",
       "from": "keyframes scene.spin (2 keys) × 0.017453292519943295",
       "keys": 2,
       "scale": 0.017453292519943295
     },
     {
-      "id": "b25",
+      "id": "b24",
       "path": "root.children.1.layer.imageFilters.0.sx",
       "kind": "track",
-      "sample": "b25",
+      "sample": "b24",
       "from": "Animated Value av (2 keys)",
       "keys": 2
     },
     {
-      "id": "b26",
+      "id": "b25",
       "path": "root.children.1.layer.imageFilters.0.sy",
       "kind": "track",
-      "sample": "b25",
+      "sample": "b24",
       "from": "Animated Value av (2 keys)",
       "keys": 2
     },
     {
-      "id": "b39",
+      "id": "b38",
       "path": "root.children.1.children.0.geom.r",
       "kind": "track",
-      "sample": "b39",
+      "sample": "b38",
       "from": "keyframes scene.radius (4 keys)",
       "keys": 4
     },
     {
-      "id": "b40",
+      "id": "b39",
       "path": "root.children.1.children.0.paint.color",
       "kind": "track",
       "sample": "b3",
@@ -110,127 +110,127 @@
       "keys": 2
     },
     {
-      "id": "b41",
+      "id": "b40",
       "path": "root.children.1.children.0.paint.strokeWidth",
       "kind": "track",
-      "sample": "b25",
+      "sample": "b24",
       "from": "Animated Value av (2 keys)",
       "keys": 2
     },
     {
-      "id": "b53",
-      "path": "root.children.1.children.1.paint.shader.r",
+      "id": "b52",
+      "path": "root.children.1.children.1.paint.shader.program.uniforms.tbx_g_r",
       "kind": "track",
-      "sample": "b39",
+      "sample": "b38",
       "from": "keyframes scene.radius (4 keys)",
       "keys": 4
     },
     {
-      "id": "b73",
-      "path": "root.children.1.children.3.paint.shader.stops.0.color",
+      "id": "b70",
+      "path": "root.children.1.children.3.paint.shader.program.uniforms.tbx_g_c0",
       "kind": "track",
       "sample": "b3",
       "from": "keyframes scene.tint (2 keys), oklab",
       "keys": 2
     },
     {
-      "id": "b78",
+      "id": "b75",
       "path": "root.children.1.children.4.geom.p2.0",
       "kind": "track",
-      "sample": "b39",
+      "sample": "b38",
       "from": "keyframes scene.radius (4 keys)",
       "keys": 4
     },
     {
-      "id": "b84",
+      "id": "b81",
       "path": "root.children.1.children.4.paint.pathEffects.0.phase",
       "kind": "track",
-      "sample": "b84",
+      "sample": "b81",
       "from": "keyframes scene.spin (2 keys)",
       "keys": 2
     },
     {
-      "id": "b90",
+      "id": "b87",
       "path": "root.children.2.children.0.geom.d",
       "kind": "sampled",
-      "sample": "b90",
+      "sample": "b87",
       "role": "path",
       "from": "derived from scene.spin, scene.arms (animated: scene.spin); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b104",
+      "id": "b100",
       "path": "root.children.2.children.1.geom.d",
       "kind": "sampled",
-      "sample": "b104",
+      "sample": "b100",
       "role": "path",
       "from": "derived from scene.steps (animated: scene.steps); sampled 61 frames",
       "distinct": 2
     },
     {
-      "id": "b113",
+      "id": "b109",
       "path": "root.children.2.children.3.geom.pts",
       "kind": "sampled",
-      "sample": "b113",
+      "sample": "b109",
       "role": "array",
       "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b126",
+      "id": "b122",
       "path": "root.children.2.children.6.geom.d",
       "kind": "sampled",
-      "sample": "b126",
+      "sample": "b122",
       "role": "path",
       "from": "derived from scene's inputs (scene is keyframed); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b133",
+      "id": "b129",
       "path": "root.children.4.text",
       "kind": "sampled",
-      "sample": "b133",
+      "sample": "b129",
       "role": "string",
       "from": "static (untagged animation); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b139",
+      "id": "b135",
       "path": "root.children.5.font.size",
       "kind": "track",
-      "sample": "b139",
+      "sample": "b135",
       "from": "keyframes scene.size (2 keys)",
       "keys": 2
     },
     {
-      "id": "b144",
+      "id": "b140",
       "path": "root.children.6.xforms",
       "kind": "sampled",
-      "sample": "b144",
+      "sample": "b140",
       "role": "array",
       "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b155",
+      "id": "b151",
       "path": "root.children.8.geom.r",
       "kind": "sampled",
-      "sample": "b155",
+      "sample": "b151",
       "role": "number",
       "from": "keyframes scene.radius (4 keys); sampled 61 frames",
       "distinct": 47
     },
     {
-      "id": "b161",
+      "id": "b157",
       "path": "root.children.10.text",
       "kind": "sampled",
-      "sample": "b161",
+      "sample": "b157",
       "role": "string",
       "from": "static (untagged animation); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b166",
+      "id": "b162",
       "path": "root.children.10.paint.color",
       "kind": "track",
       "sample": "b3",
@@ -238,18 +238,18 @@
       "keys": 2
     },
     {
-      "id": "b168",
+      "id": "b164",
       "path": "root.children.11.font.size",
       "kind": "track",
-      "sample": "b139",
+      "sample": "b135",
       "from": "keyframes scene.size (2 keys)",
       "keys": 2
     },
     {
-      "id": "b172",
+      "id": "b168",
       "path": "root.children.12.transform.rotate",
       "kind": "track",
-      "sample": "b172",
+      "sample": "b168",
       "from": "keyframes scene.turn (2 keys) × 0.017453292519943295",
       "keys": 2,
       "scale": 0.017453292519943295
@@ -268,9 +268,45 @@
     {
       "id": "SKSL_1",
       "usedBy": [
+        "root.children.0 (scene) › s0"
+      ],
+      "fused": [
+        "tbx.gradient.linear"
+      ]
+    },
+    {
+      "id": "SKSL_2",
+      "usedBy": [
         "root.children.1 (scene)"
       ],
       "fused": []
+    },
+    {
+      "id": "SKSL_3",
+      "usedBy": [
+        "root.children.1.children.1"
+      ],
+      "fused": [
+        "tbx.gradient.radial"
+      ]
+    },
+    {
+      "id": "SKSL_4",
+      "usedBy": [
+        "root.children.1.children.3"
+      ],
+      "fused": [
+        "tbx.gradient.sweep"
+      ]
+    },
+    {
+      "id": "SKSL_5",
+      "usedBy": [
+        "root.children.2.children.0 (scene)"
+      ],
+      "fused": [
+        "tbx.gradient.conical"
+      ]
     }
   ],
   "assets": [

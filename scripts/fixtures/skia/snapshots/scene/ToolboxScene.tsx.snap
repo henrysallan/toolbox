@@ -21,7 +21,6 @@ import {
   ImageShader,
   Lerp,
   Line,
-  LinearGradient,
   LinearToSRGBGamma,
   LumaColorFilter,
   Morphology,
@@ -31,7 +30,6 @@ import {
   Paragraph,
   Path,
   Points,
-  RadialGradient,
   rect,
   Rect,
   RoundedRect,
@@ -42,10 +40,8 @@ import {
   Shadow,
   Skia,
   SRGBToLinearGamma,
-  SweepGradient,
   Text,
   TextAlign,
-  TwoPointConicalGradient,
   useFont,
   useFonts,
   useImage,
@@ -60,9 +56,9 @@ import {
   type Uniforms,
 } from "react-native-skia";
 import { useDerivedValue, type SharedValue } from "react-native-reanimated";
-import { SKSL_0, SKSL_1 } from "./effects";
+import { SKSL_0, SKSL_1, SKSL_2, SKSL_3, SKSL_4, SKSL_5 } from "./effects";
 import { ASSET_SOURCES } from "./assets";
-import { CANVAS, frameAt, PATH_b104, PATH_b126, PATH_b90, sampleBinds, seriesStep } from "./timeline";
+import { CANVAS, frameAt, PATH_b100, PATH_b122, PATH_b87, sampleBinds, seriesStep } from "./timeline";
 
 function makeEffect(sksl: string, n: number) {
   const effect = Skia.RuntimeEffect.Make(sksl);
@@ -125,18 +121,23 @@ function trimSpan(t: number[], which: number) {
 }
 
 const EFFECT_0 = makeEffect(SKSL_0, 0);
-const K3 = rrect(rect(-150, -150, 300, 300), 24, 24);
 const EFFECT_1 = makeEffect(SKSL_1, 1);
+const K3 = rrect(rect(-150, -150, 300, 300), 24, 24);
+const EFFECT_2 = makeEffect(SKSL_2, 2);
 const K4 = { amount: 0.25 };
-const K8 = Skia.Path.Circle(256, 256, 40);
-const PATHS_b90 = PATH_b90.v.map(parsePath);
-const PATHS_b104 = { f: PATH_b104.f, v: PATH_b104.v.map(parsePath) };
-const K9 = parsePath("M160 400L134.562 410.58L132.361 438.042L114.438 417.119L87.639 423.511L102 400L87.639 376.489L114.438 382.881L132.361 361.958L134.562 389.42Z");
-const K11 = toPoints([10, 10, 20, 20, 30, 10]);
-const K12 = Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false);
-const PATHS_b126 = PATH_b126.v.map(parsePath);
-const K19 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
-const K21 = parsePath("M400 400 L500 400 L450 500 Z");
+const EFFECT_3 = makeEffect(SKSL_3, 3);
+const EFFECT_4 = makeEffect(SKSL_4, 4);
+const K9 = Skia.Path.Circle(256, 256, 40);
+const EFFECT_5 = makeEffect(SKSL_5, 5);
+const K10 = { tbx_g_x0: 256, tbx_g_y0: 256, tbx_g_r0: 10, tbx_g_x1: 256, tbx_g_y1: 200, tbx_g_r1: 140, tbx_g_c0: [1, 0.9, 0.2, 1], tbx_g_c1: [0.9, 0.2, 0.4, 1], tbx_g_p0: [0, 1, 1, 1] };
+const PATHS_b87 = PATH_b87.v.map(parsePath);
+const PATHS_b100 = { f: PATH_b100.f, v: PATH_b100.v.map(parsePath) };
+const K11 = parsePath("M160 400L134.562 410.58L132.361 438.042L114.438 417.119L87.639 423.511L102 400L87.639 376.489L114.438 382.881L132.361 361.958L134.562 389.42Z");
+const K13 = toPoints([10, 10, 20, 20, 30, 10]);
+const K14 = Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false);
+const PATHS_b122 = PATH_b122.v.map(parsePath);
+const K21 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
+const K23 = parsePath("M400 400 L500 400 L450 500 Z");
 
 export interface ToolboxSceneGroupProps {
   // Seconds on the toolbox timeline (see useToolboxClock).
@@ -156,44 +157,39 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
   const B = useDerivedValue(() => sampleBinds(time.value));
   const F = useDerivedValue(() => frameAt(time.value));
   const D0 = useDerivedValue((): Uniforms => ({ iResolution: [512, 512, 1], iTime: B.value.b1, k: 6, tint: B.value.b3 }));
-  const D1 = useDerivedValue(() => [B.value.b9, [0.05, 0.05, 0.1, 1]]);
-  const D2 = useDerivedValue((): Transforms3d => [{ translateX: B.value.b12 }, { translateY: B.value.b13 }, { rotate: B.value.b14 }, { scaleX: 0.75 }, { scaleY: 0.75 }]);
-  const D5 = useDerivedValue(() => Skia.Path.Circle(0, 0, B.value.b39));
-  const D6 = useDerivedValue(() => [B.value.b3, [0, 0, 1, 1]]);
-  const D7 = useDerivedValue(() => vec(B.value.b39, 0));
-  const P_b90 = usePathInterpolation(F, PATH_b90.f, PATHS_b90, "clamp");
-  const P_b104 = useDerivedValue(() => seriesStep(PATHS_b104, F.value));
-  const D10 = useDerivedValue(() => Skia.Path.Polygon(toPoints(B.value.b113), true));
-  const P_b126 = usePathInterpolation(F, PATH_b126.f, PATHS_b126, "clamp");
-  const IMG13 = useImage(ASSET_SOURCES["logo"]);
-  const FONT14 = useFont(ASSET_SOURCES["inter"], 24);
-  const D15 = useDerivedValue(() => 156 - textAdvance(FONT14, B.value.b133) / 2);
-  const TF16 = useTypeface(ASSET_SOURCES["inter"]);
-  const D17 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
-  const IMG18 = useImage(ASSET_SOURCES["sprites"]);
-  const XF20 = useRSXformBuffer(2, (xf, i) => {
+  const D1 = useDerivedValue((): Uniforms => ({ tbx_g_x0: 0, tbx_g_y0: 0, tbx_g_x1: 512, tbx_g_y1: 512, tbx_g_c0: B.value.b8, tbx_g_c1: [0.05, 0.05, 0.1, 1], tbx_g_p0: [0, 1, 1, 1] }));
+  const D2 = useDerivedValue((): Transforms3d => [{ translateX: B.value.b11 }, { translateY: B.value.b12 }, { rotate: B.value.b13 }, { scaleX: 0.75 }, { scaleY: 0.75 }]);
+  const D5 = useDerivedValue(() => Skia.Path.Circle(0, 0, B.value.b38));
+  const D6 = useDerivedValue((): Uniforms => ({ tbx_g_cx: -70, tbx_g_cy: -80, tbx_g_r: B.value.b38, tbx_g_c0: [1, 1, 1, 1], tbx_g_c1: [0, 0, 0, 0], tbx_g_p0: [0, 1, 1, 1] }));
+  const D7 = useDerivedValue((): Uniforms => ({ tbx_g_cx: -60, tbx_g_cy: 65, tbx_g_a0: 0, tbx_g_a1: 3.141592653589793, tbx_g_c0: B.value.b3, tbx_g_c1: [0, 0, 1, 1], tbx_g_p0: [0, 1, 1, 1] }));
+  const D8 = useDerivedValue(() => vec(B.value.b38, 0));
+  const P_b87 = usePathInterpolation(F, PATH_b87.f, PATHS_b87, "clamp");
+  const P_b100 = useDerivedValue(() => seriesStep(PATHS_b100, F.value));
+  const D12 = useDerivedValue(() => Skia.Path.Polygon(toPoints(B.value.b109), true));
+  const P_b122 = usePathInterpolation(F, PATH_b122.f, PATHS_b122, "clamp");
+  const IMG15 = useImage(ASSET_SOURCES["logo"]);
+  const FONT16 = useFont(ASSET_SOURCES["inter"], 24);
+  const D17 = useDerivedValue(() => 156 - textAdvance(FONT16, B.value.b129) / 2);
+  const TF18 = useTypeface(ASSET_SOURCES["inter"]);
+  const D19 = useDerivedValue(() => TF18 ? Skia.Font(TF18, B.value.b135) : null);
+  const IMG20 = useImage(ASSET_SOURCES["sprites"]);
+  const XF22 = useRSXformBuffer(2, (xf, i) => {
     "worklet";
-    const A = B.value.b144;
+    const A = B.value.b140;
     xf.set(A[i * 4], A[i * 4 + 1], A[i * 4 + 2], A[i * 4 + 3]);
   });
-  const FONTS22 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
-  const D23 = useDerivedValue(() => makeParagraph(FONTS22, "inter", B.value.b161, 20, TextAlign.Center, B.value.b3, 1));
-  const D24 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
-  const D25 = useDerivedValue(() => 500 - textAdvance(D24.value, "Right"));
-  const D26 = useDerivedValue((): Transforms3d => [{ rotate: B.value.b172 }]);
+  const FONTS24 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
+  const D25 = useDerivedValue(() => makeParagraph(FONTS24, "inter", B.value.b157, 20, TextAlign.Center, B.value.b3, 1));
+  const D26 = useDerivedValue(() => TF18 ? Skia.Font(TF18, B.value.b135) : null);
+  const D27 = useDerivedValue(() => 500 - textAdvance(D26.value, "Right"));
+  const D28 = useDerivedValue((): Transforms3d => [{ rotate: B.value.b168 }]);
   return (
     <Group transform={[{ scaleX: width / CANVAS.width }, { scaleY: height / CANVAS.height }]}>
       <Fill color={[0.06274509803921569, 0.12549019607843137, 0.18823529411764706, 0.5019607843137255]} />
       <Group>
         <Fill>
           <Shader source={EFFECT_0} uniforms={D0}>
-            <LinearGradient
-              start={vec(0, 0)}
-              end={vec(512, 512)}
-              colors={D1}
-              positions={[0, 1]}
-              mode="clamp"
-            />
+            <Shader source={EFFECT_1} uniforms={D1} />
           </Shader>
         </Fill>
         <Group
@@ -203,14 +199,14 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
           blendMode="screen"
           clip={K3}
           layer={<Paint>
-            <RuntimeShader source={EFFECT_1} uniforms={K4} />
+            <RuntimeShader source={EFFECT_2} uniforms={K4} />
             <DisplacementMap channelX="r" channelY="g" scale={8}>
               <ColorShader color={[0.5, 0.5, 0, 1]} />
             </DisplacementMap>
             <Morphology operator="dilate" radius={1} />
             <Offset x={2} y={-2} />
             <Shadow dx={4} dy={6} blur={3} color={[0, 0, 0, 0.5]} />
-            <Blur blur={select(B, "b25")} mode="decal" />
+            <Blur blur={select(B, "b24")} mode="decal" />
             <LumaColorFilter />
           </Paint>}
         >
@@ -220,7 +216,7 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
             end={0.75}
             style="stroke"
             color={select(B, "b3")}
-            strokeWidth={select(B, "b25")}
+            strokeWidth={select(B, "b24")}
             strokeCap="round"
             strokeJoin="round"
           >
@@ -233,12 +229,7 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
             <ColorMatrix matrix={[1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0]} />
           </Path>
           <Rect x={-100} y={-100} width={60} height={40}>
-            <RadialGradient
-              c={vec(-70, -80)}
-              r={select(B, "b39")}
-              colors={[[1, 1, 1, 1], [0, 0, 0, 0]]}
-              positions={[0, 1]}
-            />
+            <Shader source={EFFECT_3} uniforms={D6} />
           </Rect>
           <RoundedRect
             x={20}
@@ -250,38 +241,30 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
             antiAlias
           />
           <Oval x={-100} y={40} width={80} height={50}>
-            <SweepGradient c={vec(-60, 65)} start={0} end={180} colors={D6} positions={[0, 1]} />
+            <Shader source={EFFECT_4} uniforms={D7} />
           </Oval>
-          <Line p1={vec(0, 0)} p2={D7} style="stroke" color={[1, 1, 1, 1]} strokeWidth={2}>
+          <Line p1={vec(0, 0)} p2={D8} style="stroke" color={[1, 1, 1, 1]} strokeWidth={2}>
             <CornerPathEffect r={3} />
-            <DashPathEffect intervals={[6, 4]} phase={select(B, "b84")} />
+            <DashPathEffect intervals={[6, 4]} phase={select(B, "b81")} />
           </Line>
         </Group>
-        <Group matrix={[1, 0, 0, 0, 1, 0, 0, 0, 1]} clip={K8} invertClip>
-          <Path path={P_b90} fillType="evenOdd">
-            <TwoPointConicalGradient
-              start={vec(256, 256)}
-              startR={10}
-              end={vec(256, 200)}
-              endR={140}
-              colors={[[1, 0.9, 0.2, 1], [0.9, 0.2, 0.4, 1]]}
-              positions={[0, 1]}
-              mode="mirror"
-            />
+        <Group matrix={[1, 0, 0, 0, 1, 0, 0, 0, 1]} clip={K9} invertClip>
+          <Path path={P_b87} fillType="evenOdd">
+            <Shader source={EFFECT_5} uniforms={K10} />
             <BlurMask blur={2} style="solid" respectCTM />
             <DiscretePathEffect length={10} deviation={1.5} seed={7} />
           </Path>
           <Path
-            path={P_b104}
+            path={P_b100}
             start={trimSpan([0, 0.75, 0.2, 1], 0)}
             end={trimSpan([0, 0.75, 0.2, 1], 1)}
             style="stroke"
             color={[0.4, 0.9, 1, 1]}
             strokeWidth={3}
           />
-          <Path path={K9} color={[1, 1, 1, 0.8]} blendMode="plus" />
+          <Path path={K11} color={[1, 1, 1, 0.8]} blendMode="plus" />
           <Path
-            path={D10}
+            path={D12}
             start={0.1}
             end={0.9}
             style="stroke"
@@ -289,23 +272,23 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
             strokeWidth={2}
           />
           <Points
-            points={K11}
+            points={K13}
             mode="points"
             style="stroke"
             color={[1, 1, 1, 1]}
             strokeWidth={4}
             strokeCap="round"
           />
-          <Path path={K12} start={0} end={0.5} style="stroke" color={[1, 1, 0, 1]} strokeWidth={2} />
-          <Path path={P_b126} style="stroke" color={[1, 1, 1, 1]} strokeWidth={4} strokeCap="round" />
+          <Path path={K14} start={0} end={0.5} style="stroke" color={[1, 1, 0, 1]} strokeWidth={2} />
+          <Path path={P_b122} style="stroke" color={[1, 1, 1, 1]} strokeWidth={4} strokeCap="round" />
         </Group>
-        <Image image={IMG13} x={16} y={16} width={48} height={48} fit="contain" />
-        <Text font={FONT14} text={select(B, "b133")} x={D15} y={480} color={[1, 1, 1, 1]} />
-        <Text font={D17} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
-        <Atlas image={IMG18} sprites={K19} transforms={XF20} />
+        <Image image={IMG15} x={16} y={16} width={48} height={48} fit="contain" />
+        <Text font={FONT16} text={select(B, "b129")} x={D17} y={480} color={[1, 1, 1, 1]} />
+        <Text font={D19} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
+        <Atlas image={IMG20} sprites={K21} transforms={XF22} />
         <Rect x={400} y={16} width={96} height={96}>
           <ImageShader
-            image={IMG13}
+            image={IMG15}
             fit="cover"
             x={400}
             y={16}
@@ -318,19 +301,19 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
         <Circle
           cx={450}
           cy={450}
-          r={select(B, "b155")}
+          r={select(B, "b151")}
           style="stroke"
           color={[1, 1, 1, 0.5]}
           strokeWidth={1}
         />
-        <Group clip={K21}>
+        <Group clip={K23}>
           <Fill opacity={0.75}>
             <ColorShader color={[0.1, 0.6, 0.3, 1]} />
           </Fill>
         </Group>
-        <Paragraph paragraph={D23} x={156} y={420} width={200} />
-        <Text font={D24} text="Right" x={D25} y={140} color={[1, 1, 1, 1]} />
-        <Group transform={D26} origin={vec(256, 256)}>
+        <Paragraph paragraph={D25} x={156} y={420} width={200} />
+        <Text font={D26} text="Right" x={D27} y={140} color={[1, 1, 1, 1]} />
+        <Group transform={D28} origin={vec(256, 256)}>
           <Rect x={236} y={236} width={40} height={40} style="stroke" strokeWidth={2} />
         </Group>
       </Group>

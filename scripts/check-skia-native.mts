@@ -20,6 +20,12 @@
 //      60 Hz display clock, stays within 2e-5 of its range of the worklet
 //      value at every frame, with no frame of lag — web and native start
 //      semantics alike; jittered clocks are reported, not asserted;
+//   3c. playSegment(…, { from: "current" }) from another frame's values:
+//      scalars start exactly where they are, colors within 1/255 of the color
+//      on screen, a color's fade runs on its first move's timing and easing
+//      (1 − its eased fraction; a linear glide over a lead; a hold's wait),
+//      and every value joins from "start"'s frames by the end of that move
+//      and stays — the transcription and Reanimated's real sources alike;
 //   4. color progress mapping: colorAt(track, progresses) is evaluateTrack's
 //      color, bit for bit, for every segment of every color track (OKLab, RGB,
 //      holds, overshooting easings, springs, 8-bit snaps with keyed or node
@@ -54,7 +60,7 @@ const { ReanimatedEasing } = await import("@/lib/skia-export/reanimated-easing")
 const rt = await import("@/lib/skia-export/runtime/toolbox-timeline");
 const { EASING_PRESET_ORDER } = await import("@/engine/keyframes");
 const { springToReanimated } = await import("@/lib/skia-export/spring");
-const { loadNativeModule, playNative, driftRows, realReanimatedAvailable, HARNESS_REANIMATED } = await import("./skia/native-drift.ts");
+const { loadNativeModule, playNative, playNativeFromCurrent, driftRows, realReanimatedAvailable, HARNESS_REANIMATED } = await import("./skia/native-drift.ts");
 const { frameTime } = await import("./skia/reanimated-sim.ts");
 const { checkExportable, typecheckBundle } = await import("./skia/export-check.ts");
 const aurora = await import("./fixtures/skia/aurora.ts");
@@ -235,7 +241,9 @@ for (const b of bundles) snapshot(b.name, b.files);
     ["a rest wait after an early-settling spring", /\/\/ … rest at 1 to f57\n\s+withTiming\(1, \{ duration: frames\(19\)/],
     ["color progress shared values", /export function c_oklabProgress2Animation/],
     ["a spring on a color's progress", /withDelay\(frames\(30\), withSpring\(1, /],
-    ["the colorAt mix in a derived value", /useDerivedValue\(\(\) => colorAt\(TRACKS\.c_oklab, \[c_oklabProgress0\.value, c_oklabProgress1\.value, c_oklabProgress2\.value\]\)\)/],
+    // (with segments: colorFrom — colorAt plus the from "current" fade, colorAt exactly at weight 0)
+    ["the colorAt mix in a derived value", /useDerivedValue\(\(\) => colorFrom\(TRACKS\.c_oklab, \[c_oklabProgress0\.value, c_oklabProgress1\.value, c_oklabProgress2\.value\], c_oklabFromOffset\.value, c_oklabFromWeight\.value\)\)/],
+    ["a color's from-\"current\" fade per segment", /export function c_oklabFromSegmentAnimation\(segment: SegmentName\): number/],
     ["one frame-aligned start for every value", /scheduleOnUI\(\(\) => \{\n\s+"worklet";\n(\s+\/\/[^\n]*\n)+\s+requestAnimationFrame\(\(\) => \{/],
   ];
   for (const [what, re] of kinds) check(`emitted animations.ts writes ${what}`, re.test(e));
@@ -337,6 +345,124 @@ for (const b of bundles) {
         `${bad}${lag ? ` · ${lag} late` : ""}${differ ? ` · ${differ} samples differ from the real sources` : ""}`
       );
     }
+    h.dispose();
+    real?.dispose();
+  }
+}
+
+// ---- 3c. playSegment(…, { from: "current" }): an interruption -----------------------------------------
+// Every value starts where it is — scalars run their first step from there,
+// colors fade the color on screen out over the segment's first move along
+// that move's own timing and easing — and from the end of that move on plays
+// exactly what from "start" plays. "Where it is": the worklet value at a
+// frame inside another stretch of the timeline (what the screen shows when
+// app code interrupts it).
+{
+  const sameV = (a: number | number[], b: number | number[]) => JSON.stringify(a) === JSON.stringify(b);
+  const maxD = (a: number | number[], b: number | number[]) =>
+    Array.isArray(a) && Array.isArray(b) ? Math.max(...a.map((x, i) => Math.abs(x - b[i]))) : Math.abs((a as number) - (b as number));
+  for (const bundle of bundles) {
+    const man = manifestOf(bundle.files);
+    const segs: { name: string; frames: [number, number] }[] = man.segments ?? [];
+    if (!segs.length) continue;
+    check(`${bundle.name}: the manifest says what from "current" does`, typeof man.native.fromCurrent === "string" && /colorFrom/.test(man.native.fromCurrent));
+    const h = await loadNativeModule(bundle.files);
+    const real = useReal ? await loadNativeModule(bundle.files, { reanimated: "real" }) : null;
+    const total = bundle.timeline.sceneDurationTicks / bundle.timeline.ticksPerFrame;
+    let colorsTested = 0;
+    for (const s of segs) {
+      const [a, b] = s.frames;
+      const n = b - a + 1;
+      // Interrupt from a frame well away from the segment's start.
+      const at = (a + Math.round(total * 0.37)) % total;
+      const current: Record<string, number | number[]> = {};
+      for (const v of man.native.values) current[v.key] = h.mod.evaluateTrack(h.mod.TRACKS[v.key], at * bundle.timeline.ticksPerFrame);
+      let bad = "";
+      let start0 = 0;
+      let color0 = 0;
+      let jumped = 0;
+      let moved = 0;
+      let differ = 0;
+      for (const platform of ["web", "native"] as const) {
+        const fromStart = playNative(h.mod, man.native, n, steady, platform, s.name);
+        const cur = playNativeFromCurrent(h.mod, man.native, n, steady, platform, s.name, current);
+        if (real) {
+          const c = playNativeFromCurrent(real.mod, man.native, n, steady, platform, s.name, current);
+          for (const k of Object.keys(cur.series)) cur.series[k].forEach((v, f) => (sameV(v, c.series[k][f]) ? 0 : differ++));
+        }
+        for (const v of man.native.values) {
+          const S = cur.series[v.key];
+          const R = fromStart[v.key];
+          const segAnim = h.mod[`${v.key.replace(/[^A-Za-z0-9_$]/g, "_")}SegmentAnimation`];
+          // (a) it starts where it is — unless it doesn't move in the
+          // segment at all, when it jumps as from "start" (as a scalar does).
+          const jumps = sameV(S[0], R[0]) && sameV(S[n - 1], R[0]) && sameV(R[0], R[n - 1]);
+          if (!jumps) {
+            if (v.kind === "scalar") {
+              if (segAnim && !Object.is(S[0], current[v.key])) bad ||= `${s.name} ${v.key}: starts at ${S[0]}, not the current ${current[v.key]}`;
+              start0 = Math.max(start0, maxD(S[0], current[v.key]));
+            } else {
+              // (before lane C a color jumped to the segment's start color:
+              // what from "start" shows at +0)
+              jumped = Math.max(jumped, maxD(R[0], current[v.key]));
+              color0 = Math.max(color0, maxD(S[0], current[v.key]));
+              if (maxD(S[0], current[v.key]) > 1 / 255 + 1e-12) bad ||= `${s.name} ${v.key}: starts at ${JSON.stringify(S[0])}, not the current ${JSON.stringify(current[v.key])}`;
+            }
+          }
+          // (b) it joins toolbox's frames (from "start") before the segment
+          // ends and stays on them; a color is on them on every frame its
+          // fade is 0 (colorFrom is colorAt there) and its fade reaches 0.
+          // (8-bit snapped colors can coincide for a frame mid-fade.)
+          let lastDiff = -1;
+          for (let f = 0; f < n; f++) if (!sameV(S[f], R[f])) lastDiff = f;
+          if (lastDiff >= n - 1) bad ||= `${s.name} ${v.key}: never joins from "start" (last ${JSON.stringify(S[n - 1])} vs ${JSON.stringify(R[n - 1])})`;
+          if (v.kind === "color" && cur.weights[v.key]) {
+            const w = cur.weights[v.key];
+            if (w[n - 1] !== 0 || w.some((x, f) => x === 0 && !sameV(S[f], R[f]))) bad ||= `${s.name} ${v.key}: off toolbox's frames with its fade at 0, or the fade never ends`;
+          }
+          if (!sameV(S[0], R[0])) moved++;
+          // (c) a color's fade has its first move's timing and easing: with no
+          // lead it is 1 − that progress's eased fraction at every frame; with
+          // a lead it is a linear glide over the lead; it reaches 0 when the
+          // move (or the lead) ends and stays there.
+          if (v.kind === "color" && cur.weights[v.key]) {
+            const w = cur.weights[v.key];
+            const ps = cur.progress[v.key];
+            const k0 = ps.findIndex((p) => p.some((x) => x !== p[0]));
+            if (k0 < 0 || jumps) continue;
+            colorsTested++;
+            const p = ps[k0];
+            const lead = p.findIndex((x, f) => f + 1 < n && p[f + 1] !== x);
+            const end = p.findIndex((x, f) => f >= lead && p.slice(f).every((y) => y === x));
+            const isHold = p.slice(0, end).every((x) => x === p[0]);
+            if (isHold) {
+              if (!(w.slice(0, end).every((x) => x === 1) && w.slice(end).every((x) => x === 0))) bad ||= `${s.name} ${v.key}: a hold's fade must wait, then drop at +${end}`;
+            } else if (lead === 0) {
+              const p0 = p[0];
+              const p1 = p[end];
+              for (let f = 0; f <= end; f++) {
+                const want = 1 - (p[f] - p0) / (p1 - p0);
+                if (Math.abs(w[f] - want) > 1e-9) {
+                  bad ||= `${s.name} ${v.key}: fade ${w[f]} at +${f}, the move's eased fraction says ${want}`;
+                  break;
+                }
+              }
+              if (!w.slice(end).every((x) => x === 0)) bad ||= `${s.name} ${v.key}: fade not 0 from +${end}`;
+            } else {
+              // (≤ 1e-5: every duration ends 1 µs early, FRAME_MARGIN_MS)
+              for (let f = 0; f <= lead; f++) if (Math.abs(w[f] - Math.max(0, 1 - f / lead)) > 1e-5) bad ||= `${s.name} ${v.key}: a ${lead}-frame lead must glide linearly (${w[f]} at +${f})`;
+              if (!w.slice(lead).every((x) => x === 0)) bad ||= `${s.name} ${v.key}: fade not 0 after the lead`;
+            }
+          }
+        }
+      }
+      check(
+        `${bundle.name} playSegment("${s.name}", { from: "current" }) from f${at}: ${moved / 2} values leave where they are (scalars exactly, colors within ${Math.round(color0 * 255)}/255 — they used to jump up to ${Math.round(jumped * 255)}/255), color fades follow the first move's curve, everything joins from "start"'s frames by the end of that move and stays${real ? "; same doubles as Reanimated's real sources" : ""}`,
+        !bad && !differ && start0 === 0,
+        `${bad}${differ ? ` · ${differ} samples differ from the real sources` : ""}`
+      );
+    }
+    if (bundle.name !== "native-aurora-scene") check(`${bundle.name}: from "current" exercised colors (${colorsTested})`, colorsTested > 0);
     h.dispose();
     real?.dispose();
   }

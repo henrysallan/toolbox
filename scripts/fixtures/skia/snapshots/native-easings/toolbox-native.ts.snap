@@ -113,3 +113,63 @@ export function colorAt(track: TimelineTrack, p: number[]): number[] {
   };
   return [q(c[0]), q(c[1]), q(c[2]), track.quantizeAlpha ? q(c[3]) : (track.alpha ?? 1)];
 }
+
+// colorAt before its 8-bit snap.
+function colorMix(track: TimelineTrack, p: number[]): number[] {
+  "worklet";
+  const ks = track.keys;
+  let k = 0;
+  while (k < p.length - 1 && p[k] === 1) k++;
+  const t = p[k];
+  const a = ks[k].value as number[];
+  const b = ks[k + 1].value as number[];
+  return t === 0 ? a : t === 1 ? b : lerpColor(a, b, t, track.colorSpace ?? "oklab");
+}
+
+// colorAt's 8-bit snap.
+function colorSnap(track: TimelineTrack, c: number[]): number[] {
+  "worklet";
+  if (!track.quantize8) return c;
+  const q = (x: number) => {
+    "worklet";
+    return Math.max(0, Math.min(255, Math.round(x * 255))) / 255;
+  };
+  return [q(c[0]), q(c[1]), q(c[2]), track.quantizeAlpha ? q(c[3]) : (track.alpha ?? 1)];
+}
+
+// A color in its track's mixing space (lerpColor's: OKLab or gamma RGB),
+// alpha last — and back.
+function colorToMix(c: number[], space: "oklab" | "rgb"): number[] {
+  "worklet";
+  if (space === "rgb") return [c[0], c[1], c[2], c[3]];
+  const lab = rgbToOklab(c[0], c[1], c[2]);
+  return [lab[0], lab[1], lab[2], c[3]];
+}
+function colorFromMix(m: number[], space: "oklab" | "rgb"): number[] {
+  "worklet";
+  if (space === "rgb") return m;
+  const rgb = oklabToRgb(m[0], m[1], m[2]);
+  return [rgb[0], rgb[1], rgb[2], m[3]];
+}
+
+// playSegment(…, { from: "current" }): how far `from` (the color on screen)
+// sits from the color the progresses `p` give (the segment's start), in the
+// track's mixing space.
+export function colorOffset(track: TimelineTrack, from: number[], p: number[]): number[] {
+  "worklet";
+  const space = track.colorSpace ?? "oklab";
+  const a = colorToMix(from, space);
+  const b = colorToMix(colorMix(track, p), space);
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+}
+
+// colorAt with `offset` mixed back in at weight `w`: w runs 1 → 0 over the
+// segment's first move, so the color leaves where it was along that move's
+// own curve; at w = 0 it is colorAt exactly.
+export function colorFrom(track: TimelineTrack, p: number[], offset: number[], w: number): number[] {
+  "worklet";
+  if (w === 0) return colorAt(track, p);
+  const space = track.colorSpace ?? "oklab";
+  const m = colorToMix(colorMix(track, p), space);
+  return colorSnap(track, colorFromMix([m[0] + offset[0] * w, m[1] + offset[1] * w, m[2] + offset[2] * w, m[3] + offset[3] * w], space));
+}

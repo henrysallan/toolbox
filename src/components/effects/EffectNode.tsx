@@ -55,7 +55,7 @@ import { useAudioAudible } from "@/state/audio-audibility";
 import { LAYER_TYPE, VIRTUAL_SOCKET } from "@/engine/groups";
 import { readLayerTarget } from "@/engine/skia/layer-target";
 import SkiaLayerBadge from "./SkiaLayerBadge";
-import type { MergeLayer } from "@/nodes/effect/merge";
+import { mergeLayersParam, type MergeLayer } from "@/nodes/effect/merge";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
 
@@ -382,21 +382,24 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   // never render — no handle, no row.
   const inputs = data.inputs.filter((i) => !i.hidden);
 
-  // Merge: per-layer bypass state keyed by layer id, so each `layer:<id>` /
-  // `mask:<id>` row can carry an eye toggle (left of the label) and dim
-  // while the layer is skipped. Mirrors the eye on the param panel's layer
-  // card — both flip `enabled` on the same MergeLayer.
+  // Merge-style layer stacks (Merge, Merge (Skia) — any node with a
+  // `merge_layers` param; nodes/effect/merge.ts mergeLayersParam): the
+  // header's "+" adds a layer, and per-layer bypass state keyed by layer id
+  // lets each `layer:<id>` / `mask:<id>` row carry an eye toggle (left of
+  // the label) and dim while the layer is skipped. Mirrors the eye on the
+  // param panel's layer card — both flip `enabled` on the same MergeLayer.
+  const layersParamName = useMemo(() => mergeLayersParam(getNodeDef(data.defType))?.name ?? null, [data.defType]);
+  const layersValue = layersParamName ? data.params[layersParamName] : undefined;
   const mergeLayerEnabled = useMemo(() => {
-    if (data.defType !== "merge") return null;
-    const layers = data.params.layers;
+    if (!layersParamName) return null;
     const m = new Map<string, boolean>();
-    if (Array.isArray(layers)) {
-      for (const l of layers as MergeLayer[]) {
+    if (Array.isArray(layersValue)) {
+      for (const l of layersValue as MergeLayer[]) {
         if (l && typeof l.id === "string") m.set(l.id, l.enabled !== false);
       }
     }
     return m;
-  }, [data.defType, data.params.layers]);
+  }, [layersParamName, layersValue]);
   const auxes = data.auxOutputs;
   const hasPrimary = !!data.primaryOutput;
 
@@ -1146,7 +1149,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               onClick={() => dispatch("toggleBypass")}
             />
           )}
-          {data.defType === "merge" && (
+          {layersParamName && (
             <HeaderToggle
               on={false}
               label="+"

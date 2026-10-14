@@ -10,9 +10,16 @@
 //   window.__toolboxHarness.values()    every value at frames 0..current
 //   window.__toolboxHarness.drift()     those values vs the worklet-mode
 //                                       curves (evaluateTrack on TRACKS)
+//   window.__toolboxHarness.segment     { name, from, to } (seconds) with
+//                                       ?segment=, else null
+//
+// ?segment=<name> (one of the bundle's SEGMENTS) plays playSegment(name)
+// instead of play(): t and the frames count from the segment's start, and
+// drift() compares with the worklet curves at from + t — what toolbox shows
+// at that frame of the timeline (parity:skia -- --segment <name>).
 //
 // Without ?clock=fake (a device, or `npm --prefix skia-harness run web`) it
-// just plays, looping.
+// just plays, looping (the segment, with ?segment=).
 import React, { useEffect, useRef } from "react";
 import { PixelRatio, StyleSheet, Text, View } from "react-native";
 import { useCanvasRef, type CanvasRef } from "react-native-skia";
@@ -27,9 +34,12 @@ export interface NativeBundle {
   TIMELINE: { fps: number; ticksPerFrame: number; durationTicks: number; durationSec: number };
   CANVAS: { width: number; height: number };
   TRACKS: Record<string, unknown>;
+  // toolbox-clock.ts: name → [from, to) in seconds.
+  SEGMENTS: Record<string, readonly [number, number]>;
   useToolboxAnimations(opts?: { autoplay?: boolean; loop?: boolean }): {
     values: object;
     play(opts?: { loop?: boolean }): void;
+    playSegment(segment: never, opts?: { loop?: boolean; from?: "start" | "current" }): boolean;
     stop(): void;
   };
   ToolboxEffect: React.ComponentType<{
@@ -57,10 +67,12 @@ interface DriftRow {
   lagOne: number;
 }
 
-export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome: boolean }) {
+export function NativeHarness({ bundle, chrome, segment: wanted }: { bundle: NativeBundle; chrome: boolean; segment?: string | null }) {
   const clock = fakeClock();
   const canvasRef = useCanvasRef();
-  const anim = bundle.useToolboxAnimations({ autoplay: true, loop: !clock });
+  // A named segment plays through playSegment (no autoplay of the timeline).
+  const segment = wanted && Object.prototype.hasOwnProperty.call(bundle.SEGMENTS, wanted) ? wanted : null;
+  const anim = bundle.useToolboxAnimations({ autoplay: !segment, loop: !clock });
   const animRef = useRef(anim);
   animRef.current = anim;
   const sizePx = Number(new URLSearchParams(typeof window !== "undefined" ? window.location.search : "").get("size") ?? bundle.CANVAS.width);
@@ -69,6 +81,8 @@ export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome
   useEffect(() => {
     if (typeof window === "undefined") return;
     const fps = bundle.TIMELINE.fps;
+    // Where frame 0 sits on the timeline: the segment's start, or 0.
+    const offset = segment ? bundle.SEGMENTS[segment][0] : 0;
     const series: Record<string, Value[]> = {};
     // Seconds since play() at each recorded frame (the fake clock's own
     // time, jitter included): the worklet master clock would show the same.
@@ -86,7 +100,7 @@ export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome
       return Object.entries(series).map(([key, vals]) => {
         const track = bundle.TRACKS[key];
         const kind: DriftRow["kind"] = !track ? "clock" : Array.isArray(vals[0]) ? "color" : "scalar";
-        const secondsAt = (f: number) => times[f] ?? f / fps;
+        const secondsAt = (f: number) => offset + (times[f] ?? f / fps);
         const tickAt = (f: number) => {
           const tick = secondsAt(f) * fps * tpf;
           const r = Math.round(tick);
@@ -125,8 +139,13 @@ export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome
     let ready = false;
     (async () => {
       // play() starts its animations in a frame callback a frame or two
-      // after mount (scheduleOnUI → requestAnimationFrame), at fake t0.
+      // after mount (scheduleOnUI → requestAnimationFrame), at fake t0;
+      // playSegment() the same way, once called here.
       await nextFrames(4);
+      if (segment) {
+        if (!animRef.current.playSegment(segment as never, { loop: !clock })) throw new Error(`playSegment("${segment}") refused`);
+        await nextFrames(4);
+      }
       if (clock) record(clock.frame());
       ready = true;
     })();
@@ -136,6 +155,7 @@ export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome
       timeline: bundle.TIMELINE,
       size: sizePx,
       native: true,
+      segment: segment ? { name: segment, from: bundle.SEGMENTS[segment][0], to: bundle.SEGMENTS[segment][1] } : null,
       async capture(t: number) {
         if (!clock) throw new Error("native capture needs ?clock=fake");
         for (let i = 0; i < 120 && !ready; i++) await nextFrames(1);
@@ -149,14 +169,15 @@ export function NativeHarness({ bundle, chrome }: { bundle: NativeBundle; chrome
       drift,
     };
     w.__toolboxHarnessReady = true;
-  }, [bundle, canvasRef, clock, sizePx]);
+  }, [bundle, canvasRef, clock, sizePx, segment]);
 
   return (
     <View style={styles.root}>
       <bundle.ToolboxEffect animations={anim as never} width={sizePt} height={sizePt} canvasRef={canvasRef} />
       {chrome && (
         <Text style={styles.label}>
-          {bundle.NAME} · toolbox export (Reanimated-native) · {bundle.TIMELINE.durationSec}s
+          {bundle.NAME} · toolbox export (Reanimated-native) ·{" "}
+          {segment ? `playSegment("${segment}") [${bundle.SEGMENTS[segment][0]}–${bundle.SEGMENTS[segment][1]}s)` : `${bundle.TIMELINE.durationSec}s`}
         </Text>
       )}
     </View>

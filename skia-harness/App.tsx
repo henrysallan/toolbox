@@ -19,7 +19,8 @@
 //
 // ?bundle=native | native-easings | native-scene plays a Reanimated-native export instead
 // (native-harness.tsx; with ?clock=fake its capture steps Reanimated's own
-// clock frame by frame — the `time` freeze below doesn't apply).
+// clock frame by frame — the `time` freeze below doesn't apply; with
+// ?segment=<name> it plays playSegment(name) instead of play()).
 //
 // Native: deep links drive the same capture (capture.ts has the contract):
 //   toolboxharness://capture?t=1.25&run=<id>&host=http://127.0.0.1:<port>&frame=75&size=512
@@ -165,7 +166,7 @@ function Frozen({
 }
 
 export default function App() {
-  return NATIVE ? <NativeHarness bundle={NATIVE} chrome={query?.get("chrome") !== "0"} /> : <ClockApp />;
+  return NATIVE ? <NativeHarness bundle={NATIVE} chrome={query?.get("chrome") !== "0"} segment={query?.get("segment")} /> : <ClockApp />;
 }
 
 function ClockApp() {

@@ -32,7 +32,7 @@ import {
 import { scheduleOnUI } from "react-native-worklets";
 import { SEGMENTS, type SegmentName } from "./toolbox-clock";
 import { cubicBezierEase, easeOf, evaluateTrackRaw, type TimelineBezier, type TimelineTrack } from "./toolbox-timeline";
-import { colorAt, looped, segmentEase } from "./toolbox-native";
+import { colorFrom, colorOffset, looped, segmentEase } from "./toolbox-native";
 
 export const NAME = "Easings";
 export const TIMELINE = {
@@ -2880,6 +2880,30 @@ export function c_oklabProgress2SegmentAnimation(segment: SegmentName, loop = fa
   }
   return 0;
 }
+// c_oklab, playSegment(…, { from: "current" }): the share of the color on screen
+// still mixed in (colorFrom), 1 → 0 over the segment's first move with that
+// move's timing and easing — the path a scalar's first step takes from where it is.
+export function c_oklabFromSegmentAnimation(segment: SegmentName): number {
+  "worklet";
+  switch (segment) {
+    case "intro": // f0–f57
+      // f0 → f90 easeInOutQuad, cut to f0–f57 (toolbox's curve)
+      return withTiming(0, { duration: frames(57), easing: tbxCut0 });
+    case "rise": // f57–f100
+      // f0 → f90 easeInOutQuad, cut to f57–f90 (toolbox's curve)
+      return withTiming(0, { duration: frames(33), easing: tbxCut28 });
+    case "mid": // f100–f240
+      // f90 → f150 hold, cut to f100–f150
+      return withTiming(0, { duration: frames(50), easing: Easing.steps(1, false) });
+    case "settle": // f163–f223
+      // f150 → f260 easeOutBack, cut to f163–f223 (toolbox's curve)
+      return withTiming(0, { duration: frames(60), easing: tbxCut85 });
+    case "tail": // f240–f300
+      // f150 → f260 easeOutBack, cut to f240–f260 (toolbox's curve)
+      return withTiming(0, { duration: frames(20), easing: tbxCut87 });
+  }
+  return 0;
+}
 
 // c_rgb: channel keyframes (3 keys, rgb): a 0..1 progress per segment; colorAt mixes the keys in RGB and snaps to 8 bits.
 export function c_rgbProgress0Animation(loop = false) {
@@ -2930,6 +2954,30 @@ export function c_rgbProgress1SegmentAnimation(segment: SegmentName, loop = fals
   }
   return 0;
 }
+// c_rgb, playSegment(…, { from: "current" }): the share of the color on screen
+// still mixed in (colorFrom), 1 → 0 over the segment's first move with that
+// move's timing and easing — the path a scalar's first step takes from where it is.
+export function c_rgbFromSegmentAnimation(segment: SegmentName): number {
+  "worklet";
+  switch (segment) {
+    case "intro": // f0–f57
+      // f20 → f140 cubicBezier, cut to f20–f57 (toolbox's curve) (a 20-frame lead first)
+      return withTiming(0, { duration: frames(20), easing: Easing.linear });
+    case "rise": // f57–f100
+      // f20 → f140 cubicBezier, cut to f57–f100 (toolbox's curve)
+      return withTiming(0, { duration: frames(43), easing: tbxCut29 });
+    case "mid": // f100–f240
+      // f20 → f140 cubicBezier, cut to f100–f140 (toolbox's curve)
+      return withTiming(0, { duration: frames(40), easing: tbxCut57 });
+    case "settle": // f163–f223
+      // f140 → f280 easeOutElastic, cut to f163–f223 (toolbox's curve)
+      return withTiming(0, { duration: frames(60), easing: tbxCut86 });
+    case "tail": // f240–f300
+      // f140 → f280 easeOutElastic, cut to f240–f280 (toolbox's curve)
+      return withTiming(0, { duration: frames(40), easing: tbxCut88 });
+  }
+  return 0;
+}
 
 // c_spring: channel keyframes (2 keys, oklab): a 0..1 progress per segment; colorAt mixes the keys in OKLab and snaps to 8 bits.
 export function c_springProgress0Animation(loop = false) {
@@ -2953,6 +3001,28 @@ export function c_springProgress0SegmentAnimation(segment: SegmentName, loop = f
       return 1; // no move here
     case "tail": // f240–f300
       return 1; // no move here
+  }
+  return 0;
+}
+// c_spring, playSegment(…, { from: "current" }): the share of the color on screen
+// still mixed in (colorFrom), 1 → 0 over the segment's first move with that
+// move's timing and easing — the path a scalar's first step takes from where it is.
+export function c_springFromSegmentAnimation(segment: SegmentName): number {
+  "worklet";
+  switch (segment) {
+    case "intro": // f0–f57
+      // f30 → f150 spring, cut to f30–f57 (toolbox's curve) (a 30-frame lead first)
+      return withTiming(0, { duration: frames(30), easing: Easing.linear });
+    case "rise": // f57–f100
+      // f30 → f150 spring, cut to f57–f100 (toolbox's curve)
+      return withTiming(0, { duration: frames(43), easing: tbxCut30 });
+    case "mid": // f100–f240
+      // f30 → f150 spring, cut to f100–f150 (toolbox's curve)
+      return withTiming(0, { duration: frames(50), easing: tbxCut59 });
+    case "settle": // f163–f223
+      return 0; // no move here: the color jumps, as a scalar does
+    case "tail": // f240–f300
+      return 0; // no move here: the color jumps, as a scalar does
   }
   return 0;
 }
@@ -3070,9 +3140,11 @@ export interface PlaySegmentOptions {
   // Repeat the segment until stop() / another play.
   loop?: boolean;
   // "start" (default): every value jumps to its value at the segment's start
-  // first — the frames toolbox shows. "current": scalar values animate on
-  // from where they are (an interruption); colors still start at the
-  // segment's start.
+  // first — the frames toolbox shows. "current": every value animates on
+  // from where it is (an interruption): a scalar's first step runs from its
+  // current value, and a color leaves the color on screen along the
+  // segment's first move (colorFrom), joining toolbox's frames when that
+  // move ends. A value that doesn't move in the segment jumps.
   from?: "start" | "current";
 }
 
@@ -3123,12 +3195,18 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
   const c_oklabProgress0 = useSharedValue(0);
   const c_oklabProgress1 = useSharedValue(0);
   const c_oklabProgress2 = useSharedValue(0);
-  const c_oklabValue = useDerivedValue(() => colorAt(TRACKS.c_oklab, [c_oklabProgress0.value, c_oklabProgress1.value, c_oklabProgress2.value]));
+  const c_oklabFromOffset = useSharedValue([0, 0, 0, 0]);
+  const c_oklabFromWeight = useSharedValue(0);
+  const c_oklabValue = useDerivedValue(() => colorFrom(TRACKS.c_oklab, [c_oklabProgress0.value, c_oklabProgress1.value, c_oklabProgress2.value], c_oklabFromOffset.value, c_oklabFromWeight.value));
   const c_rgbProgress0 = useSharedValue(0);
   const c_rgbProgress1 = useSharedValue(0);
-  const c_rgbValue = useDerivedValue(() => colorAt(TRACKS.c_rgb, [c_rgbProgress0.value, c_rgbProgress1.value]));
+  const c_rgbFromOffset = useSharedValue([0, 0, 0, 0]);
+  const c_rgbFromWeight = useSharedValue(0);
+  const c_rgbValue = useDerivedValue(() => colorFrom(TRACKS.c_rgb, [c_rgbProgress0.value, c_rgbProgress1.value], c_rgbFromOffset.value, c_rgbFromWeight.value));
   const c_springProgress0 = useSharedValue(0);
-  const c_springValue = useDerivedValue(() => colorAt(TRACKS.c_spring, [c_springProgress0.value]));
+  const c_springFromOffset = useSharedValue([0, 0, 0, 0]);
+  const c_springFromWeight = useSharedValue(0);
+  const c_springValue = useDerivedValue(() => colorFrom(TRACKS.c_spring, [c_springProgress0.value], c_springFromOffset.value, c_springFromWeight.value));
   const play = useCallback(
     (o: { loop?: boolean } = {}) => {
       const repeat = o.loop ?? loop;
@@ -3192,22 +3270,25 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
           e_spring_settleValue.value = e_spring_settleAnimation(repeat);
           t_flagValue.value = 0;
           t_flagValue.value = t_flagAnimation(repeat);
+          c_oklabFromWeight.value = 0;
           c_oklabProgress0.value = 0;
           c_oklabProgress0.value = c_oklabProgress0Animation(repeat);
           c_oklabProgress1.value = 0;
           c_oklabProgress1.value = c_oklabProgress1Animation(repeat);
           c_oklabProgress2.value = 0;
           c_oklabProgress2.value = c_oklabProgress2Animation(repeat);
+          c_rgbFromWeight.value = 0;
           c_rgbProgress0.value = 0;
           c_rgbProgress0.value = c_rgbProgress0Animation(repeat);
           c_rgbProgress1.value = 0;
           c_rgbProgress1.value = c_rgbProgress1Animation(repeat);
+          c_springFromWeight.value = 0;
           c_springProgress0.value = 0;
           c_springProgress0.value = c_springProgress0Animation(repeat);
         });
       });
     },
-    [loop, e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbProgress0, c_rgbProgress1, c_springProgress0]
+    [loop, e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabFromWeight, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbFromWeight, c_rgbProgress0, c_rgbProgress1, c_springFromWeight, c_springProgress0]
   );
   const playSegment = useCallback(
     (segment: SegmentName, o: PlaySegmentOptions = {}) => {
@@ -3275,23 +3356,41 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
           e_spring_settleValue.value = e_spring_settleSegmentAnimation(segment, repeat);
           if (jump) t_flagValue.value = s.t_flag;
           t_flagValue.value = t_flagSegmentAnimation(segment, repeat);
+          const c_oklabShown = jump ? null : c_oklabValue.value;
           c_oklabProgress0.value = s.c_oklab[0];
           c_oklabProgress0.value = c_oklabProgress0SegmentAnimation(segment, repeat);
           c_oklabProgress1.value = s.c_oklab[1];
           c_oklabProgress1.value = c_oklabProgress1SegmentAnimation(segment, repeat);
           c_oklabProgress2.value = s.c_oklab[2];
           c_oklabProgress2.value = c_oklabProgress2SegmentAnimation(segment, repeat);
+          if (c_oklabShown) {
+            c_oklabFromOffset.value = colorOffset(TRACKS.c_oklab, c_oklabShown, s.c_oklab);
+            c_oklabFromWeight.value = 1;
+            c_oklabFromWeight.value = c_oklabFromSegmentAnimation(segment);
+          } else c_oklabFromWeight.value = 0;
+          const c_rgbShown = jump ? null : c_rgbValue.value;
           c_rgbProgress0.value = s.c_rgb[0];
           c_rgbProgress0.value = c_rgbProgress0SegmentAnimation(segment, repeat);
           c_rgbProgress1.value = s.c_rgb[1];
           c_rgbProgress1.value = c_rgbProgress1SegmentAnimation(segment, repeat);
+          if (c_rgbShown) {
+            c_rgbFromOffset.value = colorOffset(TRACKS.c_rgb, c_rgbShown, s.c_rgb);
+            c_rgbFromWeight.value = 1;
+            c_rgbFromWeight.value = c_rgbFromSegmentAnimation(segment);
+          } else c_rgbFromWeight.value = 0;
+          const c_springShown = jump ? null : c_springValue.value;
           c_springProgress0.value = s.c_spring[0];
           c_springProgress0.value = c_springProgress0SegmentAnimation(segment, repeat);
+          if (c_springShown) {
+            c_springFromOffset.value = colorOffset(TRACKS.c_spring, c_springShown, s.c_spring);
+            c_springFromWeight.value = 1;
+            c_springFromWeight.value = c_springFromSegmentAnimation(segment);
+          } else c_springFromWeight.value = 0;
         });
       });
       return true;
     },
-    [e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbProgress0, c_rgbProgress1, c_springProgress0]
+    [e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabFromWeight, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbFromWeight, c_rgbProgress0, c_rgbProgress1, c_springFromWeight, c_springProgress0]
   );
   const stop = useCallback(() => {
     cancelAnimation(e_linearValue);
@@ -3321,13 +3420,16 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
     cancelAnimation(e_springValue);
     cancelAnimation(e_spring_settleValue);
     cancelAnimation(t_flagValue);
+    cancelAnimation(c_oklabFromWeight);
     cancelAnimation(c_oklabProgress0);
     cancelAnimation(c_oklabProgress1);
     cancelAnimation(c_oklabProgress2);
+    cancelAnimation(c_rgbFromWeight);
     cancelAnimation(c_rgbProgress0);
     cancelAnimation(c_rgbProgress1);
+    cancelAnimation(c_springFromWeight);
     cancelAnimation(c_springProgress0);
-  }, [e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbProgress0, c_rgbProgress1, c_springProgress0]);
+  }, [e_linearValue, e_in_sineValue, e_out_sineValue, e_inout_sineValue, e_in_quadValue, e_out_quadValue, e_inout_quadValue, e_in_cubicValue, e_out_cubicValue, e_inout_cubicValue, e_in_expoValue, e_out_expoValue, e_in_backValue, e_out_backValue, e_out_bounceValue, e_out_elasticValue, e_ease_inValue, e_ease_outValue, e_ease_inoutValue, e_holdValue, e_customValue, e_custom_defValue, e_bezierValue, e_bezier_steepValue, e_springValue, e_spring_settleValue, t_flagValue, c_oklabFromWeight, c_oklabProgress0, c_oklabProgress1, c_oklabProgress2, c_rgbFromWeight, c_rgbProgress0, c_rgbProgress1, c_springFromWeight, c_springProgress0]);
   useEffect(() => {
     if (autoplay) play();
     return stop;

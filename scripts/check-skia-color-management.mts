@@ -14,7 +14,9 @@
 //      skia/*-graph.ts: fused chains with leaf and program children, the SDF
 //      programs, the SkSL Shader node in a scene);
 //   3. the SkSL Shader node: its default source, a user shader that samples
-//      iImage1, plus the source rewrite (main / iImageN.eval renamed, no
+//      iImage1, one that samples it from helpers / in parentheses / across
+//      comments (every spelling converted; SkSL has no other shader values,
+//      guarded), plus the source rewrite (main / iImageN.eval renamed, no
 //      line moves) and the error mapping;
 //   4. baked programs (animation: "baked", emit-baked.ts) of Aurora (SkSL
 //      Shader) and Aurora (scene);
@@ -38,9 +40,15 @@
 //   NEGATIVE the same program with color management forced off differs on
 //           P3 by a large amount (as do a literal color and the old
 //           layout(color) style).
-//   6. native drawing (paint colors, images, gradients) is Skia's to
-//      convert: solids / images match; gradients and translucent overlaps
-//      are reported (Skia interpolates and blends in the working space);
+//   6. native drawing: solid paint colors and images Skia converts itself
+//      (held ≤ 1/255); gradients are lowered to color-managed programs by
+//      the renderer and the exporter (engine/skia/library/gradient-program.ts)
+//      — held to Skia's native gradient on sRGB and like every program on P3,
+//      with the native gradient's P3 shift as the negative control and the
+//      cost printed — inside atlas sprite sheets (atlas.texture) and beside
+//      image leaves too, assets kept; native blend modes can't be lowered on device (React
+//      Native Skia 3.4 has no runtime blender — checked), so each mode's P3
+//      shift is measured and printed;
 //   7. no generator emits layout(color); every program is color-managed;
 //      manifests say `colorManaged: true`.
 //
@@ -64,15 +72,17 @@ const { getNodeDef } = await import("@/engine/registry");
 const { evaluateGraph } = await import("@/engine/evaluator");
 const lib = await import("@/engine/skia/library");
 const { fuseShader } = await import("@/engine/skia/fuse");
-const { buildSkslProgram, compileSksl, lintSksl, rewriteSkslSource, userLineError, channelUniformValues } = await import("@/engine/skia/sksl-program");
+const { buildSkslProgram, compileSksl, lintSksl, rewriteSkslSource, userLineError, channelUniformValues, stripComments, SKSL_SOURCE_MARKER } = await import("@/engine/skia/sksl-program");
 const { readChannelValues, syncChannelInputs } = await import("@/engine/expr-channels");
 const { renderScene } = await import("@/engine/skia/scene-render");
 const { SKIA_IR_VERSION, bindParam, bindStatic } = await import("@/engine/skia/scene-ir");
 const { makeSceneSampler, dataOnlyContext } = await import("@/lib/skia-export/scene-sample");
-const { exportSkia, planSkiaExport } = await import("@/lib/skia-export");
+const { exportSkia, exportSkiaScene, planSkiaExport } = await import("@/lib/skia-export");
 const { planSceneExport } = await import("@/lib/skia-export/scene-plan");
 const bk = await import("@/lib/skia-export/emit-baked");
 const { SKIA_FONTS } = await import("@/nodes/skia/fonts");
+const { SKIA_BLEND_MODES } = await import("@/nodes/skia/blend-modes");
+const { GRADIENT_PROGRAM_MARKER, lowerSceneGradients, lowerShaderGradients } = await import("@/engine/skia/library/gradient-program");
 const fx = await import("./fixtures/skia/aurora.ts");
 const { auroraSceneGraph } = await import("./fixtures/skia/aurora-scene-graph.ts");
 
@@ -167,13 +177,13 @@ function resolveAsset(id: string, kind: "image" | "font", asset: any): any {
 // ---- drawing -----------------------------------------------------------------------------------
 
 // A scene drawn on `t` at w × h (scaled from its own size), as an image.
-function drawScene(t: Target, scene: SkiaScene, w: number, h: number): { img: any; problems: string[] } {
+function drawScene(t: Target, scene: SkiaScene, w: number, h: number, nativeGradients = false): { img: any; problems: string[] } {
   const surf = surfaceFor(t, w, h);
   const canvas = surf.getCanvas();
   canvas.clear(CK.TRANSPARENT);
   canvas.save();
   canvas.scale(w / scene.width, h / scene.height);
-  const r = renderScene(CK, canvas, scene, { assets: resolveAsset, surfaceSize: [w, h] });
+  const r = renderScene(CK, canvas, scene, { assets: resolveAsset, surfaceSize: [w, h], nativeGradients });
   canvas.restore();
   surf.flush();
   const img = surf.makeImageSnapshot();
@@ -531,6 +541,7 @@ const sdfPrograms: ShaderIR[] = [];
     const canvas = Array.isArray(size) ? { width: size[0], height: size[1] } : { width: size as number, height: size as number };
     const canvases = g.nodes.filter((n: GraphNode) => n.type === "skia-canvas");
     let nativeWorst = { max: 0, at: "" };
+    let beforeWorst = { max: 0, at: "" };
     for (const c of canvases) {
       const sampler = makeSceneSampler(g.nodes, g.edges, c.id, canvas, mod.fixture.timeline);
       if ("problem" in sampler) continue;
@@ -584,16 +595,22 @@ const sdfPrograms: ShaderIR[] = [];
       const ia = drawScene(SRGB8, scene, sw, sh).img;
       const ib = drawScene(P3F, scene, sw, sh).img;
       const d = diff8(read8(ib, SRGB), read8(ia, SRGB));
-      ia.delete();
-      ib.delete();
+      // …and as it drew before gradients were lowered (native gradients).
+      const na = drawScene(SRGB8, scene, sw, sh, true).img;
+      const nb = drawScene(P3F, scene, sw, sh, true).img;
+      const dn = diff8(read8(nb, SRGB), read8(na, SRGB));
+      for (const i of [ia, ib, na, nb]) i.delete();
       if (d.max > nativeWorst.max) nativeWorst = { max: d.max, at: c.id };
+      if (dn.max > beforeWorst.max) beforeWorst = { max: dn.max, at: c.id };
     }
-    sceneNotes.push(`${name} ${nativeWorst.max}/255${nativeWorst.at ? ` (${nativeWorst.at})` : ""}`);
+    sceneNotes.push(
+      `${name} ${nativeWorst.max}/255${nativeWorst.at ? ` (${nativeWorst.at})` : ""}${beforeWorst.max !== nativeWorst.max ? ` [native gradients: ${beforeWorst.max}/255${beforeWorst.at ? ` (${beforeWorst.at})` : ""}]` : ""}`
+    );
   }
   info(`fixture programs: ${ms.length} distinct (${leafChildren} leaf children, ${programChildren} program children, ${sdf} SDF programs, ${sksl} SkSL Shader programs)`);
   check("the fixture corpus covers fused chains, program children and SDF programs (leaf children: section 5)", ms.length >= 50 && programChildren > 0 && sdf > 0, `${ms.length} programs, ${programChildren} program children, ${sdf} SDF`);
   summarize(`family fixtures (${Math.min(...sides)}–${Math.max(...sides)}² by cost)`, ms);
-  info(`whole scenes incl. native drawing, P3 vs sRGB (Skia's own conversion; native gradients and blends run in the working space): ${sceneNotes.join(", ")}`);
+  info(`whole scenes incl. native drawing, P3 vs sRGB (gradients lowered to programs; what remains is native blend modes and translucent overlaps, which Skia composites in the working space): ${sceneNotes.join(", ")}`);
 }
 lap("2. family fixtures");
 
@@ -656,6 +673,67 @@ half4 main(float2 p) {
   check("an error inside the appended wrapper says so instead of naming a line past the source", /color-management wrapper|line 1:/.test(we) && !/tbx_user_main/.test(we), we);
   check("no main → no wrapper (Skia's and the lint's own missing-main error)", !/tbx_cm_premul_out\(float4\(tbx_user_main/.test(buildSkslProgram({ expression: "float f() { return 1.0; }", inputs: [] }).sksl));
   check("lint warns on toLinearSrgb / fromLinearSrgb and on the reserved tbx_ prefix", lintSksl("half4 main(float2 p) { return half4(fromLinearSrgb(half3(1.0)), 1.0); }").warnings.some((w) => w.includes("already converts")) && lintSksl("float tbx_x;\nhalf4 main(float2 p) { return half4(1.0); }").warnings.some((w) => w.includes("tbx_")));
+
+  // ---- every spelling of a child sample is converted (lane C, 2026-10-14) ----
+  // SkSL has no shader-typed parameters, locals, arrays or ternaries — the
+  // iImageN globals are the only shader values, so every `.eval(` of a shader
+  // is an iImageN.eval: in a helper, in parentheses, with comments or line
+  // breaks between its tokens. The token rewrite converts all of them.
+  const helperSrc = `// color("tint", "#2bd4ff")
+// Helpers sample the wired image directly (SkSL can't pass a shader in).
+float4 sampleAt(float2 q) {
+  return float4((iImage1).eval(q));
+}
+float4 smear(float2 q) {
+  return 0.5 * (float4(iImage1 /* across a comment */ .eval(q)) + float4(iImage1 // and a line comment
+    . eval(q + float2(1.0, 0.0))));
+}
+half4 main /* entry */ (float2 p) {
+  float4 s = 0.5 * (sampleAt(p) + smear(p));
+  return half4(mix(s.rgb, tint.rgb * s.a, 0.3), s.a);
+}`;
+  const helper = { expression: helperSrc, inputs: syncChannelInputs([], helperSrc) };
+  const helperIR = skslNodeShader(helper, S, S, 0, { iImage1: tex });
+  collect("sksl-shader helper sampling", helperIR);
+  const hp = buildSkslProgram(helper);
+  const hrw = rewriteSkslSource(helperSrc);
+  const userPart = (sksl: string) => sksl.split(SKSL_SOURCE_MARKER)[1] ?? "";
+  check(
+    "rewrite: iImage1 sampled from helpers, in parentheses and across comments → tbx_eval_iImage1 (3 calls, none left raw), main renamed despite a comment before its (, comments and lines kept",
+    (stripComments(hrw.code).match(/\btbx_eval_iImage1\s*\(/g) ?? []).length === 3 &&
+      !/\biImage[1-4]\s*\)*\s*\.\s*eval\b/.test(stripComments(hrw.code)) &&
+      hrw.hasMain &&
+      /half4 tbx_user_main \/\* entry \*\/ \(float2 p\)/.test(hrw.code) &&
+      hrw.code.includes("/* across a comment */") &&
+      hrw.code.includes("// and a line comment") &&
+      hrw.code.split("\n").length === helperSrc.split("\n").length &&
+      /tbx_cm_premul_out\(float4\(tbx_user_main\(tbx_p\)\)\)/.test(userPart(hp.sksl))
+  );
+  const hm = measure("SkSL Shader sampling iImage1 through helpers / parentheses / comments", helperIR);
+  summarize("SkSL Shader: child samples in helpers", [hm], { negativeMin: 8 });
+  // NEGATIVE: those samples left raw (what the old regex rewrite shipped for
+  // the parenthesized and comment-split spellings) differ on P3.
+  const rawIR = mapPrograms(helperIR, (p) => {
+    const [pre, post] = p.sksl.split(SKSL_SOURCE_MARKER);
+    return { ...p, sksl: `${pre}${SKSL_SOURCE_MARKER}${post.replace(/\btbx_eval_iImage1\b/g, "iImage1.eval")}` };
+  });
+  const raw = measure("helper samples unconverted", rawIR);
+  check(`NEGATIVE: the same samples unconverted differ on P3 by ${fmt(raw.math)}`, raw.math.max >= 8);
+  // The premise, guarded: Skia rejects every other way to hold a shader, and
+  // the error lands on the user's line with their names.
+  const rejects = (src: string, why: RegExp, line: number) => {
+    const bp2 = buildSkslProgram({ expression: src, inputs: [] });
+    const e = userLineError(compileSksl(CK, bp2.sksl).error ?? "", bp2.preludeLines, bp2.sourceLines);
+    return why.test(e) && new RegExp(`line ${line}:`).test(e) && !/tbx_/.test(e);
+  };
+  check(
+    "CanvasKit rejects a shader-typed parameter, a shader local and a shader array — iImageN globals are the only shader values (errors mapped to the user's line)",
+    rejects("float4 f(shader s, float2 q) { return float4(s.eval(q)); }\nhalf4 main(float2 p) { return half4(f(iImage1, p)); }", /parameters of type 'shader' not allowed/, 1) &&
+      rejects("half4 main(float2 p) {\n  shader s = iImage1;\n  return s.eval(p);\n}", /must be global/, 2) &&
+      rejects("half4 main(float2 p) {\n  return (p.x > 1.0 ? iImage1 : iImage2).eval(p);\n}", /ternary expression of opaque type 'shader'/, 2)
+  );
+  const plainSrc = "half4 main(float2 p) {\n  half4 s = iImage1\n    .eval(p);\n  return s;\n}";
+  check("an ordinary source rewrites to the same text as before the token rewrite (bundles unchanged)", rewriteSkslSource(plainSrc).code === "half4 tbx_user_main(float2 p) {\n  half4 s = tbx_eval_iImage1\n(p);\n  return s;\n}");
 }
 lap("3. SkSL Shader node");
 
@@ -757,50 +835,293 @@ lap("4. baked");
     );
     collect("chain", ir);
     summarize("chain: noise → ramp × image leaf × SDF program child × color leaf", [measure("chain", ir)], { negativeMin: 5 });
-    // A native gradient leaf is sampled correctly, but Skia interpolates its
-    // stops in the working space, so on P3 its in-between colors differ.
-    const g = measure("chain with a gradient leaf", fusedIR(chainOf(gradientLeaf, colorLeaf)));
-    info(`…the same chain with a native gradient leaf: P3 vs sRGB max ${fmt(g.math)} (Skia interpolates a gradient leaf in the working space — section 6)`);
+    // A gradient leaf lowers to its color-managed program child
+    // (gradient-program.ts) like every gradient the renderer and the
+    // exporter see, so the chain holds with it too.
+    const gl = lowerShaderGradients(fusedIR(chainOf(gradientLeaf, colorLeaf)));
+    collect("chain with a gradient leaf", gl);
+    summarize("chain with a gradient leaf (lowered to a program child)", [measure("chain with a gradient leaf", gl)], { negativeMin: 5 });
   }
 }
 lap("5. chain");
 
-// ---- 6. native drawing, and negative controls ---------------------------------------------------
+// ---- 6. native drawing: gradients lowered, blend modes measured, negative controls ----------------
+//
+// Skia converts solid paint colors and images from their sRGB tags itself
+// (≤ 1/255), but it interpolates native gradients and blends draws in the
+// destination's working space. So gradients never reach Skia as gradients:
+// the renderer and the exporter lower every one to a color-managed program
+// (engine/skia/library/gradient-program.ts), held here like every other
+// program — and held to the native gradient on sRGB, which is what it
+// replaces. Blend modes can't be lowered on device (React Native Skia 3.4
+// exposes no runtime blender), so each is measured and reported per mode.
+const nativeScene = (root: SkiaNode, assets: Record<string, any> = {}): SkiaScene => ({ version: SKIA_IR_VERSION, width: S, height: S, root, assets });
+function drawWith(t: Target, sc: SkiaScene, native: boolean, w = S, h = S): any {
+  const surf = surfaceFor(t, w, h);
+  const canvas = surf.getCanvas();
+  canvas.clear(CK.TRANSPARENT);
+  canvas.save();
+  canvas.scale(w / sc.width, h / sc.height);
+  const r = renderScene(CK, canvas, sc, { assets: resolveAsset, surfaceSize: [w, h], nativeGradients: native });
+  canvas.restore();
+  surf.flush();
+  const img = surf.makeImageSnapshot();
+  r.release();
+  surf.delete();
+  return img;
+}
+// P3 (F32, read back as sRGB) vs sRGB 8-bit for one scene.
+const nat = (sc: SkiaScene, native = true): Diff => {
+  const a = drawWith(P3F, sc, native);
+  const b = drawWith(SRGB8, sc, native);
+  const d = diff8(read8(a, SRGB), read8(b, SRGB));
+  a.delete();
+  b.delete();
+  return d;
+};
 {
-  const scene = (root: SkiaNode, assets: Record<string, any> = {}): SkiaScene => ({ version: SKIA_IR_VERSION, width: S, height: S, root, assets });
-  const nat = (sc: SkiaScene) => diff8(read8(drawScene(P3F, sc, S, S).img, SRGB), read8(drawScene(SRGB8, sc, S, S).img, SRGB));
-  const solid = nat(scene({ k: "fill", paint: { style: "fill", color: bindStatic([0.95, 0.35, 0.1, 1]) } }));
-  const leafColor = nat(scene({ k: "fill", paint: { style: "fill", shader: { k: "color", color: bindStatic([0.1, 0.75, 0.35, 0.6]) } } }));
-  const image = nat(scene({ k: "image", asset: TEX, x: bindStatic(0), y: bindStatic(0), w: bindStatic(S), h: bindStatic(S), fit: "fill" }, { [TEX]: { id: TEX, kind: "image", mime: "image/png", url: "" } }));
+  const solid = nat(nativeScene({ k: "fill", paint: { style: "fill", color: bindStatic([0.95, 0.35, 0.1, 1]) } }));
+  const leafColor = nat(nativeScene({ k: "fill", paint: { style: "fill", shader: { k: "color", color: bindStatic([0.1, 0.75, 0.35, 0.6]) } } }));
+  const image = nat(nativeScene({ k: "image", asset: TEX, x: bindStatic(0), y: bindStatic(0), w: bindStatic(S), h: bindStatic(S), fit: "fill" }, { [TEX]: { id: TEX, kind: "image", mime: "image/png", url: "" } }));
   check(`native: a solid paint color, a color shader and an sRGB image match on P3 (Skia converts them) — max ${Math.max(solid.max, leafColor.max, image.max)}/255`, solid.max <= 1 && leafColor.max <= 1 && image.max <= 1);
-  const grad = nat(
-    scene({
-      k: "fill",
-      paint: {
-        style: "fill",
-        shader: {
-          k: "linear",
-          start: [bindStatic(0), bindStatic(0)],
-          end: [bindStatic(S), bindStatic(0)],
-          stops: [
-            { pos: bindStatic(0), color: bindStatic([1, 0, 0, 1]) },
-            { pos: bindStatic(1), color: bindStatic([0, 0, 1, 1]) },
-          ],
-        },
-      },
-    })
-  );
-  const over = nat(
-    scene({
-      k: "group",
-      children: [
-        { k: "fill", paint: { style: "fill", color: bindStatic([0.1, 0.75, 0.35, 1]) } },
-        { k: "fill", paint: { style: "fill", color: bindStatic([0.95, 0.2, 0.6, 0.5]) } },
-      ],
-    })
-  );
-  info(`native (not shader) residuals on P3: a red → blue linear gradient max ${fmt(grad)}, a 50 % pink over green max ${fmt(over)} — Skia interpolates gradients and blends in the working space; not ours to convert (spec §4)`);
+}
 
+// ---- 6a. gradients → color-managed programs ----
+{
+  const xy = (x: number, y: number): any => [bindStatic(x), bindStatic(y)];
+  const st = (...cs: [number, number[]][]) => cs.map(([p, c]) => ({ pos: bindStatic(p), color: bindStatic(c) }));
+  // Off the pixel grid, so no pixel centre lands exactly on a t = 0 / 1 edge
+  // (there float noise alone decides the side, for any implementation).
+  const k = S / 64;
+  const RB = st([0, [1, 0, 0, 1]], [1, [0, 0, 1, 1]]);
+  const MANY = st([0.1, [1, 0, 0, 1]], [0.3, [0, 1, 0, 0.5]], [0.3, [1, 1, 0, 1]], [0.2, [0, 0, 1, 1]], [0.8, [0, 1, 1, 0.2]], [1.4, [1, 0, 1, 1]]);
+  const ramp49 = st(...Array.from({ length: 49 }, (_, i): [number, number[]] => [i / 48, [0.5 + 0.5 * Math.sin(i * 0.7), 0.5 + 0.5 * Math.sin(i * 0.31 + 2), 0.5 + 0.5 * Math.cos(i * 0.53), 0.6 + 0.4 * Math.sin(i * 0.2)]]));
+  const corpus: { label: string; g: any }[] = [];
+  const add = (label: string, g: any) => corpus.push({ label, g });
+  add("linear red → blue", { k: "linear", start: xy(0, 0), end: xy(S, 0), stops: RB });
+  add("one stop", { k: "linear", start: xy(0, 0), end: xy(S, 0), stops: st([0.5, [0.3, 0.6, 0.9, 0.7]]), tile: "decal" });
+  add("hard stops", { k: "linear", start: xy(0.37 * k, 0.21 * k), end: xy(63.3 * k, 0.9 * k), stops: st([0, [1, 0, 0, 1]], [0.5, [1, 0, 0, 1]], [0.5, [0, 0, 1, 1]], [1, [0, 1, 0, 1]]) });
+  add("49 stops (an OKLab Gradient Fill)", { k: "linear", start: xy(2.3 * k, 1.7 * k), end: xy(61.1 * k, 50.6 * k), stops: ramp49 });
+  for (const tile of ["clamp", "repeat", "mirror", "decal"]) {
+    add(`linear ${tile}`, { k: "linear", start: xy(16.3 * k, 10.7 * k), end: xy(40.1 * k, 50.4 * k), stops: MANY, tile });
+    add(`linear degenerate ${tile}`, { k: "linear", start: xy(16 * k, 10 * k), end: xy(16 * k, 10 * k), stops: MANY, tile });
+    add(`radial ${tile}`, { k: "radial", c: xy(30.3 * k, 34.1 * k), r: bindStatic(20.2 * k), stops: MANY, tile });
+    add(`radial degenerate ${tile}`, { k: "radial", c: xy(30 * k, 34 * k), r: bindStatic(0), stops: MANY, tile });
+    add(`conical concentric ${tile}`, { k: "conical", c0: xy(32.2 * k, 32.3 * k), r0: bindStatic(6.1 * k), c1: xy(32.2 * k, 32.3 * k), r1: bindStatic(28.3 * k), stops: MANY, tile });
+    add(`conical focal ${tile}`, { k: "conical", c0: xy(20.1 * k, 30.2 * k), r0: bindStatic(0), c1: xy(36.3 * k, 34.4 * k), r1: bindStatic(26.1 * k), stops: MANY, tile });
+    add(`conical general ${tile}`, { k: "conical", c0: xy(12.1 * k, 20.2 * k), r0: bindStatic(8.1 * k), c1: xy(48.3 * k, 40.4 * k), r1: bindStatic(14.2 * k), stops: MANY, tile });
+    add(`conical r0 > r1 ${tile}`, { k: "conical", c0: xy(28.1 * k, 30.2 * k), r0: bindStatic(30.3 * k), c1: xy(34.2 * k, 32.1 * k), r1: bindStatic(4.1 * k), stops: RB, tile });
+    add(`conical collapsed ring ${tile}`, { k: "conical", c0: xy(32.3 * k, 32.2 * k), r0: bindStatic(20.1 * k), c1: xy(32.3 * k, 32.2 * k), r1: bindStatic(20.1 * k), stops: MANY, tile });
+    add(`conical strip ${tile}`, { k: "conical", c0: xy(10.1 * k, 20.3 * k), r0: bindStatic(10.2 * k), c1: xy(50.4 * k, 40.2 * k), r1: bindStatic(10.2 * k), stops: MANY, tile });
+  }
+  add("sweep full turn", { k: "sweep", c: xy(30.3 * k, 33.2 * k), stops: MANY });
+  add("sweep 0 → π", { k: "sweep", c: xy(32.2 * k, 32.4 * k), start: bindStatic(0), end: bindStatic(Math.PI), stops: RB });
+  add("sweep 0.5 → 2 rad", { k: "sweep", c: xy(32.1 * k, 32.3 * k), start: bindStatic(0.5), end: bindStatic(2), stops: MANY });
+  add("sweep collapsed at 1 rad", { k: "sweep", c: xy(32.1 * k, 32.3 * k), start: bindStatic(1), end: bindStatic(1), stops: MANY });
+
+  // The program draws what Skia's native gradient draws, on sRGB.
+  let worst = { max: 0, label: "" };
+  const offenders: string[] = [];
+  for (const { label, g } of corpus) {
+    const sc = nativeScene({ k: "fill", paint: { style: "fill", shader: g } });
+    const a = drawWith(SRGB8, sc, false);
+    const b = drawWith(SRGB8, sc, true);
+    const d = diff8(read8(a, SRGB), read8(b, SRGB));
+    a.delete();
+    b.delete();
+    if (d.max > worst.max) worst = { max: d.max, label };
+    if (d.max > 1) offenders.push(`${label}: ${fmt(d)}`);
+  }
+  check(
+    `gradients: on sRGB each lowered program draws Skia's native gradient within 1/255 (${corpus.length}: linear / radial / conical × 4 tiles with Skia's degenerate rules, sweeps, hard / unsorted / out-of-range / translucent stops, 49 stops) — max ${worst.max}/255${worst.label ? ` at ${worst.label}` : ""}`,
+    offenders.length === 0,
+    offenders.slice(0, 4).join(" | ")
+  );
+  // Held like every program: P3 ≡ sRGB, storage, no drift, unmanaged.
+  const ms: Measure[] = [];
+  for (const { label, g } of corpus) {
+    const ir = lowerShaderGradients(g);
+    collect(`gradient ${label}`, ir);
+    ms.push(measure(`gradient ${label}`, ir));
+  }
+  summarize(`gradients lowered to programs (${corpus.length})`, ms, { negativeMin: 8 });
+  // …while Skia's native gradient shifts on P3 (what shipped before).
+  const before = corpus.map(({ label, g }) => ({ label, d: nat(nativeScene({ k: "fill", paint: { style: "fill", shader: g } }), true) }));
+  const bw = before.reduce((w, x) => (x.d.max > w.d.max ? x : w), before[0]);
+  const rb = before.find((x) => x.label === "linear red → blue")!;
+  const after = corpus.map(({ g }) => nat(nativeScene({ k: "fill", paint: { style: "fill", shader: g } }), false));
+  const aw = after.reduce((w, d) => (d.max > w.max ? d : w), after[0]);
+  check(
+    `NEGATIVE: the same gradients drawn natively differ on P3 by up to ${fmt(bw.d)} (${bw.label}; red → blue ${fmt(rb.d)}) — lowered, the scene draws within ${fmt(aw)}`,
+    rb.d.max >= 20 && bw.d.max >= 20 && aw.max <= 1
+  );
+  check(
+    "CanvasKit's JS sweep wrapper reads end = 0 as 360° (`endAngle || 360`); the program follows Skia (a collapsed sweep), as a device does",
+    /M=M\|\|360/.test(fs.readFileSync(path.join(ROOT, "node_modules/canvaskit-wasm/bin/full/canvaskit.js"), "utf8"))
+  );
+
+  // Cost: CPU raster time (relative only) and uniform slots, per stop count.
+  const COST = 256;
+  const time = (sc: SkiaScene, native: boolean) => {
+    drawWith(SRGB8, sc, native, COST, COST).delete();
+    const t = performance.now();
+    for (let i = 0; i < 5; i++) drawWith(SRGB8, sc, native, COST, COST).delete();
+    return (performance.now() - t) / 5;
+  };
+  const rows: string[] = [];
+  const costCases: [string, any][] = [
+    ["2 stops", { k: "linear", start: xy(0, 0), end: xy(S, S), stops: RB }],
+    ["6 stops", { k: "radial", c: xy(S / 2, S / 2), r: bindStatic(S / 2), stops: MANY }],
+    ["49 stops", { k: "linear", start: xy(0, 0), end: xy(S, S), stops: ramp49 }],
+  ];
+  for (const [label, g] of costCases) {
+    const sc = nativeScene({ k: "fill", paint: { style: "fill", shader: g } });
+    const prog = (lowerShaderGradients(g) as any).program as SkslProgramIR;
+    const eff = compileSksl(CK, prog.sksl).effect!;
+    rows.push(`${label}: native ${time(sc, true).toFixed(2)} ms, program ${time(sc, false).toFixed(2)} ms, ${eff.getUniformCount()} uniforms / ${eff.getUniformFloatCount()} floats`);
+  }
+  info(`gradient program cost, CanvasKit CPU raster ${COST}² sRGB 8-bit (relative only): ${rows.join("; ")}`);
+}
+
+// ---- 6b. blend modes: not lowerable on device, measured per mode ----
+{
+  // React Native Skia 3.4's API has no runtime blender (RuntimeEffect.Make is
+  // MakeForShader only; paint blendMode takes the enum) — the one way to
+  // blend sRGB numbers on a P3 canvas. Re-checked on every bump.
+  const rnSkia = path.join(ROOT, "skia-harness/node_modules/react-native-skia");
+  if (fs.existsSync(rnSkia)) {
+    const factory = fs.readFileSync(path.join(rnSkia, "src/skia/types/RuntimeEffect/RuntimeEffectFactory.ts"), "utf8");
+    const paintTypes = fs.readFileSync(path.join(rnSkia, "src/skia/types/Paint/Paint.ts"), "utf8");
+    const nativeFactory = fs.readFileSync(path.join(rnSkia, "cpp/api/JsiSkRuntimeEffectFactory.h"), "utf8");
+    check(
+      "React Native Skia 3.4 exposes no runtime blender (RuntimeEffectFactory: Make only; SkPaint: no setBlender; JSI Make = MakeForShader), so native blend modes can't be lowered to sRGB math on device — if this fails, a bump made it possible",
+      !/MakeForBlender|MakeForColorFilter/.test(factory) && !/setBlender/.test(paintTypes) && /MakeForShader/.test(nativeFactory) && !/MakeForBlender/.test(nativeFactory)
+    );
+  } else info("skia-harness not installed: the React Native Skia blender API check is skipped");
+  // Colorful sRGB images: the backdrop drawn natively (exact), the source
+  // (opaque, and at half alpha) blended over it with each mode.
+  const makeImg = (id: string, fn: (x: number, y: number) => number[]) => {
+    const n = 16;
+    const px = new Uint8Array(n * n * 4);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) px.set(fn(x, y).map((v) => Math.round(v * 255)), (y * n + x) * 4);
+    images.set(id, CK.MakeImage({ width: n, height: n, alphaType: CK.AlphaType.Unpremul, colorType: CK.ColorType.RGBA_8888, colorSpace: SRGB }, px, n * 4));
+  };
+  makeImg("cm-dst", (x, y) => [x / 15, y / 15, 1 - (x * y) / 225, 1]);
+  makeImg("cm-src", (x, y) => [0.5 + 0.5 * Math.sin(y * 0.8), (15 - x) / 15, 0.5 + 0.5 * Math.cos(x * 0.6 + y * 0.3), 1]);
+  makeImg("cm-src-half", (x, y) => [0.5 + 0.5 * Math.sin(y * 0.8), (15 - x) / 15, 0.5 + 0.5 * Math.cos(x * 0.6 + y * 0.3), 0.5]);
+  // (clamp, not the default decal: a decal edge is translucent, which is the
+  // translucent-overlap residual, not the mode's)
+  const imgShader = (id: string): ShaderIR => ({ k: "image", asset: id, fit: "fill", rect: [bindStatic(0), bindStatic(0), bindStatic(S), bindStatic(S)], tile: "clamp" });
+  const assets = Object.fromEntries(["cm-dst", "cm-src", "cm-src-half"].map((id) => [id, { id, kind: "image", mime: "image/png", url: "" }]));
+  const blendScene = (mode: string, src: string): SkiaScene =>
+    nativeScene(
+      {
+        k: "group",
+        children: [
+          { k: "fill", paint: { style: "fill", shader: imgShader("cm-dst") } },
+          { k: "group", blendMode: mode as any, children: [{ k: "fill", paint: { style: "fill", shader: imgShader(src) } }] },
+        ],
+      },
+      assets
+    );
+  const rows = SKIA_BLEND_MODES.map((mode) => ({ mode, opaque: nat(blendScene(mode, "cm-src")), half: nat(blendScene(mode, "cm-src-half")) }));
+  const exact = rows.filter((r) => r.opaque.max <= 1 && r.half.max <= 1).map((r) => r.mode);
+  const opaqueOnly = rows.filter((r) => r.opaque.max <= 1 && r.half.max > 1).map((r) => r.mode);
+  const worst = rows.reduce((w, r) => (Math.max(r.opaque.max, r.half.max) > Math.max(w.opaque.max, w.half.max) ? r : w), rows[0]);
+  info(`native blend modes, P3 vs sRGB max per mode (opaque source / 50 % source, over an opaque sRGB image): ${rows.map((r) => `${r.mode} ${r.opaque.max}/${r.half.max}`).join(", ")}`);
+  check(
+    `blend modes: exact on P3 either way: ${exact.join(", ") || "none"}; exact for an opaque source only: ${opaqueOnly.join(", ") || "none"}; the rest shift (worst ${worst.mode}, ${Math.max(worst.opaque.max, worst.half.max)}/255) — Merge (Skia) blends shaders exactly (section 2's merge fixture)`,
+    opaqueOnly.includes("srcOver") && Math.max(worst.opaque.max, worst.half.max) >= 20
+  );
+}
+
+// ---- 6c. gradients where other kinds carry them: atlas sprite sheets, image leaves ----
+{
+  const xy = (x: number, y: number): any => [bindStatic(x), bindStatic(y)];
+  const grad = (): ShaderIR =>
+    ({
+      k: "linear",
+      start: xy(0.3, 0.2),
+      end: xy(S / 2 - 0.4, S / 2 - 0.3),
+      stops: [
+        { pos: bindStatic(0), color: bindStatic([1, 0, 0, 1]) },
+        { pos: bindStatic(1), color: bindStatic([0, 0, 1, 1]) },
+      ],
+    }) as ShaderIR;
+  // Copy to Points (Skia)'s sprite sheet: a sub-scene (atlas.texture) whose
+  // gradient fill is rasterised once, then drawn as sprites.
+  const atlasScene = nativeScene({
+    k: "atlas",
+    id: "atl",
+    asset: "atl-sheet",
+    sprites: [0, 1, 2, 3].map(() => [0, 0, S / 2, S / 2]),
+    xforms: bindStatic([1, 0, 0, 0, 1, 0, S / 2, 0, 1, 0, 0, S / 2, 1, 0, S / 2, S / 2]),
+    texture: { node: { k: "shape", geom: { k: "rect", x: bindStatic(0), y: bindStatic(0), w: bindStatic(S / 2), h: bindStatic(S / 2) }, paint: { style: "fill", shader: grad() } }, rect: [0, 0, S / 2, S / 2] },
+  } as any);
+  const lowered = lowerSceneGradients(atlasScene);
+  const kinds: string[] = [];
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === "object") {
+      const o = x as Record<string, unknown>;
+      if (typeof o.k === "string") kinds.push(o.k);
+      Object.values(o).forEach(walk);
+    }
+  };
+  walk(lowered.root);
+  const sheetProg = (lowered.root as any).texture?.node?.paint?.shader;
+  check(
+    "atlas: the sprite sheet's sub-scene gradient lowers too (no gradient kind left; a runtime program in atlas.texture.node)",
+    !kinds.some((k) => ["linear", "radial", "sweep", "conical"].includes(k)) && sheetProg?.k === "runtime" && sheetProg.program.sksl.startsWith(GRADIENT_PROGRAM_MARKER)
+  );
+  const aP = nat(atlasScene, false);
+  const aN = nat(atlasScene, true);
+  const pa = drawWith(SRGB8, atlasScene, false);
+  const pn = drawWith(SRGB8, atlasScene, true);
+  const sa = read8(pa, SRGB);
+  const dAN = diff8(sa, read8(pn, SRGB));
+  let ink = 0;
+  for (let i = 3; i < sa.length; i += 4) if (sa[i] > 200) ink++;
+  pa.delete();
+  pn.delete();
+  check(
+    `atlas: the sheet still renders (${ink} of ${S * S} px inked), its program ≡ the native gradient on sRGB within 1/255 (max ${fmt(dAN)}), and P3 ≡ sRGB within 1/255 (max ${fmt(aP)})`,
+    ink > (S * S * 3) / 4 && dAN.max <= 1 && aP.max <= 1
+  );
+  // (The preview rasterises a sheet on an sRGB offscreen surface, so even a
+  // native gradient sheet is exact there — natively ${aN.max}/255; the export
+  // lowers it anyway: the device's useTexture surface is not ours to tag.)
+  info(`atlas: a native-gradient sheet on P3 in the preview: ${fmt(aN)} (sheets rasterise on an sRGB surface)`);
+  {
+    const ex = exportSkiaScene(atlasScene, [], [], { name: "atlas gradient", timeline: { fps: 60, ticksPerFrame: 1000, sceneDurationTicks: 1000 }, runtimeSource });
+    const tsx = ex.files?.["ToolboxScene.tsx"] ?? "";
+    check(
+      "atlas: the export's sprite sheet draws the gradient program (no RN gradient component; the sheet's <Shader> source is the program)",
+      !!ex.files && !/<(LinearGradient|RadialGradient|SweepGradient|TwoPointConicalGradient)\b/.test(tsx) && /<Shader\b/.test(tsx) && (ex.files["effects.ts"] ?? "").includes("Generated by toolbox (engine/skia/library/gradient-program.ts): a linear gradient"),
+      ex.problems.join(" | ")
+    );
+  }
+  // An image leaf and a gradient leaf in one fused program (lane I's image
+  // leaves): the gradient lowers to a program child, the image leaf and the
+  // scene's assets are untouched.
+  const imageLeaf: ShaderIR = { k: "image", asset: TEX, fit: "fill", rect: [bindStatic(0), bindStatic(0), bindStatic(S), bindStatic(S)] };
+  const mixed = fusedIR(
+    call("test.cm.mix@1", "mxi", { k: 0.5, tint: [0.2, 0.9, 0.4, 1] }, { a: { k: "leaf", shader: imageLeaf }, b: { k: "leaf", shader: grad() } })
+  );
+  const ms2 = lowerShaderGradients(mixed) as any;
+  const kids = ms2.program.children.map((c: any) => c.shader);
+  check(
+    "image leaf + gradient leaf in one program: the gradient becomes a program child, the image leaf object is kept as is",
+    kids.some((c: any) => c === (mixed as any).program.children.find((x: any) => x.shader.k === "image")?.shader) && kids.some((c: any) => c.k === "runtime" && c.program.sksl.startsWith(GRADIENT_PROGRAM_MARKER))
+  );
+  collect("image leaf + gradient leaf", ms2);
+  summarize("image leaf + gradient leaf (lowered)", [measure("image leaf + gradient leaf", ms2)], { negativeMin: 5 });
+  const withAssets: SkiaScene = { ...nativeScene({ k: "fill", paint: { style: "fill", shader: mixed } }), assets: { [TEX]: { id: TEX, kind: "image", mime: "image/png", url: "data:image/png;base64," } } };
+  const lw = lowerSceneGradients(withAssets);
+  check("lowering keeps the scene's assets (the same map)", lw.assets === withAssets.assets && lw !== withAssets);
+}
+
+{
   // Negative controls the corrected programs are measured against.
   const lit = compileSksl(CK, "half4 main(float2 p) { return half4(0.9, 0.5, 0.2, 1.0); }");
   const old = compileSksl(CK, "layout(color) uniform float4 a;\nlayout(color) uniform float4 b;\nhalf4 main(float2 p) { float3 c = mix(a.rgb, b.rgb, p.x / 32.0); c = c * c; return half4(half3(c), 1.0); }");

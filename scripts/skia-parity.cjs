@@ -5,6 +5,7 @@
 //   npm --prefix skia-harness run export:web
 //   npm run parity:skia            # [--frames 0,45,120] [--size 512] [--write-golden]
 //   npm run parity:skia -- --bundle native|native-easings   # Reanimated-native exports
+//   npm run parity:skia -- --bundle native --segment loop   # …playing one playSegment()
 //
 // One offscreen Electron window, two pages on one local server:
 //   device  — skia-harness/dist: the exported bundle running in React Native
@@ -59,7 +60,12 @@ const NATIVE = BUNDLE === "native" || BUNDLE === "native-easings" || BUNDLE === 
 // time; the pixels still compare with toolbox's exact frames.
 const JITTER = Number(H.arg("jitter", "0"));
 const SEED = Number(H.arg("seed", "1"));
-const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${JITTER ? `-jitter${JITTER}` : ""}` : "");
+// --segment <name> (native only): the page plays playSegment(name) instead
+// of play() (native-harness.tsx ?segment=); frames count from the segment's
+// start (default: eight spread over it), and toolbox renders the same
+// frames of the timeline, offset by the segment's start.
+const SEGMENT = H.arg("segment", "");
+const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${SEGMENT ? `-${SEGMENT}` : ""}${JITTER ? `-jitter${JITTER}` : ""}` : "");
 const BUNDLE_DIR = path.join(OUT, ".bundle");
 
 // atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`): a 30 fps
@@ -71,7 +77,8 @@ const DEFAULT_FRAMES =
     : BUNDLE === "atlas"
       ? "0,20,40,60,80,100,120"
       : "0,45,90,120,150,200,240,299";
-const FRAMES = H.arg("frames", DEFAULT_FRAMES).split(",").map(Number);
+const FRAMES_ARG = H.arg("frames", "");
+let FRAMES = (FRAMES_ARG || DEFAULT_FRAMES).split(",").map(Number);
 const SIZE = Number(H.arg("size", "512"));
 const WRITE_GOLDEN = H.flag("write-golden");
 const FPS = 60;
@@ -85,11 +92,12 @@ if (
   !(SIZE > 0) ||
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
+  (SEGMENT && !NATIVE) ||
   !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }
@@ -151,9 +159,22 @@ app.whenReady().then(async () => {
     const win = H.makeWindow(SIZE + 64, SIZE + 96);
 
     // ---- device: React Native Skia (web) -------------------------------------
-    const query = NATIVE ? `bundle=${BUNDLE}&clock=fake${JITTER ? `&jitter=${JITTER}&seed=${SEED}` : ""}` : `t=0${BUNDLE === "effect" ? "" : `&bundle=${BUNDLE}`}`;
+    const query = NATIVE
+      ? `bundle=${BUNDLE}&clock=fake${JITTER ? `&jitter=${JITTER}&seed=${SEED}` : ""}${SEGMENT ? `&segment=${encodeURIComponent(SEGMENT)}` : ""}`
+      : `t=0${BUNDLE === "effect" ? "" : `&bundle=${BUNDLE}`}`;
     await win.loadURL(`${server.base}/?${query}&size=${SIZE}&chrome=0`);
     await H.waitFor(win, "window.__toolboxHarnessReady");
+    // A segment run: where frame 0 sits on the timeline, and its length.
+    let segFrom = 0;
+    if (SEGMENT) {
+      const seg = await H.call(win, "window.__toolboxHarness.segment");
+      if (!seg || seg.name !== SEGMENT) throw new Error(`the ${BUNDLE} bundle has no segment "${SEGMENT}" (its SEGMENTS: see toolbox-clock.ts)`);
+      segFrom = Math.round(seg.from * FPS);
+      const len = Math.round((seg.to - seg.from) * FPS);
+      if (!FRAMES_ARG) FRAMES = [...new Set([0, 1, 2, 3, 4, 5, 6, 7].map((k) => Math.round((k * (len - 1)) / 7)))];
+      if (FRAMES.some((f) => f >= len)) throw new Error(`segment "${SEGMENT}" is ${len} frames: --frames must stay below ${len}`);
+      console.log(`segment "${SEGMENT}": f${segFrom}–f${segFrom + len} (${len} frames) via playSegment(); frames +${FRAMES.join(", +")}`);
+    }
     const device = [];
     for (const f of FRAMES) {
       device.push(await H.call(win, `window.__toolboxHarness.capture(${f / FPS})`, 60000, `device capture f${f}`));
@@ -169,7 +190,7 @@ app.whenReady().then(async () => {
       const values = await H.call(win, "window.__toolboxHarness.values()");
       fs.writeFileSync(path.join(OUT, "native-values.json"), JSON.stringify(values) + "\n");
       console.log(
-        `native values: ${drift.length} values × ${values.frames} frames (fake 60 Hz clock from play()${JITTER ? `, ±${JITTER} ms jitter, seed ${SEED}` : ""}) vs evaluateTrack:`
+        `native values: ${drift.length} values × ${values.frames} frames (fake 60 Hz clock from ${SEGMENT ? `playSegment("${SEGMENT}")` : "play()"}${JITTER ? `, ±${JITTER} ms jitter, seed ${SEED}` : ""}) vs evaluateTrack:`
       );
       for (const d of drift) {
         const rel = d.range > 0 ? d.maxAbs / d.range : 0;
@@ -183,7 +204,7 @@ app.whenReady().then(async () => {
     // ---- toolbox: the engine + SkSL Shader node --------------------------------
     await win.loadURL(`${server.base}/__parity/page.html`);
     await H.waitFor(win, "window.__parity && window.CanvasKitInit");
-    const toolbox = await H.call(win, `window.__parity.renderToolbox(${JSON.stringify(FRAMES)}, ${SIZE}, ${JSON.stringify(BUNDLE)})`, 120000, "toolbox render");
+    const toolbox = await H.call(win, `window.__parity.renderToolbox(${JSON.stringify(FRAMES.map((f) => f + segFrom))}, ${SIZE}, ${JSON.stringify(BUNDLE)})`, 120000, "toolbox render");
     const served = server.served.filter((s) => s.path.endsWith("canvaskit.wasm"));
     console.log(
       `toolbox: rendered ${toolbox.length} frames at ${SIZE}×${SIZE} · CanvasKit ${ck.version} ` +
@@ -215,13 +236,37 @@ app.whenReady().then(async () => {
         `window.__parity.compare(${JSON.stringify(device[0].rgba)}, ${JSON.stringify(device[mid].rgba)}, ${SIZE}, ${SIZE})`
       )
     ).metrics.meanAbs;
-    console.log(`motion check: device f${FRAMES[0]} vs f${FRAMES[mid]} meanAbs ${moved.toFixed(4)} (must be ≫ 0)`);
+    // A quiet stretch (a segment where little moves) can't show ≫ 0: then the
+    // device must have moved exactly as much as toolbox did between the same
+    // two frames — a frozen clock would show 0.
+    const tmoved = (
+      await H.call(
+        win,
+        `window.__parity.compare(${JSON.stringify(toolbox[0])}, ${JSON.stringify(toolbox[mid])}, ${SIZE}, ${SIZE})`
+      )
+    ).metrics.meanAbs;
+    const motionOk = moved > 0.01 || (moved > 0 && Math.abs(moved - tmoved) <= 1e-4);
+    console.log(
+      `motion check: device f${FRAMES[0]} vs f${FRAMES[mid]} meanAbs ${moved.toFixed(4)} (toolbox ${tmoved.toFixed(4)}; must be ≫ 0, or > 0 and toolbox's own)`
+    );
 
-    const all = rows.every((r) => r.verdict === "match") && moved > 0.01;
+    const all = rows.every((r) => r.verdict === "match") && motionOk;
     fs.writeFileSync(
       path.join(OUT, "report.json"),
       JSON.stringify(
-        { bundle: BUNDLE, ...(NATIVE ? { jitterMs: JITTER, seed: SEED } : {}), size: SIZE, frames: FRAMES, canvasKit: ck.version, motionMeanAbs: moved, rows, ...(drift ? { drift } : {}), ok: all },
+        {
+          bundle: BUNDLE,
+          ...(NATIVE ? { jitterMs: JITTER, seed: SEED } : {}),
+          ...(SEGMENT ? { segment: SEGMENT, segmentStartFrame: segFrom, framesAre: "segment-relative (toolbox frame = segmentStartFrame + frame)" } : {}),
+          size: SIZE,
+          frames: FRAMES,
+          canvasKit: ck.version,
+          motionMeanAbs: moved,
+          toolboxMotionMeanAbs: tmoved,
+          rows,
+          ...(drift ? { drift } : {}),
+          ok: all,
+        },
         null,
         2
       ) + "\n"

@@ -2,9 +2,11 @@
 // (specdocs/101326_skia-target.md §7 Wave 2, family 6). CanvasKit in Node,
 // CPU raster surfaces with FLOAT pixels (no 8-bit rounding), no GPU:
 //
-//   1. the def mirrors Merge: the same `layers` param object, Merge's
+//   1. the def mirrors Merge: Merge's `layers` param (+ max 8), Merge's
 //      sockets (base, mask:base, layer:<id>, mask:<id>) as Skia shaders,
-//      the fixed-slot cap (8 enabled layers) reported, the blend helper
+//      the fixed-slot cap (8 enabled layers) reported — and the editor's
+//      layer-stack UX (header +, row eyes, grow-on-wire capped at 8 enabled
+//      layers: nodes/effect/merge.ts growMergeLayersOnWire) —, the blend helper
 //      derived from Merge's BLEND_FS with all 29 branches;
 //   2. evaluation through the real evaluator maps the stack onto the slots
 //      the way Merge composites it (disabled / unwired layers skipped,
@@ -46,7 +48,7 @@ const { fuseShader } = await import("@/engine/skia/fuse");
 const { compileSksl, packUniforms } = await import("@/engine/skia/sksl-program");
 const { getSkslHelper } = await import("@/engine/skia/library");
 const { deriveMergeBlendSksl, mergeBlendHelperProblems, MERGE_BLEND_HELPER_ID } = await import("@/engine/skia/library/helpers-merge");
-const { BLEND_FS, BLEND_MODE_ORDER, mergeNode, modeToInt } = await import("@/nodes/effect/merge");
+const { BLEND_FS, BLEND_MODE_ORDER, growMergeLayersOnWire, mergeLayersParam, mergeNode, modeToInt, newMergeLayer } = await import("@/nodes/effect/merge");
 const { MERGE_TO_SKIA_BLEND, SKIA_MERGE_MAX_LAYERS } = await import("@/nodes/skia/merge");
 const { SKIA_BLEND_MODES } = await import("@/nodes/skia/blend-modes");
 const { makeSceneSampler, exportSkiaScene } = await import("@/lib/skia-export");
@@ -74,7 +76,16 @@ const def = getNodeDef("skia-merge")!;
 // ---- 1. the def ---------------------------------------------------------------------
 {
   check("skia-merge is registered as { class: sksl, mirrors: merge }", def?.skia?.class === "sksl" && def.skia.mirrors === "merge");
-  check("its `layers` param IS Merge's (same ParamDef object)", def.params.length === 1 && def.params[0] === mergeNode.params[0]);
+  {
+    const mine = def.params[0] as any;
+    const theirs = mergeNode.params[0] as any;
+    const keys = new Set([...Object.keys(mine), ...Object.keys(theirs)]);
+    keys.delete("max");
+    check(
+      `its \`layers\` param is Merge's, plus max: ${N} (the grow-on-wire cap)`,
+      def.params.length === 1 && mine.max === N && theirs.max === undefined && [...keys].every((k) => mine[k] === theirs[k])
+    );
+  }
   check("shader primary + gated image preview, no universal mask", def.primaryOutput === "skia_shader" && def.auxOutputs.some((a) => a.name === "preview" && a.type === "image") && def.gatesOutputs === true && def.noMaskInput === true);
   const layers = [
     { id: "x1", mode: "multiply", opacity: 1 },
@@ -90,7 +101,7 @@ const def = getNodeDef("skia-merge")!;
   check("static inputs: base + mask:base (Skia shaders)", def.inputs.map((i) => `${i.name}:${i.type}`).join(",") === "base:skia_shader,mask:base:skia_shader");
 
   const stack = (n: number, disabled = 0) =>
-    Array.from({ length: n + disabled }, (_, i) => ({ id: `l${i}`, mode: "normal", opacity: 1, ...(i < disabled ? { enabled: false } : {}) }));
+    Array.from({ length: n + disabled }, (_, i) => ({ id: `l${i}`, mode: "normal" as const, opacity: 1, ...(i < disabled ? { enabled: false } : {}) }));
   check(`${N} enabled layers are supported`, (def.validateParams?.({ layers: stack(N) }) ?? []).length === 0);
   const over = def.validateParams?.({ layers: stack(N + 1) }) ?? [];
   check(`${N + 1} enabled layers are reported (chain a second Merge (Skia))`, over.length === 1 && /at most 8 enabled layers/.test(over[0]), over[0]);
@@ -114,6 +125,34 @@ const def = getNodeDef("skia-merge")!;
 
   const rnOk = Object.entries(MERGE_TO_SKIA_BLEND).every(([m, rn]) => BLEND_MODE_ORDER.includes(m as any) && SKIA_BLEND_MODES.includes(rn!));
   check(`MERGE_TO_SKIA_BLEND maps ${Object.keys(MERGE_TO_SKIA_BLEND).length} Merge modes onto React Native Skia blendModes`, rnOk);
+
+  // Grow-on-wire / "+" (the editor's layer-stack UX, EffectsApp + EffectNode
+  // via nodes/effect/merge.ts): Merge (Skia) is a layer-stack node like
+  // Merge, so the header's + and the per-row eyes show, and wiring the last
+  // open layer appends one — up to the 8 enabled layers its slots take.
+  const lp = mergeLayersParam(def);
+  check("Merge (Skia) is a layer-stack node (header +, row eyes, grow-on-wire): its merge_layers param is `layers`", lp?.name === "layers" && lp.type === "merge_layers" && mergeLayersParam(mergeNode)?.name === "layers");
+  check("…other Skia nodes are not (no + on a Skia Group or Fill)", !mergeLayersParam(getNodeDef("skia-group")) && !mergeLayersParam(getNodeDef("skia-fill")));
+  const wired = (ls: { id: string }[], skip: string[] = []) => new Set(["base", ...ls.filter((l) => !skip.includes(l.id)).map((l) => `layer:${l.id}`), ...ls.map((l) => `mask:${l.id}`)]);
+  const one = [{ id: "a", mode: "normal" as const, opacity: 1 }];
+  check("an open (unwired) layer: no growth", growMergeLayersOnWire(one, wired(one, ["a"]), lp?.max) === null);
+  check("…a wired mask alone doesn't fill a layer", growMergeLayersOnWire(one, new Set(["base", "mask:a"]), lp?.max) === null);
+  const g1 = growMergeLayersOnWire(one, wired(one), lp?.max, "fresh");
+  check("every layer wired: one fresh layer appended (normal, opacity 1), existing layers untouched", !!g1 && g1.length === 2 && g1[0] === one[0] && g1[1].id === "fresh" && g1[1].mode === "normal" && g1[1].opacity === 1 && g1[1].enabled === undefined);
+  const g1Sockets = def.resolveInputs!({ layers: g1 }, { connectedTypes: {} }).map((x) => x.name);
+  check("…and the grown stack resolves the new layer's sockets (layer:fresh, mask:fresh) as Skia shaders", g1Sockets.includes("layer:fresh") && g1Sockets.includes("mask:fresh"));
+  const full = stack(N);
+  check(`${N} enabled layers all wired: no growth past the slots (a 9th would be reported)`, growMergeLayersOnWire(full, wired(full), lp?.max) === null);
+  const withOff = stack(N - 1, 1);
+  const g2 = growMergeLayersOnWire(withOff, wired(withOff), lp?.max, "g2");
+  check(`${N - 1} enabled + 1 disabled, all wired: grows to ${N} enabled (disabled layers take no slot)`, !!g2 && g2.length === N + 1 && (def.validateParams?.({ layers: g2 }) ?? []).length === 0);
+  const big = stack(N);
+  const g3 = growMergeLayersOnWire(big, wired(big), mergeLayersParam(mergeNode)?.max, "g3");
+  check(`Merge (no cap) keeps growing past ${N}`, !!g3 && g3.length === N + 1);
+  check("newMergeLayer is what + appends (mode normal, opacity 1, a fresh lyr- id)", (() => {
+    const l = newMergeLayer();
+    return l.mode === "normal" && l.opacity === 1 && /^lyr-[a-z0-9]+$/.test(l.id) && newMergeLayer().id !== l.id;
+  })());
 }
 
 // ---- 2. evaluation through the real evaluator ------------------------------------------

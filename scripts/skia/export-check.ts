@@ -122,6 +122,11 @@ export async function checkExportable(o: ExportCheckOptions): Promise<ExportChec
       const p = planSceneExport(scene, o.nodes, o.edges, { name: o.slot, timeline, sampleAt: (t) => sampler.sampleAt(t) }).plan;
       const b = p ? bakeScenePlan(p) : null;
       scene = b?.plan?.scene ?? null;
+    } else if (scene) {
+      // The programs the bundle ships: gradients lower to color-managed
+      // programs before planning (engine/skia/library/gradient-program.ts).
+      const { lowerSceneGradients } = await import("@/engine/skia/library/gradient-program");
+      scene = lowerSceneGradients(scene);
     }
     if (scene) {
       const found: { where: string; program: SkslProgramIR }[] = [];

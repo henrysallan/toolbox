@@ -702,8 +702,11 @@ if (auroraB.files && auroraW.files) {
   );
 }
 {
-  // The scene fixture: a fused-style program's keyframed tint bakes; the
-  // gradient child, transforms, paths and paint stay on the worklet.
+  // The scene fixture: a fused-style program's keyframed tint bakes, and so
+  // does its gradient child's keyframed stop color — gradients plan as their
+  // color-managed programs (engine/skia/library/gradient-program.ts), so the
+  // baker gives that program an iTime and the stop a baked track;
+  // transforms, paths and paint stay on the worklet.
   const g = sfx.sceneFixtureGraph();
   const plan = scenePlanOf(g.nodes, g.edges, g.canvasId, sfx.SCENE_CANVAS, sfx.SCENE_TIMELINE);
   const b = bk.bakeScenePlan(plan);
@@ -713,10 +716,17 @@ if (auroraB.files && auroraW.files) {
     !!b.plan && prog?.baked.map((x) => `${x.name}:${x.kind}`).join() === "tint:track" && prog.uniforms.join() === "iResolution,iTime,k",
     b.problems.join(" | ") || JSON.stringify(prog)
   );
+  const GW = "root.children.0.paint.shader.program.children.0.shader.program";
+  const gprog = b.programs.find((p) => p.where === GW);
+  check(
+    "scene fixture: the gradient child (a color-managed program since lane C) bakes its keyframed stop color, with an added iTime",
+    !!gprog && gprog.baked.map((x) => `${x.name}:${x.kind}`).join() === "tbx_g_c0:track" && gprog.addedTime === true,
+    JSON.stringify(gprog)
+  );
   const left = b.worklet.filter((x) => x.plan.kind !== "clock");
   check(
-    `scene fixture: ${left.length} animated binds outside programs stay on the worklet (gradient stop, transforms, paths, …) and a warning says so`,
-    left.length > 5 && left.some((x) => x.path.endsWith("children.0.shader.stops.0.color")) && b.warnings.some((w) => w.includes("stay on the worklet timeline"))
+    `scene fixture: ${left.length} animated binds outside programs stay on the worklet (transforms, paths, …) and a warning says so`,
+    left.length > 5 && !left.some((x) => x.path.startsWith(GW)) && b.warnings.some((w) => w.includes("stay on the worklet timeline"))
   );
   const files = bk.emitBakedSceneBundle(plan, runtimeSource).files!;
   const mod = await load(files, "fixture-b");
@@ -733,6 +743,23 @@ if (auroraB.files && auroraW.files) {
   check("scene fixture manifest lists the worklet binds", m.baked.worklet.binds === left.length && m.baked.worklet.paths.length === left.length);
   const rp = b.plan ? programAt(b.plan, "root.children.0.paint.shader.program") : null;
   check("scene fixture: the baked program compiles and declares iResolution, iTime, k + its child", !!rp && declared(rp.sksl).join() === "iResolution,iTime,k");
+  // The baked gradient program draws the worklet's gradient at every frame.
+  if (b.plan) {
+    const W = await load(emitSceneBundle(plan, runtimeSource), "fixture-gw");
+    const pw = programAt(plan, GW);
+    const pbk = programAt(b.plan, GW);
+    // Its end point is static (a uniform on both sides): pull it to n² so the
+    // whole ramp lands in the render.
+    const n = 24;
+    const sized = (u: Record<string, number | number[]>) => ({ ...u, tbx_g_x1: n, tbx_g_y1: n });
+    const frames = sfx.SCENE_TIMELINE.sceneDurationTicks / sfx.SCENE_TIMELINE.ticksPerFrame + 1;
+    const st = newStats();
+    for (let f = 0; f < frames; f++) {
+      const sec = f / sfx.SCENE_TIMELINE.fps;
+      accumulate(st, render(pw.sksl, sized(programUniforms(plan, W, pw, sec)), n, n), render(pbk.sksl, sized(programUniforms(b.plan, mod, pbk, sec)), n, n));
+    }
+    check(`scene fixture: the baked gradient program vs the worklet one, every frame (${frames} × ${n}², CPU): ${statsText(st)} (bound 1/255)`, st.max <= 1);
+  }
 }
 
 // ---- 6. refusals ---------------------------------------------------------------------------------

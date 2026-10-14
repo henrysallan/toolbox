@@ -18,8 +18,11 @@ import { copyShape, geomSubpaths, modifyDrawing, num, subpathsToD, type ShapeNod
 // stops, so the original already approximates every other interpolation /
 // color space piecewise-linearly (rampToGradientStops: 16 linear segments
 // per interval for OKLab / smooth ramps). This node ships THOSE stops, so
-// Skia's sRGB gradients reproduce the original stop for stop — no runtime
-// program needed; an OKLab ramp is exactly as approximate as the original.
+// sRGB gradients reproduce the original stop for stop; an OKLab ramp is
+// exactly as approximate as the original. The IR stays a gradient; the
+// renderer and the exporter lower it to a color-managed program
+// (engine/skia/library/gradient-program.ts), so it interpolates in sRGB on
+// a Display P3 canvas too.
 // Conic: Canvas2D starts the ramp at the frame angle; a Skia sweep starts
 // at +x, so the stops are rotated by the angle (with a hard seam stop pair)
 // and the sweep keeps its default 0..360°.
@@ -93,12 +96,13 @@ export const skiaGradientFillNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Fills every contour of every shape in a Skia drawing with its own linear, radial or conic gradient, laid out in the contour's frame like Rasterize Spline's gradient fill (React Native Skia gradient shaders). Ramps in OKLab or smooth interpolation ship as the same piecewise-linear stops Rasterize Spline draws.",
+    "Fills every contour of every shape in a Skia drawing with its own linear, radial or conic gradient, laid out in the contour's frame like Rasterize Spline's gradient fill. Each gradient draws and exports as a small color-managed runtime shader (sRGB interpolation on every canvas, Display P3 iPhones included). Ramps in OKLab or smooth interpolation ship as the same piecewise-linear stops Rasterize Spline draws.",
   searchAliases: ["skia", "gradient", "gradient fill", "linear gradient", "radial gradient", "conic", "react native"],
   facts: {
     gotchas: [
       "gradient_frame=shape takes up as contour center → first anchor (handedness from winding), angle 0 = left→right on an unrotated Circle; canvas fixes the angle, as in Rasterize Spline.",
       "Skia gradients lerp in sRGB: OKLab / smooth ramps ship as Rasterize Spline's own 16-segments-per-interval stop list, so they match it, not the exact ramp.",
+      "Renders and exports as a runtime shader (a native RN gradient shifts up to ~48/255 on a P3 iPhone); cost grows per stop — a 49-stop OKLab ramp is ~7× a native gradient on a GPU.",
       "Multi-contour shapes split into one shape per contour (even-odd holes are lost, as with Rasterize Spline's stacked gradient fill); an export needs the contour count to hold still.",
       "An animated gradient_offset can add or drop the wrap seam's stops, which changes the scene's structure; keep it constant (or always non-zero) to export.",
       "gradient_vary group / driver need spline attributes a drawing doesn't carry; only index / random / position are offered.",

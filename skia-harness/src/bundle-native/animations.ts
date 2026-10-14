@@ -31,7 +31,7 @@ import {
 import { scheduleOnUI } from "react-native-worklets";
 import { SEGMENTS, type SegmentName } from "./toolbox-clock";
 import { easeOf, evaluateTrackRaw, type TimelineTrack } from "./toolbox-timeline";
-import { colorAt, looped, segmentEase } from "./toolbox-native";
+import { colorFrom, colorOffset, looped, segmentEase } from "./toolbox-native";
 
 export const NAME = "Aurora";
 export const TIMELINE = {
@@ -340,6 +340,24 @@ export function c2Progress1SegmentAnimation(segment: SegmentName, loop = false):
   }
   return 0;
 }
+// c2, playSegment(…, { from: "current" }): the share of the color on screen
+// still mixed in (colorFrom), 1 → 0 over the segment's first move with that
+// move's timing and easing — the path a scalar's first step takes from where it is.
+export function c2FromSegmentAnimation(segment: SegmentName): number {
+  "worklet";
+  switch (segment) {
+    case "intro": // f0–f120
+      // f0 → f150 easeInOutQuad, cut to f0–f120 (toolbox's curve)
+      return withTiming(0, { duration: frames(120), easing: tbxCut2 });
+    case "loop": // f120–f300
+      // f0 → f150 easeInOutQuad, cut to f120–f150 (toolbox's curve)
+      return withTiming(0, { duration: frames(30), easing: tbxCut5 });
+    case "flash": // f150–f180
+      // f150 → f300 easeInOutQuad, cut to f150–f180 (toolbox's curve)
+      return withTiming(0, { duration: frames(30), easing: tbxCut9 });
+  }
+  return 0;
+}
 
 // ---- segments ----
 
@@ -374,9 +392,11 @@ export interface PlaySegmentOptions {
   // Repeat the segment until stop() / another play.
   loop?: boolean;
   // "start" (default): every value jumps to its value at the segment's start
-  // first — the frames toolbox shows. "current": scalar values animate on
-  // from where they are (an interruption); colors still start at the
-  // segment's start.
+  // first — the frames toolbox shows. "current": every value animates on
+  // from where it is (an interruption): a scalar's first step runs from its
+  // current value, and a color leaves the color on screen along the
+  // segment's first move (colorFrom), joining toolbox's frames when that
+  // move ends. A value that doesn't move in the segment jumps.
   from?: "start" | "current";
 }
 
@@ -402,7 +422,9 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
   const contrastValue = useSharedValue(0.8);
   const c2Progress0 = useSharedValue(0);
   const c2Progress1 = useSharedValue(0);
-  const c2Value = useDerivedValue(() => colorAt(TRACKS.c2, [c2Progress0.value, c2Progress1.value]));
+  const c2FromOffset = useSharedValue([0, 0, 0, 0]);
+  const c2FromWeight = useSharedValue(0);
+  const c2Value = useDerivedValue(() => colorFrom(TRACKS.c2, [c2Progress0.value, c2Progress1.value], c2FromOffset.value, c2FromWeight.value));
   const play = useCallback(
     (o: { loop?: boolean } = {}) => {
       const repeat = o.loop ?? loop;
@@ -418,6 +440,7 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
           drift_xValue.value = drift_xAnimation(repeat);
           contrastValue.value = 0.8;
           contrastValue.value = contrastAnimation(repeat);
+          c2FromWeight.value = 0;
           c2Progress0.value = 0;
           c2Progress0.value = c2Progress0Animation(repeat);
           c2Progress1.value = 0;
@@ -425,7 +448,7 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
         });
       });
     },
-    [loop, scaleValue, drift_xValue, contrastValue, c2Progress0, c2Progress1]
+    [loop, scaleValue, drift_xValue, contrastValue, c2FromWeight, c2Progress0, c2Progress1]
   );
   const playSegment = useCallback(
     (segment: SegmentName, o: PlaySegmentOptions = {}) => {
@@ -445,23 +468,30 @@ export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean 
           drift_xValue.value = drift_xSegmentAnimation(segment, repeat);
           if (jump) contrastValue.value = s.contrast;
           contrastValue.value = contrastSegmentAnimation(segment, repeat);
+          const c2Shown = jump ? null : c2Value.value;
           c2Progress0.value = s.c2[0];
           c2Progress0.value = c2Progress0SegmentAnimation(segment, repeat);
           c2Progress1.value = s.c2[1];
           c2Progress1.value = c2Progress1SegmentAnimation(segment, repeat);
+          if (c2Shown) {
+            c2FromOffset.value = colorOffset(TRACKS.c2, c2Shown, s.c2);
+            c2FromWeight.value = 1;
+            c2FromWeight.value = c2FromSegmentAnimation(segment);
+          } else c2FromWeight.value = 0;
         });
       });
       return true;
     },
-    [scaleValue, drift_xValue, contrastValue, c2Progress0, c2Progress1]
+    [scaleValue, drift_xValue, contrastValue, c2FromWeight, c2Progress0, c2Progress1]
   );
   const stop = useCallback(() => {
     cancelAnimation(scaleValue);
     cancelAnimation(drift_xValue);
     cancelAnimation(contrastValue);
+    cancelAnimation(c2FromWeight);
     cancelAnimation(c2Progress0);
     cancelAnimation(c2Progress1);
-  }, [scaleValue, drift_xValue, contrastValue, c2Progress0, c2Progress1]);
+  }, [scaleValue, drift_xValue, contrastValue, c2FromWeight, c2Progress0, c2Progress1]);
   useEffect(() => {
     if (autoplay) play();
     return stop;

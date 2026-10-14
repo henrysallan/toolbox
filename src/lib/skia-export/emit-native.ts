@@ -42,6 +42,18 @@
 // window. A window edge inside a key segment (a marker mid-curve, keys past
 // either end of the timeline) is a `tbxCut*` easing: toolbox's own curve
 // over the cut as the fraction of its move, so it stays exact.
+//
+// `from: "current"` (an interruption): a scalar's first step is a withTiming
+// / withSpring from wherever the value is, so it runs from there to its
+// target along that step's curve. A color is a mix of progresses, which
+// can't start anywhere else, so it gets the same motion explicitly: the
+// offset from the segment's start color to the color on screen (in the
+// track's OKLab / RGB mixing space, colorOffset) fades out by a weight that
+// runs 1 → 0 over the segment's first move with that move's own timing and
+// easing (<key>FromSegmentAnimation — a linear glide over a lead before the
+// first key, a step for a hold, withSpring for a spring), mixed in by
+// colorFrom; at weight 0 it is colorAt exactly, so from "start" and play()
+// are bit-identical to before (lane C, 2026-10-14).
 
 import { effectChildrenCode, effectComponentImports, effectFillJsx, emitSkiaBundle } from "./emit";
 import { timelineConstSource } from "./emit-shared";
@@ -601,6 +613,19 @@ function colorStep(s: NativeStep): string {
   return s.startFrames > 0 ? `withDelay(frames(${num(s.startFrames)}), ${t})` : t;
 }
 
+// playSegment(…, { from: "current" }) on a color: its fade weight, 1 → 0
+// over the window's first move, timed and eased as a scalar's first
+// withSequence step runs from its current value (scalarSteps): a lead before
+// the first key glides linearly, a hold waits and steps, a spring springs,
+// anything else is the step's own withTiming.
+function colorFade(s: NativeStep): string {
+  const lead = s.startFrames;
+  if (s.ease.kind === "hold") return `withTiming(0, { duration: frames(${num(lead + s.frames)}), easing: Easing.steps(1, false) })`;
+  if (lead > 0) return `withTiming(0, { duration: frames(${num(lead)}), easing: Easing.linear })`;
+  if (s.ease.kind === "spring") return `withSpring(0, ${springConfig(s.ease.config)})`;
+  return `withTiming(0, { duration: frames(${num(s.frames)}), easing: ${easingArg(s.ease)} })`;
+}
+
 const indent = (s: string, pad: string) => s.replace(/\n/g, `\n${pad}`);
 
 export interface NativeModule {
@@ -723,6 +748,13 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
             `export function ${local(v.key)}Progress${k}SegmentAnimation(segment: SegmentName, loop = false): number {\n  "worklet";\n  switch (segment) {\n${cases.join("\n")}\n  }\n  return ${num(v.progressInit[k])};\n}`
           );
         });
+        const fades = segs.map((sp) => {
+          const first = sp.values[i].steps[0];
+          return `    case ${JSON.stringify(sp.name)}: // ${segLabel(sp)}\n      ${first ? `${stepComment(first)}${first.startFrames > 0 ? ` (a ${num(first.startFrames)}-frame lead first)` : ""}\n      return ${colorFade(first)};` : `return 0; // no move here: the color jumps, as a scalar does`}`;
+        });
+        fns.push(
+          `// ${v.key}, playSegment(…, { from: "current" }): the share of the color on screen\n// still mixed in (colorFrom), 1 → 0 over the segment's first move with that\n// move's timing and easing — the path a scalar's first step takes from where it is.\nexport function ${local(v.key)}FromSegmentAnimation(segment: SegmentName): number {\n  "worklet";\n  switch (segment) {\n${fades.join("\n")}\n  }\n  return 0;\n}`
+        );
       }
     }
   }
@@ -753,7 +785,8 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
     ...(usesBezier ? ["type TimelineBezier"] : []),
     "type TimelineTrack",
   ];
-  const nativeImports = [...(colors.length ? ["colorAt"] : []), ...(animated.length ? ["looped"] : []), ...(usesSegEase ? ["segmentEase"] : [])];
+  const fromCurrent = colors.length > 0 && segs.length > 0;
+  const nativeImports = [...(colors.length ? (fromCurrent ? ["colorFrom", "colorOffset"] : ["colorAt"]) : []), ...(animated.length ? ["looped"] : []), ...(usesSegEase ? ["segmentEase"] : [])];
 
   const out: string[] = [];
   out.push(
@@ -847,6 +880,16 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
       types.push(`  // ${v.from} — [r, g, b, a], 0..1\n  ${objKey(v.key)}: DerivedValue<number[]>;`);
       const ps = v.progressInit.map((_, k) => `${local(v.key)}Progress${k}`);
       v.progressInit.forEach((p0, k) => hook.push(`const ${ps[k]} = useSharedValue(${num(p0)});`));
+      // from "current": the color on screen, read before any progress resets.
+      const fromOffset = `${local(v.key)}FromOffset`;
+      const fromWeight = `${local(v.key)}FromWeight`;
+      const shown = `${local(v.key)}Shown`;
+      if (segs.length) {
+        hook.push(`const ${fromOffset} = useSharedValue([0, 0, 0, 0]);`, `const ${fromWeight} = useSharedValue(0);`);
+        start.push(`${fromWeight}.value = 0;`);
+        segStart.push(`const ${shown} = jump ? null : ${name}.value;`);
+        animatedNames.push(fromWeight);
+      }
       v.progressInit.forEach((p0, k) => {
         const st = v.steps.find((s) => s.segment === k);
         start.push(`${ps[k]}.value = ${num(p0)};`);
@@ -854,7 +897,18 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
         if (segs.length) segStart.push(`${ps[k]}.value = s${member(v.key)}[${k}];`, `${ps[k]}.value = ${local(v.key)}Progress${k}SegmentAnimation(segment, repeat);`);
         if (moves) animatedNames.push(ps[k]);
       });
-      hook.push(`const ${name} = useDerivedValue(() => colorAt(TRACKS${member(v.key)}, [${ps.map((p) => `${p}.value`).join(", ")}]));`);
+      if (segs.length) {
+        segStart.push(
+          `if (${shown}) {`,
+          `  ${fromOffset}.value = colorOffset(TRACKS${member(v.key)}, ${shown}, s${member(v.key)});`,
+          `  ${fromWeight}.value = 1;`,
+          `  ${fromWeight}.value = ${moves ? `${local(v.key)}FromSegmentAnimation(segment)` : "0"};`,
+          `} else ${fromWeight}.value = 0;`
+        );
+        hook.push(`const ${name} = useDerivedValue(() => colorFrom(TRACKS${member(v.key)}, [${ps.map((p) => `${p}.value`).join(", ")}], ${fromOffset}.value, ${fromWeight}.value));`);
+      } else {
+        hook.push(`const ${name} = useDerivedValue(() => colorAt(TRACKS${member(v.key)}, [${ps.map((p) => `${p}.value`).join(", ")}]));`);
+      }
     }
     fields.push(`${objKey(v.key)}: ${name}`);
   }
@@ -874,7 +928,7 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
     `${pad}// Start inside a frame callback: there an animation's start time is\n${pad}// the frame's own timestamp, so every step lands on display frames\n${pad}// (outside one it is "now", somewhere between two frames).\n${pad}requestAnimationFrame(() => {\n${lines.map((l) => `${pad}  ${l}`).join("\n")}\n${pad}});\n`;
   out.push(
     `\n// ---- the hook ----\n\nexport interface ToolboxAnimationValues {\n${types.join("\n")}\n}\n\n` +
-      `export interface PlaySegmentOptions {\n  // Repeat the segment until stop() / another play.\n  loop?: boolean;\n  // "start" (default): every value jumps to its value at the segment's start\n  // first — the frames toolbox shows. "current": scalar values animate on\n  // from where they are (an interruption); colors still start at the\n  // segment's start.\n  from?: "start" | "current";\n}\n\n` +
+      `export interface PlaySegmentOptions {\n  // Repeat the segment until stop() / another play.\n  loop?: boolean;\n  // "start" (default): every value jumps to its value at the segment's start\n  // first — the frames toolbox shows. "current": every value animates on\n  // from where it is (an interruption): a scalar's first step runs from its\n  // current value, and a color leaves the color on screen along the\n  // segment's first move (colorFrom), joining toolbox's frames when that\n  // move ends. A value that doesn't move in the segment jumps.\n  from?: "start" | "current";\n}\n\n` +
       `export interface ToolboxAnimations {\n  values: ToolboxAnimationValues;\n  // (Re)start every value from the first frame, all on one UI frame. loop:\n  // repeat the timeline (TIMELINE.durationSec) until stop().\n  play(opts?: { loop?: boolean }): void;\n  // Play one named segment (toolbox-clock.ts SEGMENTS) the same way; false\n  // for a name SEGMENTS doesn't have.\n  playSegment(segment: SegmentName, opts?: PlaySegmentOptions): boolean;\n  // Cancel every animation where it is (each value keeps its state).\n  stop(): void;\n}\n\n` +
       `// The shared values the component reads. autoplay (default true) plays\n// on mount; pass false to call play() / playSegment() yourself, or drive\n// any value directly.\n` +
       `export function useToolboxAnimations(opts: { autoplay?: boolean; loop?: boolean } = {}): ToolboxAnimations {\n` +
@@ -897,7 +951,7 @@ export function emitNativeModule(planner: NativePlanner, values: NativeValue[], 
 
   return {
     source: out.join("\n"),
-    helpers: emitHelpers(o.runtimeSource, colors.length > 0, animated.length > 0, usesSegEase, o.edit),
+    helpers: emitHelpers(o.runtimeSource, colors.length > 0, animated.length > 0, usesSegEase, o.edit, fromCurrent),
     keys,
   };
 }
@@ -913,7 +967,71 @@ function runtimeFunction(src: string, name: string): string {
 
 const COLOR_FUNCTIONS = ["srgbToLinear", "linearToSrgb", "rgbToOklab", "oklabToRgb", "lerpColor"];
 
-function emitHelpers(runtimeSource: string, colors: boolean, animated: boolean, segEase: boolean, edit: string): string {
+// playSegment(…, { from: "current" }) for colors (see the header): the mix
+// colorAt snaps, the track's mixing space, the offset of the color on screen
+// from the segment's start color, and colorAt with that offset faded in.
+// Each calls only worklets declared above it (the capture-order rule).
+const FROM_CURRENT_HELPERS = `// colorAt before its 8-bit snap.
+function colorMix(track: TimelineTrack, p: number[]): number[] {
+  "worklet";
+  const ks = track.keys;
+  let k = 0;
+  while (k < p.length - 1 && p[k] === 1) k++;
+  const t = p[k];
+  const a = ks[k].value as number[];
+  const b = ks[k + 1].value as number[];
+  return t === 0 ? a : t === 1 ? b : lerpColor(a, b, t, track.colorSpace ?? "oklab");
+}
+
+// colorAt's 8-bit snap.
+function colorSnap(track: TimelineTrack, c: number[]): number[] {
+  "worklet";
+  if (!track.quantize8) return c;
+  const q = (x: number) => {
+    "worklet";
+    return Math.max(0, Math.min(255, Math.round(x * 255))) / 255;
+  };
+  return [q(c[0]), q(c[1]), q(c[2]), track.quantizeAlpha ? q(c[3]) : (track.alpha ?? 1)];
+}
+
+// A color in its track's mixing space (lerpColor's: OKLab or gamma RGB),
+// alpha last — and back.
+function colorToMix(c: number[], space: "oklab" | "rgb"): number[] {
+  "worklet";
+  if (space === "rgb") return [c[0], c[1], c[2], c[3]];
+  const lab = rgbToOklab(c[0], c[1], c[2]);
+  return [lab[0], lab[1], lab[2], c[3]];
+}
+function colorFromMix(m: number[], space: "oklab" | "rgb"): number[] {
+  "worklet";
+  if (space === "rgb") return m;
+  const rgb = oklabToRgb(m[0], m[1], m[2]);
+  return [rgb[0], rgb[1], rgb[2], m[3]];
+}
+
+// playSegment(…, { from: "current" }): how far \`from\` (the color on screen)
+// sits from the color the progresses \`p\` give (the segment's start), in the
+// track's mixing space.
+export function colorOffset(track: TimelineTrack, from: number[], p: number[]): number[] {
+  "worklet";
+  const space = track.colorSpace ?? "oklab";
+  const a = colorToMix(from, space);
+  const b = colorToMix(colorMix(track, p), space);
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+}
+
+// colorAt with \`offset\` mixed back in at weight \`w\`: w runs 1 → 0 over the
+// segment's first move, so the color leaves where it was along that move's
+// own curve; at w = 0 it is colorAt exactly.
+export function colorFrom(track: TimelineTrack, p: number[], offset: number[], w: number): number[] {
+  "worklet";
+  if (w === 0) return colorAt(track, p);
+  const space = track.colorSpace ?? "oklab";
+  const m = colorToMix(colorMix(track, p), space);
+  return colorSnap(track, colorFromMix([m[0] + offset[0] * w, m[1] + offset[1] * w, m[2] + offset[2] * w, m[3] + offset[3] * w], space));
+}`;
+
+function emitHelpers(runtimeSource: string, colors: boolean, animated: boolean, segEase: boolean, edit: string, fromCurrent = false): string {
   const parts: string[] = [HEADER("native-mode helpers (worklets)", edit).trimEnd()];
   const imports: string[] = [];
   if (animated) imports.push(`import { withDelay, withRepeat, withSequence, withTiming } from "react-native-reanimated";`);
@@ -936,6 +1054,7 @@ function emitHelpers(runtimeSource: string, colors: boolean, animated: boolean, 
     parts.push(
       `// A color track's value from its per-segment progresses (each 0..1, eased\n// by Reanimated): the first segment that hasn't finished mixes its two keys\n// at its progress — the keys themselves at 0 and 1, as toolbox's exact hits\n// — then snaps to 8 bits exactly as evaluateTrack does.\nexport function colorAt(track: TimelineTrack, p: number[]): number[] {\n  "worklet";\n  const ks = track.keys;\n  let k = 0;\n  while (k < p.length - 1 && p[k] === 1) k++;\n  const t = p[k];\n  const a = ks[k].value as number[];\n  const b = ks[k + 1].value as number[];\n  const c = t === 0 ? a : t === 1 ? b : lerpColor(a, b, t, track.colorSpace ?? "oklab");\n  if (!track.quantize8) return c;\n  const q = (x: number) => {\n    "worklet";\n    return Math.max(0, Math.min(255, Math.round(x * 255))) / 255;\n  };\n  return [q(c[0]), q(c[1]), q(c[2]), track.quantizeAlpha ? q(c[3]) : (track.alpha ?? 1)];\n}`
     );
+    if (fromCurrent) parts.push(FROM_CURRENT_HELPERS);
   }
   return parts.join("\n\n") + "\n";
 }
@@ -970,6 +1089,12 @@ function nativeManifest(planner: NativePlanner, values: NativeValue[], clock: st
     clock,
     // playSegment(name): every value's steps over each SEGMENTS window.
     segments: segs.map((s) => ({ name: s.name, from: s.win.fromTick, to: s.win.toTick, steps: s.values.reduce((n, v) => n + v.steps.length, 0) })),
+    ...(segs.length
+      ? {
+          fromCurrent:
+            "playSegment(name, { from: \"current\" }): a scalar's first step runs from its current value; a color fades from the color on screen (offset in its OKLab / RGB mixing space) over the segment's first move, with that move's timing and easing (<key>FromSegmentAnimation, colorFrom).",
+        }
+      : {}),
     values: values.map((v) => ({
       key: v.key,
       from: v.from,

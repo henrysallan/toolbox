@@ -252,7 +252,7 @@ import {
   useUserNodePresets,
 } from "@/state/node-presets";
 import PresetNameModal from "./PresetNameModal";
-import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { growMergeLayersOnWire, mergeLayersParam, newMergeLayer, type MergeLayer } from "@/nodes/effect/merge";
 import {
   COLLECT_MAX_SLOTS,
   nextCollectSlot,
@@ -3699,17 +3699,20 @@ function EffectsShell({
   // (The `t`/`mask`/`spine`/`smoothness`/`amount`/`index` exclusions below
   // skip each node's fixed sockets so wiring them does not mint a slot.)
   //
-  // Merge grows here too, but grow-only: once every layer's image socket is
-  // wired, append a fresh layer so there's always an open one. No pruning —
-  // merge layers carry user state (mode/opacity/enabled), so emptied layers
-  // are only removed explicitly via the layers param UI.
+  // Merge-style layer stacks (Merge, Merge (Skia): any node with a
+  // `merge_layers` param) grow here too, but grow-only: once every layer's
+  // image socket is wired, append a fresh layer so there's always an open
+  // one — up to the param's `max` enabled layers (growMergeLayersOnWire).
+  // No pruning — merge layers carry user state (mode/opacity/enabled), so
+  // emptied layers are only removed explicitly via the layers param UI.
   useEffect(() => {
     setNodes((prev) => {
       let changed = false;
       const next = prev.map((n) => {
-        if (n.data.defType === "merge") {
-          const layers = Array.isArray(n.data.params.layers)
-            ? (n.data.params.layers as MergeLayer[])
+        const layersParam = mergeLayersParam(getNodeDef(n.data.defType));
+        if (layersParam) {
+          const layers = Array.isArray(n.data.params[layersParam.name])
+            ? (n.data.params[layersParam.name] as MergeLayer[])
             : [];
           const connected = new Set<string>();
           for (const e of edges) {
@@ -3717,14 +3720,12 @@ function EffectsShell({
             const parsed = parseTargetHandleKind(e.targetHandle ?? "");
             if (parsed?.kind === "input") connected.add(parsed.name);
           }
-          if (!layers.every((l) => connected.has(`layer:${l.id}`))) return n;
+          const grown = growMergeLayersOnWire(layers, connected, layersParam.max);
+          if (!grown) return n;
           changed = true;
           return withUpdatedParams(n, {
             ...n.data.params,
-            layers: [
-              ...layers,
-              { id: newLayerId(), mode: "normal", opacity: 1 },
-            ],
+            [layersParam.name]: grown,
           });
         }
         const isCollect = isCollectType(n.data.defType);
@@ -6537,11 +6538,7 @@ function EffectsShell({
     const [base, ...layerSources] = sources;
     // One fresh layer slot per non-base source so the merge's resolved
     // input sockets line up exactly with the wires added below.
-    const layers: MergeLayer[] = layerSources.map(() => ({
-      id: newLayerId(),
-      mode: "normal",
-      opacity: 1,
-    }));
+    const layers: MergeLayer[] = layerSources.map(() => newMergeLayer());
 
     // Drop the merge to the right of the selection, vertically centered
     // on the nodes it consumes.
@@ -8106,17 +8103,16 @@ function EffectsShell({
         // (080926_midi-editor.md).
         setMidiEditNodeId(detail.id);
       } else if (detail.kind === "mergeAddLayer") {
+        // Header "+" on a layer-stack node (Merge, Merge (Skia)).
         setNodes((prev) =>
           prev.map((n) => {
             if (n.id !== detail.id) return n;
-            const current = (n.data.params.layers as MergeLayer[]) ?? [];
-            const nextLayers: MergeLayer[] = [
-              ...current,
-              { id: newLayerId(), mode: "normal", opacity: 1 },
-            ];
+            const key = mergeLayersParam(getNodeDef(n.data.defType))?.name ?? "layers";
+            const current = (n.data.params[key] as MergeLayer[]) ?? [];
+            const nextLayers: MergeLayer[] = [...current, newMergeLayer()];
             return withUpdatedParams(n, {
               ...n.data.params,
-              layers: nextLayers,
+              [key]: nextLayers,
             });
           })
         );
@@ -8129,7 +8125,8 @@ function EffectsShell({
           setNodes((prev) =>
             prev.map((n) => {
               if (n.id !== detail.id) return n;
-              const current = (n.data.params.layers as MergeLayer[]) ?? [];
+              const key = mergeLayersParam(getNodeDef(n.data.defType))?.name ?? "layers";
+              const current = (n.data.params[key] as MergeLayer[]) ?? [];
               if (!current.some((l) => l.id === layerId)) return n;
               const nextLayers = current.map((l) =>
                 l.id === layerId
@@ -8138,7 +8135,7 @@ function EffectsShell({
               );
               return withUpdatedParams(n, {
                 ...n.data.params,
-                layers: nextLayers,
+                [key]: nextLayers,
               });
             })
           );

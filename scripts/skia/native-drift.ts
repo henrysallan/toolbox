@@ -65,7 +65,7 @@ export async function loadNativeModule(
   }
   fs.writeFileSync(
     path.join(dir, "entry.ts"),
-    `export * from "./animations";\nexport { colorAt } from "./toolbox-native";\nexport { evaluateTrack } from "./toolbox-timeline";\n`
+    `export * from "./animations";\nexport * from "./toolbox-native";\nexport { evaluateTrack } from "./toolbox-timeline";\n`
   );
   fs.writeFileSync(path.join(dir, "react-stub.ts"), `export const useCallback = () => { throw new Error("hook"); };\nexport const useEffect = useCallback;\nexport const useMemo = useCallback;\n`);
   fs.writeFileSync(
@@ -168,6 +168,53 @@ export function playNative(
     series[native.clock] = run(mod[`${native.clock}Animation`], mod[`${native.clock}SegmentAnimation`], starts ? starts[native.clock] : 0);
   }
   return series;
+}
+
+// playSegment(segment, { from: "current" }) from `current` (every value's
+// key → what it shows now): scalars start their segment animation there;
+// colors jump their progresses to SEGMENT_STARTS as from "start" does and
+// mix the current color back in by their fade weight (colorOffset /
+// colorFrom / <key>FromSegmentAnimation, emit-native.ts). Returns the shown
+// series plus, per color, the weight and the progresses.
+export function playNativeFromCurrent(
+  mod: Record<string, any>,
+  native: { values: NativeValueInfo[]; clock: string | null },
+  frames: number,
+  clock: SimClock,
+  platform: "web" | "native",
+  segment: string,
+  current: Record<string, number | number[]>
+): { series: Record<string, (number | number[])[]>; weights: Record<string, number[]>; progress: Record<string, number[][]> } {
+  const series: Record<string, (number | number[])[]> = {};
+  const weights: Record<string, number[]> = {};
+  const progress: Record<string, number[][]> = {};
+  const starts = mod.SEGMENT_STARTS[segment];
+  for (const v of native.values) {
+    const seg = mod[`${ident(v.key)}SegmentAnimation`];
+    if (v.kind === "scalar") {
+      // The hook: a value with no segment animation jumps to its start.
+      series[v.key] = seg ? simulate(() => seg(segment, false), current[v.key] as number, frames, clock, platform) : new Array(frames).fill(starts[v.key]);
+      continue;
+    }
+    const track = mod.TRACKS[v.key];
+    const nSeg = track.keys.length - 1;
+    const p: number[][] = [];
+    for (let k = 0; k < nSeg; k++) {
+      const fn = mod[`${ident(v.key)}Progress${k}SegmentAnimation`];
+      p.push(fn ? simulate(() => fn(segment, false), starts[v.key][k], frames, clock, platform) : new Array(frames).fill(starts[v.key][k]));
+    }
+    const fade = mod[`${ident(v.key)}FromSegmentAnimation`];
+    const w = fade ? simulate(() => fade(segment), 1, frames, clock, platform) : new Array(frames).fill(0);
+    const off = mod.colorOffset(track, current[v.key], starts[v.key]);
+    series[v.key] = Array.from({ length: frames }, (_, f) => mod.colorFrom(track, p.map((x) => x[f]), off, w[f]));
+    weights[v.key] = w;
+    progress[v.key] = p;
+  }
+  if (native.clock) {
+    const seg = mod[`${native.clock}SegmentAnimation`];
+    series[native.clock] = simulate(() => seg(segment, false), starts[native.clock], frames, clock, platform);
+  }
+  return { series, weights, progress };
 }
 
 // The harness's drift() rows (native-harness.tsx), from a series. The
