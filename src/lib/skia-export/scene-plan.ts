@@ -56,6 +56,7 @@ import {
   type DriverBinding,
 } from "./drivers";
 import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
+import { timelineSpringOf } from "./spring";
 
 export type BindValue = number | number[] | string;
 
@@ -486,6 +487,7 @@ function componentTrack(keys: Keyframe[], c: number): TimelineTrack | null {
     if (!Array.isArray(v) || typeof v[c] !== "number") return null;
     const key: TimelineKey = { tick: k.tick, value: v[c], easing: k.easingOut === "customBezier" ? "linear" : k.easingOut };
     if (k.easingOut === "cubicBezier" && k.bezier) key.bezier = { ...k.bezier };
+    if (k.easingOut === "spring") key.spring = timelineSpringOf(k.spring);
     out.push(key);
   }
   return { kind: "scalar", keys: out };

@@ -10,6 +10,13 @@
 
 import type { ParamType, SplineSubpath } from "./types";
 import { oklabToRgb, rgbToOklab } from "./color-space";
+import {
+  springEase,
+  springPathSamples,
+  type SpringEasing,
+} from "./spring-easing";
+
+export type { SpringEasing } from "./spring-easing";
 
 export const DEFAULT_TICKS_PER_FRAME = 1000;
 export const DEFAULT_FPS = 60;
@@ -37,6 +44,9 @@ export type EasingPreset =
   // Bounce / elastic
   | "easeOutBounce"
   | "easeOutElastic"
+  // Reanimated 4's withSpring, normalised to the segment (engine/
+  // spring-easing.ts); params on the keyframe's `spring`, defaults if absent.
+  | "spring"
   // Discrete
   | "hold"
   // User-shaped (scalar-only; uses the keyframe's bezierHandles)
@@ -86,6 +96,8 @@ export interface Keyframe {
   bezierHandles?: BezierHandles;
   // Read when `easingOut` is "cubicBezier"; a missing shape plays linear.
   bezier?: BezierEasing;
+  // Read when `easingOut` is "spring"; missing / junk plays DEFAULT_SPRING.
+  spring?: SpringEasing;
 }
 
 export interface KeyframeAnimationBlock {
@@ -273,6 +285,10 @@ export function easeOf(preset: EasingPreset, u: number): number {
       return Math.pow(2, -10 * u) * Math.sin((u * 10 - 0.75) * c4) + 1;
     }
 
+    case "spring":
+      // The default spring; interpolate() reads the key's own `spring`.
+      return springEase(undefined, u);
+
     case "hold":
       // Caller branches on hold before calling easeOf; this is a safety net.
       return 0;
@@ -308,6 +324,7 @@ export const EASING_PRESET_ORDER: EasingPreset[] = [
   "easeOutBack",
   "easeOutBounce",
   "easeOutElastic",
+  "spring",
   "hold",
   "customBezier",
 ];
@@ -329,6 +346,7 @@ export const EASING_PRESET_LABELS: Record<EasingPreset, string> = {
   easeOutBack: "Ease Out Back",
   easeOutBounce: "Ease Out Bounce",
   easeOutElastic: "Ease Out Elastic",
+  spring: "Spring",
   hold: "Hold",
   customBezier: "Custom Bezier",
   cubicBezier: "Bezier",
@@ -525,9 +543,11 @@ export function easingPathFor(
     // Diagonal placeholder — the real shape lives on the keyframe.
     return `M 0 ${yFor(0)} L ${w} ${yFor(1)}`;
   }
+  // A spring oscillates faster than a preset's sample budget can follow.
+  const n = preset === "spring" ? Math.max(samples, springPathSamples()) : samples;
   let d = "";
-  for (let i = 0; i <= samples; i++) {
-    const u = i / samples;
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
     const v = easeOf(preset, u);
     const x = u * w;
     const y = yFor(v);
@@ -760,6 +780,19 @@ function solveBezierX(x1: number, x2: number, x: number): number {
   return (lo + hi) / 2;
 }
 
+// The time remap of the segment AFTER `k` at u ∈ [0,1], with the key's own
+// curve data: a cubicBezier's shape, a spring's params, else the named
+// preset (a customBezier reads as linear here — on scalars interpolate()
+// plays it as a value-space cubic before getting this far). The Graph
+// Editor samples this, so the drawn curve is the curve that plays.
+export function easeKeyframeOut(k: Keyframe, u: number): number {
+  if (k.easingOut === "cubicBezier") {
+    return cubicBezierEase(k.bezier ?? LINEAR_BEZIER, u);
+  }
+  if (k.easingOut === "spring") return springEase(k.spring, u);
+  return easeOf(k.easingOut, u);
+}
+
 function interpolate(
   paramType: ParamType,
   prev: Keyframe,
@@ -774,7 +807,6 @@ function interpolate(
   // Step-only types ignore easing and snap.
   if (isStepOnly(paramType)) return prev.value;
 
-  let t: number;
   if (prev.easingOut === "customBezier" && paramType === "scalar") {
     // Custom bezier on scalars: the full 2D cubic the Graph Editor
     // draws. x comes from the handles' dx (as a fraction of the
@@ -803,12 +835,9 @@ function interpolate(
       u * u * u * y3
     );
   }
-  // cubicBezier is a time remap, so it applies to every interpolable type
-  // below — the normalized shape needs no value units.
-  t =
-    prev.easingOut === "cubicBezier"
-      ? cubicBezierEase(prev.bezier ?? LINEAR_BEZIER, rawT)
-      : easeOf(prev.easingOut, rawT);
+  // cubicBezier and spring are time remaps, so they apply to every
+  // interpolable type below — the normalized shape needs no value units.
+  const t = easeKeyframeOut(prev, rawT);
 
   switch (paramType) {
     case "scalar":

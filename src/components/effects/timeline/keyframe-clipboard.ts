@@ -155,6 +155,13 @@ export function flipKeyframesInTime(keys: Keyframe[]): Keyframe[] {
     } else {
       delete next.bezier;
     }
+    // A spring has no time mirror (like bounce / elastic it stays a
+    // spring); it keeps the segment's own params, not `src`'s.
+    if (seg.easingOut === "spring" && seg.spring) {
+      next.spring = { ...seg.spring };
+    } else {
+      delete next.spring;
+    }
     if (src.bezierHandles) {
       next.bezierHandles = reverseHandles(src.bezierHandles);
     }

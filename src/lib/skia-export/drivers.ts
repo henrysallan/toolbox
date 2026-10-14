@@ -16,6 +16,7 @@ import { getNodeDef } from "@/engine/registry";
 import { channelUniformValues } from "@/engine/skia/sksl-program";
 import type { ExprInput } from "@/engine/types";
 import type { TimelineKey, TimelineTrack } from "./runtime/toolbox-timeline";
+import { timelineSpringOf } from "./spring";
 
 export function hexToTuple(v: unknown): number[] {
   // toRgbaTuple (engine/keyframes.ts) for hex: 6 digits ⇒ alpha 1.
@@ -34,6 +35,7 @@ export function toTimelineKey(k: Keyframe, kind: "scalar" | "color"): TimelineKe
     easing: k.easingOut,
   };
   if (k.easingOut === "cubicBezier" && k.bezier) key.bezier = { ...k.bezier };
+  if (k.easingOut === "spring") key.spring = timelineSpringOf(k.spring);
   if (k.bezierHandles) {
     key.right = { ...k.bezierHandles.rightHandle };
     key.left = { ...k.bezierHandles.leftHandle };

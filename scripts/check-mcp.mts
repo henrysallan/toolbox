@@ -530,6 +530,7 @@ const bridge: BridgeClient = connectBridge({
       param,
       animated: true,
       frames: (keys as { frame: number }[]).map((k) => k.frame),
+      springs: (keys as { spring?: unknown }[]).map((k) => k.spring ?? null),
     }),
     // Perf tools (spec 080726) — echo the args so the checks below can prove
     // optional numbers and enums survive the JSON hop rather than arriving
@@ -921,6 +922,27 @@ check(
   !isError(rk) && JSON.parse(textOf(rk)).frames.join(",") === "0,24",
   textOf(rk)
 );
+{
+  // A spring key's params survive the schema (z.object would strip an
+  // undeclared field) and reach the editor as sent.
+  const rs = await client.callTool({
+    name: "set_keyframes",
+    arguments: {
+      nodeId: "n1",
+      param: "opacity",
+      keys: [
+        { frame: 0, value: 0, easing: "spring", spring: { dampingRatio: 0.3, settle: 0.8 } },
+        { frame: 24, value: 1, easing: "spring" },
+      ],
+    },
+  });
+  const j = isError(rs) ? {} : JSON.parse(textOf(rs));
+  check(
+    "set_keyframes forwards a key's spring params",
+    !isError(rs) && JSON.stringify(j.springs) === JSON.stringify([{ dampingRatio: 0.3, settle: 0.8 }, null]),
+    textOf(rs)
+  );
+}
 
 const ri = await client.callTool({
   name: "insert_recipe",

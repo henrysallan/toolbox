@@ -16,7 +16,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { BezierEasing, EasingPreset, SavedEasing } from "@/engine/keyframes";
+import type {
+  BezierEasing,
+  EasingPreset,
+  SavedEasing,
+  SpringEasing,
+} from "@/engine/keyframes";
 import {
   EASING_PRESET_BEZIER,
   EASING_PRESET_LABELS,
@@ -27,6 +32,7 @@ import { getEffectiveDevice, wheelWantsZoom } from "../input-device";
 import { usePanelWindow } from "../layout/panel-window";
 import { ownerWindow } from "../layout/panel-window-dom";
 import { EasingTile } from "./EasingTile";
+import { SpringFields } from "./SpringFields";
 import {
   OVERLAY_HEADER_H,
   OVERLAY_READOUT_H,
@@ -93,6 +99,9 @@ export interface EasingEditorOverlayProps {
   onApply(bezier: BezierEasing, gestureKey: string): void;
   // A built-in shelf tile: write the named preset to every pair.
   onApplyPreset(preset: EasingPreset, gestureKey: string): void;
+  // A spring seed's readout fields: write these params (and the spring
+  // easing) to every pair. Absent ⇒ the readout shows them read-only.
+  onApplySpring?(spring: SpringEasing, gestureKey: string): void;
   onClose(): void;
   // The shelf's saved half — the project's saved easings (the same list
   // the Graph Editor's dropdown offers). Absent ⇒ no shelf at all.
@@ -149,6 +158,7 @@ export function EasingEditorOverlay(props: EasingEditorOverlayProps) {
     maxHeight,
     onApply,
     onApplyPreset,
+    onApplySpring,
     onClose,
     presets,
     onSavePreset,
@@ -469,7 +479,7 @@ export function EasingEditorOverlay(props: EasingEditorOverlayProps) {
   const h2 = shape ? unitToPx(view, shape.x2, shape.y2) : null;
   const ghost =
     seed && seed.source === "ghost" && seed.ghost && !dragShape
-      ? ghostPathD(seed.ghost, view)
+      ? ghostPathD(seed.ghost, view, 48, seed.spring)
       : null;
 
   const status = (() => {
@@ -747,7 +757,23 @@ export function EasingEditorOverlay(props: EasingEditorOverlayProps) {
           letterSpacing: 0.2,
         }}
       >
-        {shape ? (
+        {seed?.spring && !dragShape ? (
+          // A spring has no handles to read out: its params, editable.
+          onApplySpring ? (
+            <SpringFields
+              value={seed.spring}
+              fontSize={9.5}
+              onCommit={(spring) =>
+                onApplySpring(spring, nextGestureKey("easing-spring"))
+              }
+            />
+          ) : (
+            <span>
+              damping {fmt(seed.spring.dampingRatio)} · settle{" "}
+              {Math.round(seed.spring.settle * 100)}%
+            </span>
+          )
+        ) : shape ? (
           <>
             <span style={{ color: shown.has("a") ? COLOR_TEXT : undefined }}>
               {fmt(shape.x1)}, {fmt(shape.y1)}

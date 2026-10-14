@@ -45,13 +45,12 @@ import {
 } from "@/state/graph-ops";
 import {
   DEFAULT_TICKS_PER_FRAME,
-  EASING_PRESET_ORDER,
   isKeyframable,
   isStepOnly,
-  type EasingPreset,
   type Keyframe,
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
+import { keyframeSpringReport, vetKeyframeEasing } from "@/engine/keyframe-easing-vet";
 import * as prof from "@/engine/profiler";
 import { summarize } from "@/lib/perf-console";
 import { buildCatalogDsl, HARD_BUILD_CODES } from "@/lib/ai/generate-recipe-client";
@@ -305,7 +304,6 @@ function screenshotEncode(args: {
   };
 }
 
-const EASING_SET = new Set<string>(EASING_PRESET_ORDER);
 const tickOf = (frame: number) => Math.round(frame * DEFAULT_TICKS_PER_FRAME);
 const frameOf = (tick: number) => tick / DEFAULT_TICKS_PER_FRAME;
 
@@ -1280,6 +1278,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
             ...(k.easingOut === "cubicBezier" && k.bezier
               ? { bezier: [k.bezier.x1, k.bezier.y1, k.bezier.x2, k.bezier.y2] }
               : {}),
+            // A spring key's params as they play (defaults filled in).
+            ...keyframeSpringReport(k),
           })),
         };
       }
@@ -1354,33 +1354,22 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
 
       const stepOnly = isStepOnly(chan ? chan.type : pdef!.type);
       const byTick = new Map<number, Keyframe>();
-      for (const raw of keys as { frame?: unknown; value?: unknown; easing?: unknown }[]) {
+      for (const raw of keys as { frame?: unknown; value?: unknown; easing?: unknown; spring?: unknown }[]) {
         const frame = Number(raw?.frame);
         if (!Number.isFinite(frame) || frame < 0)
           throw new Error(`Every key needs a frame ≥ 0 (got ${raw?.frame}).`);
         const vet = vetValue(raw?.value);
         if (!vet.ok)
           throw new Error(`Bad value at frame ${frame}: ${vet.reason}.`);
-        let easing = (raw?.easing ?? "easeInOutQuad") as string;
-        if (easing === "customBezier")
-          throw new Error(
-            "customBezier is hand-authored in the graph editor — pick a preset."
-          );
-        if (easing === "cubicBezier")
-          throw new Error(
-            "cubicBezier is shaped in the tracks editor's easing overlay — pick a preset."
-          );
-        if (!EASING_SET.has(easing))
-          throw new Error(
-            `Unknown easing "${easing}". Presets: ${EASING_PRESET_ORDER.filter(
-              (e) => e !== "customBezier"
-            ).join(", ")}.`
-          );
-        if (stepOnly) easing = "hold";
+        // Preset name (+ `spring` params with easing "spring"); step-only
+        // tracks force hold.
+        const ease = vetKeyframeEasing(raw ?? {}, stepOnly);
+        if (!ease.ok) throw new Error(`Bad easing at frame ${frame}: ${ease.reason}`);
         byTick.set(tickOf(frame), {
           tick: tickOf(frame),
           value: vet.value,
-          easingOut: easing as EasingPreset,
+          easingOut: ease.easingOut,
+          ...(ease.spring ? { spring: ease.spring } : {}),
         });
       }
       const sorted = [...byTick.values()].sort((a, b) => a.tick - b.tick);

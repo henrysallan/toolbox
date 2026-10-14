@@ -8,6 +8,7 @@ import type {
   BezierEasing,
   EasingPreset,
   Keyframe,
+  SpringEasing,
 } from "@/engine/keyframes";
 import {
   EASING_PRESET_BEZIER,
@@ -16,6 +17,11 @@ import {
   isStepOnly,
   normalizedBezierOfSegment,
 } from "@/engine/keyframes";
+import {
+  resolveSpring,
+  springEase,
+  springPathSamples,
+} from "@/engine/spring-easing";
 import type { ParamType } from "@/engine/types";
 import { groupSelection, type SelectionKey } from "./keyframe-ops";
 
@@ -125,6 +131,9 @@ export interface EasingSeed {
   // highlights its tile).
   preset?: EasingPreset;
   ghost?: EasingPreset;
+  // A spring pair's params (resolved — defaults filled in), so the ghost
+  // draws the curve that plays and the readout can edit them.
+  spring?: Required<SpringEasing>;
 }
 
 export function seedForPair(a: Keyframe, b: Keyframe): EasingSeed {
@@ -144,18 +153,29 @@ export function seedForPair(a: Keyframe, b: Keyframe): EasingSeed {
     source: "ghost",
     preset: a.easingOut,
     ghost: a.easingOut,
+    ...(a.easingOut === "spring" ? { spring: resolvedSpringOf(a) } : {}),
   };
+}
+
+// A spring key's params with the defaults filled in (what plays).
+export function resolvedSpringOf(a: Keyframe): Required<SpringEasing> {
+  const { zeta, settle } = resolveSpring(a.spring);
+  return { dampingRatio: zeta, settle };
 }
 
 // One string per segment easing so pairs can be compared: normalized
 // shapes compare by value (a cubicBezier equal to a preset's cubic IS that
-// preset), everything else by name.
+// preset), springs by their resolved params, everything else by name.
 export function easingKeyOf(a: Keyframe, b: Keyframe): string {
   const shape = normalizedBezierOfSegment(a, b);
   if (shape) {
     return `bz:${[shape.x1, shape.y1, shape.x2, shape.y2]
       .map((n) => n.toFixed(6))
       .join(",")}`;
+  }
+  if (a.easingOut === "spring") {
+    const s = resolvedSpringOf(a);
+    return `sp:${s.dampingRatio.toFixed(6)},${s.settle.toFixed(6)}`;
   }
   return `p:${a.easingOut}`;
 }
@@ -207,6 +227,20 @@ export function applyPresetToLane(
 ): Keyframe[] {
   return keyframes.map((k) =>
     aTicks.has(k.tick) ? { ...k, easingOut: preset } : k
+  );
+}
+
+// The readout's spring fields: every pair-owning key becomes a spring with
+// these params (already sanitized by the caller).
+export function applySpringToLane(
+  keyframes: Keyframe[],
+  aTicks: ReadonlySet<number>,
+  spring: SpringEasing
+): Keyframe[] {
+  return keyframes.map((k) =>
+    aTicks.has(k.tick)
+      ? { ...k, easingOut: "spring" as const, spring: { ...spring } }
+      : k
   );
 }
 
@@ -416,11 +450,13 @@ export function bezierPathD(b: BezierEasing, v: EasingView): string {
 }
 
 // The real curve of a preset no single cubic expresses, sampled through
-// easeOf() — the dashed ghost behind the linear handles.
+// easeOf() — the dashed ghost behind the linear handles. A spring samples
+// its own params (and enough points to follow its oscillation).
 export function ghostPathD(
   preset: EasingPreset,
   v: EasingView,
-  samples = 48
+  samples = 48,
+  spring?: SpringEasing
 ): string {
   if (preset === "hold") {
     const a = unitToPx(v, 0, 0);
@@ -428,10 +464,13 @@ export function ghostPathD(
     const b = unitToPx(v, 1, 1);
     return `M ${f(a.x)} ${f(a.y)} L ${f(m.x)} ${f(m.y)} L ${f(b.x)} ${f(b.y)}`;
   }
+  const isSpring = preset === "spring";
+  const n = isSpring ? Math.max(samples, springPathSamples(spring)) : samples;
   let d = "";
-  for (let i = 0; i <= samples; i++) {
-    const u = i / samples;
-    const p = unitToPx(v, u, easeOf(preset, u));
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    const y = isSpring ? springEase(spring, u) : easeOf(preset, u);
+    const p = unitToPx(v, u, y);
     d += `${i === 0 ? "M" : " L"} ${f(p.x)} ${f(p.y)}`;
   }
   return d;

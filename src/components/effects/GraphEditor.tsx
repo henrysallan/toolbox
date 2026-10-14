@@ -33,7 +33,7 @@ import {
   LINEAR_BEZIER,
   bezierHandlesForSegment,
   defaultSegmentHandles,
-  easeOf,
+  easeKeyframeOut,
   normalizedBezierOfSegment,
   emptyAnimationBlock,
   evaluateKeyframesAt,
@@ -43,12 +43,15 @@ import {
   ticksToFrames,
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
+import { springPathSamples } from "@/engine/spring-easing";
 import { useClock } from "@/state/playback-clock";
 import { LAYER_OPACITY_PREFIX, parseChannelKey } from "@/engine/conventions";
 import { channelKeyframeType, channelRowForKey } from "@/engine/channel-keyframes";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
 import { EasingTile } from "./timeline/EasingTile";
+import { SpringFields } from "./timeline/SpringFields";
+import { resolvedSpringOf } from "./timeline/easing-editor";
 import { nextGestureKey, type SelectionKey } from "./timeline/keyframe-ops";
 import {
   buildPasteUpdates,
@@ -213,11 +216,13 @@ function buildCurvePathSegments(
         );
       } else {
         // Sampled polyline for non-cubic-bezier presets
-        // (sine/expo/back/bounce/elastic).
-        const SAMPLES = 32;
+        // (sine/expo/back/bounce/elastic) and springs — with the key's
+        // own spring params and enough points to follow its oscillation.
+        const SAMPLES =
+          a.easingOut === "spring" ? springPathSamples(a.spring) : 32;
         for (let s = 1; s <= SAMPLES; s++) {
           const u = s / SAMPLES;
-          const v = easeOf(a.easingOut, u);
+          const v = easeKeyframeOut(a, u);
           out.push(
             `L ${tickToX(a.tick + u * span)} ${valueToY(av + v * (bv - av))}`
           );
@@ -318,7 +323,7 @@ export function mergeComponentEdit(
 // overlay's output — read-only here for now), or the preset's cubic
 // equivalent from the shared engine table. null for the presets that
 // aren't a single cubic (expo, back, bounce, elastic) and for hold —
-// those are drawn by sampling easeOf() into a polyline.
+// those are drawn by sampling easeKeyframeOut() into a polyline.
 function segmentBezierOf(k: Keyframe): BezierEasing | null {
   if (k.easingOut === "cubicBezier") return k.bezier ?? LINEAR_BEZIER;
   return EASING_PRESET_BEZIER[k.easingOut] ?? null;
@@ -2331,6 +2336,21 @@ export function GraphEditor({
                 </optgroup>
               )}
             </select>
+            {/* A spring's params, where a bezier's handles would be
+                shaped — written to every selected spring key. */}
+            {firstSelected.easingOut === "spring" && (
+              <SpringFields
+                value={resolvedSpringOf(firstSelected)}
+                onCommit={(spring) => {
+                  const next = new Map<number, Partial<Keyframe>>();
+                  const ksLocal = blockRef.current.keyframes;
+                  for (const i of selected) {
+                    if (ksLocal[i]?.easingOut === "spring") next.set(i, { spring });
+                  }
+                  patchMany(next);
+                }}
+              />
+            )}
             {onSaveEasing && !componentView && (
               <SaveEasingButton
                 canSave={saveableEasing != null}

@@ -24,6 +24,7 @@ import {
   type KeyframeAnimationBlock,
   type ProjectTimeline,
   type SavedEasing,
+  type SpringEasing,
   EASING_PRESET_ORDER,
   EASING_PRESET_LABELS,
   emptyAnimationBlock,
@@ -143,6 +144,7 @@ import { EasingEditorOverlay } from "./timeline/EasingEditorOverlay";
 import {
   applyBezierToLane,
   applyPresetToLane,
+  applySpringToLane,
   easingPairsFor,
   firstEasingPair,
   pairsUniform,
@@ -1303,6 +1305,16 @@ export function TrackEditor(props: TrackEditorProps) {
   ) {
     rewriteEasingPairs(pairs, gestureKey, (ks, aTicks) =>
       applyPresetToLane(ks, aTicks, preset)
+    );
+  }
+  // The overlay readout's spring fields: these params on every pair.
+  function applySpringToPairs(
+    pairs: EasingPair[],
+    spring: SpringEasing,
+    gestureKey: string
+  ) {
+    rewriteEasingPairs(pairs, gestureKey, (ks, aTicks) =>
+      applySpringToLane(ks, aTicks, spring)
     );
   }
 
@@ -3216,6 +3228,9 @@ export function TrackEditor(props: TrackEditorProps) {
             }
             onApplyPreset={(preset, gestureKey) =>
               applyPresetToPairs(easingModel.pairs, preset, gestureKey)
+            }
+            onApplySpring={(spring, gestureKey) =>
+              applySpringToPairs(easingModel.pairs, spring, gestureKey)
             }
             onClose={() => onEasingEditorOpenChange?.(false)}
             presets={savedEasings}

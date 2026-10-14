@@ -564,7 +564,8 @@ export const BRIDGED_TOOLS = [
     timeoutMs: CMD_TIMEOUT_MS,
     description:
       "Read a node's keyframe animation. With `param`: that track's keys " +
-      "as {frame, value, easing}. Without: an overview — every keyed track " +
+      "as {frame, value, easing} (+ `spring`: {dampingRatio, settle} on " +
+      "spring keys, as they play). Without: an overview — every keyed track " +
       "(param, animated, key frames) plus which params are keyframable. " +
       "On Point Expression / GLSL Expression / SkSL Shader, `param` may be " +
       "a channel NAME (its track; `channel` + `kind` in the reply), and the " +
@@ -588,10 +589,17 @@ export const BRIDGED_TOOLS = [
       "easing?}]; values match the param's type (vetted like set_param); " +
       "easing presets: linear, easeIn/Out/InOut + Sine/Quad/Cubic, " +
       "easeInExpo, easeOutExpo, easeInBack, easeOutBack (overshoot), " +
-      "easeOutBounce, easeOutElastic, hold (default easeInOutQuad; " +
+      "easeOutBounce, easeOutElastic, spring, hold (default easeInOutQuad; " +
       "boolean/enum params force hold). `easing` shapes the segment AFTER " +
-      "its key. Empty `keys` clears the track entirely; `animated: false` " +
-      "keeps keys but disables them. While a track is animated, its static " +
+      "its key. `spring` plays React Native Reanimated 4's withSpring from " +
+      "rest, fitted to the segment: it comes to rest exactly on the next " +
+      "key's value. Tune it with `spring: {dampingRatio?, settle?}` on that " +
+      "key: dampingRatio < 1 bounces (0.2 very bouncy, 0.5 default, 1 no " +
+      "overshoot; every value ≥ 1 plays critically damped, as in " +
+      "Reanimated; clamped 0.01–10), settle = the fraction of the segment " +
+      "where it comes to rest (default 1, clamped 0.05–1). Empty `keys` " +
+      "clears the track entirely; `animated: false` keeps keys but " +
+      "disables them. While a track is animated, its static " +
       "param value is ignored (wire > keyframes > static). Channels key " +
       "directly — no Animated Value needed: on Point Expression / GLSL " +
       "Expression / SkSL Shader pass a channel NAME (get_graph `channels`) " +
@@ -613,6 +621,13 @@ export const BRIDGED_TOOLS = [
             frame: z.number(),
             value: z.unknown(),
             easing: z.string().optional(),
+            spring: z
+              .object({
+                dampingRatio: z.number().optional(),
+                settle: z.number().optional(),
+              })
+              .optional()
+              .describe('With easing "spring": its params (defaults dampingRatio 0.5, settle 1).'),
           })
         )
         .describe("The full track, replacing whatever exists."),

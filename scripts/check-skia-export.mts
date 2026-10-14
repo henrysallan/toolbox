@@ -40,6 +40,7 @@ const { syncChannelInputs, readChannelValues } = await import("@/engine/expr-cha
 const { buildSkslProgram, channelUniformValues, compileSksl, lintSksl, userLineError } = await import("@/engine/skia/sksl-program");
 const { planSkiaExport, emitSkiaBundle } = await import("@/lib/skia-export");
 const rt = await import("@/lib/skia-export/runtime/toolbox-timeline");
+const { toTimelineKey, hexToTuple } = await import("@/lib/skia-export/drivers");
 const { buildRecipe } = await import("@/state/recipe-builder");
 const fx = await import("./fixtures/skia/aurora.ts");
 import type { EvalCache, GraphEdge, GraphNode } from "@/engine/evaluator";
@@ -109,6 +110,63 @@ const blockOf = (keys: Keyframe[], colorSpace?: "oklab" | "rgb"): KeyframeAnimat
     .concat(sampleTicks.map((t) => t + SPAN))
     .find((t) => !Object.is(evaluateKeyframesAt(blockOf(keys), "scalar", t), rt.evaluateTrack(track, t)));
   check("customBezier (explicit + default handles) is bit-identical", bad === undefined, `first mismatch @${bad}`);
+
+  // spring: Reanimated's withSpring as a time remap (engine/spring-easing.ts),
+  // across under-damped / critical / ζ > 1 (Reanimated's critically damped
+  // branch), several settle points, junk params, and fractional ticks — both
+  // the raw key params (the runtime solves the rest time) and the exporter's
+  // keys (toTimelineKey precomputes it).
+  {
+    const springs: (Keyframe["spring"] | undefined)[] = [
+      undefined,
+      { dampingRatio: 0.05 },
+      { dampingRatio: 0.2, settle: 0.4 },
+      { dampingRatio: 0.5, settle: 1 },
+      { dampingRatio: 0.75, settle: 0.83 },
+      { dampingRatio: 0.999 },
+      { dampingRatio: 1 },
+      { dampingRatio: 1, settle: 0.05 },
+      { dampingRatio: 2.5, settle: 0.6 },
+      { dampingRatio: 0.001, settle: 7 },
+      { dampingRatio: Number.NaN, settle: -1 } as never,
+    ];
+    const ticks = sampleTicks.concat(sampleTicks.map((t) => t + 0.37), [1e-9, SPAN - 0.5, SPAN + 1e-6]);
+    let bad = "";
+    let n = 0;
+    for (const spring of springs) {
+      const keys: Keyframe[] = [
+        { tick: 0, value: -2, easingOut: "spring", ...(spring ? { spring } : {}) },
+        { tick: SPAN, value: 5, easingOut: "spring", spring: { dampingRatio: 0.3, settle: 0.7 } },
+        { tick: SPAN * 2, value: 1, easingOut: "linear" },
+      ];
+      const raw = { kind: "scalar" as const, keys: keys.map((k) => ({ tick: k.tick, value: k.value as number, easing: k.easingOut, ...(k.spring ? { spring: k.spring as any } : {}) })) };
+      const exported = { kind: "scalar" as const, keys: keys.map((k) => toTimelineKey(k, "scalar")) };
+      for (const t of ticks) {
+        const a = evaluateKeyframesAt(blockOf(keys), "scalar", t);
+        const b = rt.evaluateTrack(raw, t);
+        const c = rt.evaluateTrack(exported, t);
+        n++;
+        if (!Object.is(a, b) || !Object.is(a, c)) {
+          bad ||= `${JSON.stringify(spring)} @${t}: engine ${a} runtime ${b} exported ${c}`;
+        }
+      }
+    }
+    check(`spring runtime (raw + exported keys) is bit-identical to evaluateKeyframesAt (${springs.length} configs, ${n} samples)`, !bad, bad);
+    const springHex: Keyframe[] = [
+      { tick: 0, value: "#ff7a45", easingOut: "spring", spring: { dampingRatio: 0.35 } },
+      { tick: SPAN, value: "#1b2cff", easingOut: "linear" },
+    ];
+    const cBad = (["oklab", "rgb"] as const).find((space) => {
+      const ct = { kind: "color" as const, colorSpace: space, keys: springHex.map((k) => toTimelineKey(k, "color")) };
+      return sampleTicks.some((t) => {
+        const a = evaluateKeyframesAt(blockOf(springHex, space), "color", t);
+        const b = rt.evaluateTrackRaw(ct, t) as number[];
+        const av = typeof a === "string" ? hexToTuple(a) : (a as number[]);
+        return av.some((x, i) => !Object.is(x, b[i]));
+      });
+    });
+    check("spring color tracks (OKLab + RGB) are bit-identical", cBad === undefined, `space ${cBad}`);
+  }
 
   // Colors: raw interpolation in both spaces, then the Color node round trip.
   const hexKeys: Keyframe[] = [

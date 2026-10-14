@@ -479,6 +479,20 @@ that pair). Offline node tests should push each input through
   the Text pairs need Chromium's text, so they only run there — and on
   macOS CoreText draws the Text node's glyphs ~10 % heavier than
   CanvasKit's FreeType: compare text edges, not ink mass).
+- `check-spring-easing` — the `spring` easing (engine/spring-easing.ts:
+  Reanimated 4.7's withSpring from rest, fitted to the segment). Sanitizer,
+  exact endpoints and rest point, regimes (every ζ ≥ 1 is one curve:
+  Reanimated has no over-damped branch), energy never rising, engine ≡
+  worklet runtime, editor sampling, MCP vetting, save → load, and parity
+  with `withSpring(B, springToReanimated(key, T))` stepped at frame
+  timestamps (≤ 1e-9 × |B − A|, measured ~7e-13). It runs Reanimated's
+  REAL source when skia-harness/node_modules exists and the transcription
+  in `scripts/fixtures/reanimated/spring-4.7.ts` otherwise (CI), holding
+  the two bit-identical; `SPRING_EASING_TRANSCRIPTION=1` forces the CI
+  path. Trap: CanvasKit's CPU raster approximates exp (~6e-5 rel) and
+  sin / cos (~2e-4 abs), so `springSksl` is checked against the fp32
+  oracle (`springSkslReference`) within that measured floor — GPU
+  precision is the oracle's own ≤ 2e-6, not a CanvasKit-in-Node number.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
