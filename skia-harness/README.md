@@ -11,6 +11,12 @@ a master Reanimated clock. Spec: `../specdocs/101326_skia-target.md`.
 - `npx expo run:ios` — dev build on the iOS Simulator (needs Xcode). React
   Native Skia v3 does not run in Expo Go.
 
+Two more slots, chosen on the web with `?bundle=`: `scene` plays
+`src/bundle-scene/` (`--fixture aurora-scene`), `baked` plays
+`src/bundle-baked/` — the same Aurora node exported with
+`--animation baked`, its timeline compiled into the SkSL and driven by
+iTime alone (`npm run parity:skia -- --bundle baked`).
+
 `src/bundle/` is generated; regenerate instead of editing it. Install
 packages with `npx expo install` (`.npmrc` sets `legacy-peer-deps`:
 Reanimated 4.7's peer range rejects the RN 0.88 release candidate).

@@ -6,7 +6,8 @@
 //   e0..e<n>  scalar channel keyframes, one easing preset each (+ the legacy
 //             easeIn / easeOut / easeInOut aliases, cubicBezier with an
 //             overshooting shape, customBezier with explicit and default
-//             handles, hold), with a sub-frame key and a same-tick jump
+//             handles, hold, spring — bouncy then ζ > 1), with a sub-frame
+//             key and a same-tick jump
 //   ok        color channel, OKLab, translucent keys (quantizeAlpha)
 //   rg        color channel, RGB
 //   nd        wired from a Color node (alpha 0.75, OKLab keys: quantize8 +
@@ -48,6 +49,7 @@ export const BAKED_EASINGS: EasingPreset[] = [
   "easeInOut",
   "cubicBezier",
   "customBezier",
+  "spring",
 ];
 
 const block = (keyframes: Keyframe[], colorSpace?: "oklab" | "rgb"): KeyframeAnimationBlock => ({
@@ -71,10 +73,13 @@ export function easingKeys(p: EasingPreset, i: number): Keyframe[] {
       k(F(110), 0.6, "linear"),
     ];
   }
-  const shape = p === "cubicBezier" ? { bezier: { x1: 0.2, y1: 1.6, x2: 0.3, y2: -0.4 } } : {};
+  const shape: Partial<Keyframe> =
+    p === "cubicBezier" ? { bezier: { x1: 0.2, y1: 1.6, x2: 0.3, y2: -0.4 } } : p === "spring" ? { spring: { dampingRatio: 0.25, settle: 0.8 } } : {};
+  const shape2: Partial<Keyframe> =
+    p === "cubicBezier" ? { bezier: { x1: 0.9, y1: 0, x2: 0.1, y2: 1 } } : p === "spring" ? { spring: { dampingRatio: 1.5 } } : {};
   return [
     k(F(4), lo, p, shape),
-    k(F(40), hi, p, p === "cubicBezier" ? { bezier: { x1: 0.9, y1: 0, x2: 0.1, y2: 1 } } : {}),
+    k(F(40), hi, p, shape2),
     // a sub-frame key, then a same-tick jump
     k(95_500, 0.25, "easeOutCubic"),
     k(F(100), 0.9, "linear"),

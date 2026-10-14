@@ -493,6 +493,28 @@ that pair). Offline node tests should push each input through
   sin / cos (~2e-4 abs), so `springSksl` is checked against the fp32
   oracle (`springSkslReference`) within that measured floor — GPU
   precision is the oracle's own ≤ 2e-6, not a CanvasKit-in-Node number.
+- `check-skia-baked` — `animation: "baked"` exports
+  (src/lib/skia-export/emit-baked.ts: track / sampled program uniforms as
+  SkSL functions of iTime). The baked track functions run on an F32
+  CanvasKit surface at every frame and at fractional times against
+  `evaluateKeyframesAt` / the worklet runtime: constants (keys, clamps,
+  holds) are the double rounded once to fp32, interpolated scalars ≤ 2e-6
+  of the track's magnitude (measured 9e-7; 2.5e-6 end to end, where the
+  fp32 clock itself is ≤ 0.006 ticks off), raw colors ≤ 2e-5 (OKLab →
+  linear cancels near the gamut edge), every quantize8 flip one step at a
+  double within 2e-3 of a .5 boundary. Then Aurora (SkSL Shader), Aurora
+  (Skia-layer scene, two sampled ramp series) and an every-easing fixture
+  (`scripts/fixtures/skia/baked-graph.ts`) render baked vs worklet at
+  EVERY frame — max 1/255. Plus what stays on the worklet, refusals
+  (caps, 2^24 ticks, iTime not the clock, the tbk_ prefix) and
+  `checkExportable(…, { animation: "baked", typecheck })`. Traps: the
+  baked code calls polynomial sin / cos / exp / pow, not Skia's (CanvasKit
+  CPU builtins are off by ~1e-4 — the gate prints them); Skia compiles
+  `x / 255.0` as a reciprocal multiply, so a quantized level is within an
+  ulp of k/255, not equal to it; and the CPU backend runs every branch of
+  the baked if-trees (a GPU takes one), which is why the per-frame
+  renders are small (`BAKED_SIZE`, default 32). Web parity is
+  `npm run parity:skia -- --bundle baked` (skia-harness/src/bundle-baked).
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`

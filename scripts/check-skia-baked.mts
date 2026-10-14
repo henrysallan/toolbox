@@ -4,7 +4,8 @@
 //
 //   1. numerics: every easing preset (+ the legacy aliases), cubicBezier,
 //      customBezier (explicit and default handles), hold, sub-frame and
-//      same-tick keys, a BindRef scale, int hold tracks, OKLab / RGB colors
+//      same-tick keys, springs (lane C's springSksl, against its fp32
+//      oracle too), a BindRef scale, int hold tracks, OKLab / RGB colors
 //      raw and through quantize8 (node alpha and quantizeAlpha), and the
 //      Aurora / synthetic fixtures' own tracks: the baked track functions run
 //      in CanvasKit (CPU, an F32 surface) at every frame and at fractional
@@ -21,7 +22,7 @@
 //      iTime and their static uniforms; a scene's binds outside programs stay
 //      on the worklet (manifest + warning); the worklet export is unchanged;
 //      the output is deterministic; the dispatch (exportSkia / CLI) matches;
-//   6. refusals: spring segments, series over the caps, scenes ≥ 2^24 ticks,
+//   6. refusals: series over the caps, scenes ≥ 2^24 ticks,
 //      a program whose iTime isn't the clock, the reserved tbk_ prefix;
 //   7. checkExportable(…, typecheck) on baked scene exports, and the baked
 //      SkSL Shader bundle type-checks in skia-harness.
@@ -49,6 +50,7 @@ const { sampleKeys } = await import("@/lib/skia-export/scene-emit");
 const { hexToTuple, toTimelineKey } = await import("@/lib/skia-export/drivers");
 const bk = await import("@/lib/skia-export/emit-baked");
 const rt = await import("@/lib/skia-export/runtime/toolbox-timeline");
+const { springSksl, springSkslArgs, springSkslReference } = await import("@/lib/skia-export/spring");
 const { checkExportable } = await import("./skia/export-check.ts");
 const fx = await import("./fixtures/skia/aurora.ts");
 const { auroraSceneGraph } = await import("./fixtures/skia/aurora-scene-graph.ts");
@@ -234,6 +236,28 @@ function probe(sksl: string, widths: number[]) {
     if (Number.isFinite(bound)) check(`${name} on [${lo}, ${hi}] vs Math (CanvasKit CPU): max ${mode} error ${worst.toExponential(2)} (bound ${bound})`, worst <= bound);
     else info(`${name} on [${lo}, ${hi}]: max ${mode} error ${worst.toExponential(2)} — why the baked code doesn't call it`);
   }
+  // Lane C's spring as baked (tbk_spring: its arithmetic, these
+  // transcendentals) vs springSkslReference, its fp32 oracle, over u ∈ [0, 1];
+  // and springSksl verbatim (Skia's builtins) for comparison.
+  const configs = [undefined, { dampingRatio: 0.05 }, { dampingRatio: 0.2, settle: 0.4 }, { dampingRatio: 0.75, settle: 0.83 }, { dampingRatio: 1 }, { dampingRatio: 1, settle: 0.05 }, { dampingRatio: 2.5, settle: 0.6 }, { dampingRatio: 10 }];
+  let mine = 0;
+  let builtin = 0;
+  for (const spring of configs) {
+    const a = springSkslArgs(spring);
+    const call = (fn: string) => `${fn}(x, ${bk.skslFloat(a.zeta)}, ${bk.skslFloat(a.omega)}, ${bk.skslFloat(a.rest)})`;
+    for (const [src, fn, set] of [
+      [`${bk.BAKED_HELPERS.math}\n${bk.BAKED_HELPERS.spring}`, "tbk_spring", (d: number) => (mine = Math.max(mine, d))],
+      [springSksl, "tbx_spring", (d: number) => (builtin = Math.max(builtin, d))],
+    ] as const) {
+      const sksl = `uniform float iTime;\n${src}\nhalf4 main(float2 p) { float x = floor(p.x) / ${N - 1}.0; return half4(${call(fn)}, x, 0.0, 1.0); }`;
+      const p = probe(sksl, Array.from({ length: N / 4 }, () => 4));
+      const out = Float32Array.from(p.raw(0));
+      p.done();
+      for (let i = 0; i < N; i++) set(Math.abs(out[i * 4] - springSkslReference(out[i * 4 + 1], a.zeta, a.omega, a.rest)));
+    }
+  }
+  check(`tbk_spring (lane C's springSksl on these polynomials) vs springSkslReference, ${configs.length} springs × ${N} u: max abs error ${mine.toExponential(2)} (bound 2e-6)`, mine <= 2e-6);
+  info(`springSksl verbatim (Skia's CPU exp / sin / cos) vs the same oracle: max abs error ${builtin.toExponential(2)}`);
 }
 {
   const FPS = 60;
@@ -283,6 +307,25 @@ function probe(sksl: string, widths: number[]) {
     { tick: SPAN * 2, value: -45, easingOut: "linear" },
   ], Math.PI / 180);
   scalarCase("single key", [{ tick: 7_000, value: 1.75, easingOut: "easeOutBack" }]);
+  // Springs (lane C, spring.ts): under-damped, critical, ζ > 1 (Reanimated's
+  // critically damped branch), early settle, junk params.
+  const SPRINGS: (Keyframe["spring"] | undefined)[] = [
+    { dampingRatio: 0.05 },
+    { dampingRatio: 0.2, settle: 0.4 },
+    { dampingRatio: 0.5, settle: 1 },
+    { dampingRatio: 0.999 },
+    { dampingRatio: 1 },
+    { dampingRatio: 1, settle: 0.05 },
+    { dampingRatio: 2.5, settle: 0.6 },
+    { dampingRatio: Number.NaN, settle: -1 } as never,
+  ];
+  for (const spring of SPRINGS) {
+    scalarCase(`spring ${JSON.stringify(spring)}`, [
+      { tick: 0, value: -2, easingOut: "spring", ...(spring ? { spring } : {}) },
+      { tick: SPAN, value: 5, easingOut: "spring", spring: { dampingRatio: 0.3, settle: 0.7 } },
+      { tick: SPAN * 2, value: 1, easingOut: "linear" },
+    ]);
+  }
   cases.push({
     label: "int hold track (toggle)",
     track: { kind: "scalar", keys: [{ tick: 0, value: 0, easing: "hold" }, { tick: 20_000, value: 1, easing: "hold" }, { tick: 90_000, value: 0, easing: "hold" }] },
@@ -295,6 +338,8 @@ function probe(sksl: string, widths: number[]) {
     { tick: SPAN * 2, value: "#00ffa2", easingOut: "cubicBezier", bezier: { x1: 0.4, y1: 0, x2: 0.2, y2: 1 } },
     { tick: SPAN * 3, value: "#ffe3c2", easingOut: "linear" },
   ];
+  hexKeys.push({ tick: SPAN * 4, value: "#3d5afe", easingOut: "linear" });
+  hexKeys[3] = { ...hexKeys[3], easingOut: "spring", spring: { dampingRatio: 0.35, settle: 0.8 } };
   for (const space of ["oklab", "rgb"] as const) {
     const keys = hexKeys.map((k) => toTimelineKey(k, "color"));
     const block = blockOf(hexKeys, space);
@@ -642,8 +687,8 @@ if (auroraB.files && auroraW.files) {
   );
   const block = (skslOfEffect(f).split("// ---- toolbox: the animation, baked into the shader")[1] ?? "").replace(/\/\/[^\n]*/g, "");
   check(
-    "…the generated block is strict ES2 by construction: no round / while / uint / bitwise / array constructors, no builtin sin / cos / exp2 / pow",
-    !!block && !/\bround\s*\(|\bwhile\b|\buint\b|[&|^]|<<|>>|float\[\d+\]\s*\(|(?<!tbk_)\b(sin|cos|exp2|pow)\s*\(/.test(block)
+    "…the generated block is strict ES2 by construction: no round / while / uint / bitwise / array constructors, no builtin sin / cos / exp / exp2 / pow",
+    !!block && !/\bround\s*\(|\bwhile\b|\buint\b|[&|^]|<<|>>|float\[\d+\]\s*\(|(?<!tbk_)\b(sin|cos|exp|exp2|pow)\s*\(/.test(block)
   );
 }
 {
@@ -698,7 +743,11 @@ if (auroraB.files && auroraW.files) {
     uniforms: plan.uniforms.map((u) => (u.name === "scale" ? { ...u, track: { ...u.track!, keys: u.track!.keys.map((k, i) => (i === 0 ? { ...k, easing } : k)) } } : u)),
   });
   const spring = bk.emitBakedSkiaBundle(withKey("spring"), runtimeSource);
-  check("refuses a spring segment (springSksl not wired yet) with a clear problem", !spring.files && spring.problems.some((p) => p.includes("spring") && p.includes("worklet")), spring.problems.join(" | "));
+  check(
+    "a spring segment bakes through lane C's springSksl (as tbk_spring)",
+    !!spring.files && /float tbk_spring\(/.test(spring.files["effect.ts"]) && /tbk_spring\(u, /.test(spring.files["effect.ts"]),
+    spring.problems.join(" | ")
+  );
   const unknown = bk.emitBakedSkiaBundle(withKey("easeInOutMystery"), runtimeSource);
   check("an easing this build doesn't know bakes as linear, as the runtime plays it, with a warning", !!unknown.files && unknown.warnings.some((w) => w.includes("easeInOutMystery")));
   const long = bk.emitBakedSkiaBundle({ ...plan, timeline: { ...plan.timeline, durationTicks: 2 ** 24 } }, runtimeSource);
@@ -718,8 +767,6 @@ if (auroraB.files && auroraW.files) {
     runtimeSource
   );
   check(`refuses a track over ${bk.BAKED_LIMITS.trackKeys} keys`, !tooManyKeys.files && tooManyKeys.problems.some((p) => p.includes("capped")));
-  // A worklet export of the same keys still works: the refusals are baked-only.
-  check("…while the worklet export of the spring key still ships", !!emitSkiaBundle(withKey("spring"), runtimeSource)["timeline.ts"]);
 
   if (sceneBake.plan) {
     // Series caps, on the Aurora scene plan with its sampled stops swapped.

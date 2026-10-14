@@ -20,8 +20,9 @@
 //                                      presets as closed forms, cubicBezier /
 //                                      customBezier via 8 Newton + 32
 //                                      bisection steps (constant bounds),
-//                                      hold, OKLab / RGB lerp, quantize8 /
-//                                      quantizeAlpha, BindRef scale
+//                                      spring (spring.ts springSksl, as
+//                                      tbk_spring), hold, OKLab / RGB lerp,
+//                                      quantize8 / quantizeAlpha, BindRef scale
 //     void tbk_s0(float fr) { … }      one per sampled series: an unrolled
 //                                      binary search over its kept frames
 //                                      (ES2 has no const-array initialisers),
@@ -33,7 +34,9 @@
 // (and every clamp / hold) is evaluateTrack() itself, OKLab key coordinates
 // and segment deltas are precomputed in double. Only the interpolation runs
 // in fp32 — check:skia-baked measures what that costs (per value and per
-// pixel) against the worklet path.
+// pixel) against the worklet path. sin / cos / exp / exp2 / pow are
+// polynomials over + − × ÷ floor (MATH below), not Skia's builtins, which
+// its CPU backend approximates to ~1e-4 and every GPU driver does its own way.
 //
 // Time. iTime arrives as fp32 seconds. tick = iTime · fps · ticksPerFrame,
 // snapped to the nearest integer tick within 1e-6 + 2.5e-7·tick (the fp32
@@ -48,18 +51,24 @@
 // Skia web, Android), read as Display P3 on a P3 iOS canvas — the same as
 // any procedural color (§2b's pending P3 decision).
 //
+// Cost. Every pixel evaluates the clock and every baked function, but the
+// branches are uniform (all from iTime), so a GPU runs one segment per track
+// and one leaf per series (Skia's CPU backend runs every branch). A baked
+// sampled ARRAY uniform (a ramp's stops) becomes a per-pixel global array.
+//
 // Deterministic: the SkSL depends only on the plan (track data, series,
-// program text). Strict ES2: no arrays initialisers, no dynamic indexing,
+// program text). Strict ES2: no array initialisers, no dynamic indexing,
 // constant loop bounds, floor() for rounding.
 
 import { rgbToOklab } from "@/engine/color-space";
 import type { Bind, SkiaScene, SkslProgramIR } from "@/engine/skia/scene-ir";
 import { emitSkiaBundle } from "./emit";
-import { durationSecOf, timelineConstSource } from "./emit-shared";
+import { timelineConstSource } from "./emit-shared";
 import type { SkiaExportPlan } from "./plan";
-import { evaluateTrack, type TimelineTrack } from "./runtime/toolbox-timeline";
+import { evaluateTrack, type TimelineSpring, type TimelineTrack } from "./runtime/toolbox-timeline";
 import { compress, emitSceneBundle } from "./scene-emit";
 import { collectBinds, isBind, type BindValue, type PlannedBind, type ScenePlan } from "./scene-plan";
+import { springSksl, springSkslArgs } from "./spring";
 
 // ---- limits ------------------------------------------------------------------------
 
@@ -184,6 +193,10 @@ const MATH = [
   `  return e + l * ${skslFloat(Math.LOG2E)};`,
   `}`,
   ``,
+  `float tbk_exp(float x) {`,
+  `  return tbk_exp2(x * ${skslFloat(Math.LOG2E)});`,
+  `}`,
+  ``,
   `float tbk_pow(float x, float y) {`,
   `  return tbk_exp2(y * tbk_log2(x));`,
   `}`,
@@ -213,8 +226,18 @@ const MATH = [
 ].join("\n");
 
 
+// Lane C's spring (spring.ts springSksl: Reanimated 4.7's withSpring from
+// rest, normalised to the segment), renamed into the tbk_ namespace and with
+// its exp / sin / cos routed to the polynomials above (the arithmetic is
+// otherwise verbatim; check:skia-baked bounds it against springSkslReference).
+const SPRING = springSksl
+  .replace(/\btbx_spring\b/g, "tbk_spring")
+  .replace(/(?<![\w.])(exp|sin|cos)\s*\(/g, (_m, f: string) => `tbk_${f}(`)
+  .trimEnd();
+
 export const BAKED_HELPERS = {
   math: MATH,
+  spring: SPRING,
   bezier: [
     `// x(u) = x for the CSS-style curve (0, x1, x2, 1): 8 Newton steps, then 32`,
     `// bisection steps — toolbox-timeline.ts solveBezierX, line for line.`,
@@ -278,7 +301,7 @@ export const BAKED_HELPERS = {
 } as const;
 
 type HelperId = keyof typeof BAKED_HELPERS;
-const HELPER_ORDER: HelperId[] = ["math", "bezier", "oklab", "q8"];
+const HELPER_ORDER: HelperId[] = ["math", "spring", "bezier", "oklab", "q8"];
 
 // ---- easing closed forms --------------------------------------------------------------------
 
@@ -305,6 +328,7 @@ const KNOWN_PRESETS = new Set([
   "hold",
   "customBezier",
   "cubicBezier",
+  "spring",
 ]);
 
 // `float t = <eased u>;` for one preset — toolbox-timeline.ts easeOf, with
@@ -374,6 +398,15 @@ function easeLines(preset: string): string[] {
   }
 }
 
+// A spring key's (ζ, Ω, rest) exactly as the worklet runtime's springEase
+// reads them: spring.ts springSkslArgs (the clamps), with the key's own
+// precomputed rest time when it carries one.
+function springArgsOf(s: TimelineSpring | undefined): { zeta: number; omega: number; rest: number } {
+  const a = springSkslArgs(s);
+  if (!s || typeof s.rest !== "number" || s.rest === a.rest) return a;
+  return { zeta: a.zeta, omega: (a.omega / a.rest) * s.rest, rest: s.rest };
+}
+
 // ---- the generator --------------------------------------------------------------------------
 
 // Where a baked value lands: a mutable global (vector / array element).
@@ -441,11 +474,6 @@ export class BakeGen {
         ? Array.isArray(v) && v.length >= 4 && v.slice(0, 4).every((x) => typeof x === "number" && Number.isFinite(x))
         : typeof v === "number" && Number.isFinite(v);
       if (!ok) return bad(`key ${i} holds ${JSON.stringify(v)}, not a ${color ? "4-component color" : "finite number"}.`);
-      if (k.easing === "spring" || /^spring/i.test(k.easing)) {
-        // The spring-easing lane publishes `springSksl`; the integrator wires
-        // it here. Until then a spring can only replay on the worklet.
-        return bad(`key ${i} (tick ${k.tick}) uses a "${k.easing}" easing — spring segments can't bake into SkSL yet (springSksl isn't wired); export with animation "worklet".`);
-      }
       if (!KNOWN_PRESETS.has(k.easing) && i < keys.length - 1) {
         this.warnings.push(`${label}: key ${i} uses an easing this build doesn't know ("${k.easing}") — baked as linear, as the worklet runtime plays it.`);
       }
@@ -488,7 +516,12 @@ export class BakeGen {
         );
         return out;
       }
-      if (p.easing === "cubicBezier") {
+      if (p.easing === "spring") {
+        this.helpers.add("spring");
+        this.helpers.add("math");
+        const a = springArgsOf(p.spring);
+        out.push(`float t = tbk_spring(u, ${lit(a.zeta)}, ${lit(a.omega)}, ${lit(a.rest)});`);
+      } else if (p.easing === "cubicBezier") {
         this.helpers.add("bezier");
         const e = p.bezier ?? { x1: 1 / 3, y1: 1 / 3, x2: 2 / 3, y2: 2 / 3 };
         const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
