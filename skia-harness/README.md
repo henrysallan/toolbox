@@ -15,7 +15,18 @@ Two more slots, chosen on the web with `?bundle=`: `scene` plays
 `src/bundle-scene/` (`--fixture aurora-scene`), `baked` plays
 `src/bundle-baked/` — the same Aurora node exported with
 `--animation baked`, its timeline compiled into the SkSL and driven by
-iTime alone (`npm run parity:skia -- --bundle baked`).
+iTime alone (`npm run parity:skia -- --bundle baked`), and `filters` plays
+`src/bundle-filters/` (`--fixture filters`): the Skia filter family's
+web-playable stack — keyframed Blur, Drop Shadow, Morphology and Color
+Matrix on Group layers (`npm run parity:skia -- --bundle filters [--size
+256]`; runtime image filters — Grain, Bloom, SkSL Filter, Lens Flare — are
+native only, RN web has no RuntimeShader filter).
+
+In a fresh checkout or worktree `public/canvaskit.wasm` (gitignored, RN
+Skia web's `bin/full` build) must exist before `export:web`, or the page
+fetches the SPA index as WASM ("expected magic word 00 61 73 6d") and
+parity:skia times out waiting for the harness:
+`cp ../node_modules/canvaskit-wasm/bin/full/canvaskit.wasm public/`.
 
 `src/bundle/` is generated; regenerate instead of editing it. Install
 packages with `npx expo install` (`.npmrc` sets `legacy-peer-deps`:

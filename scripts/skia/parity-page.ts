@@ -13,6 +13,8 @@ import { createEngineBackend } from "@/engine/gl";
 import { evaluateGraph, type EvalCache } from "@/engine/evaluator";
 import { setCanvasKit, CANVASKIT_BASE } from "@/engine/skia/canvaskit";
 import { sceneAssetsSettled } from "@/engine/skia/scene-assets";
+import { renderScene } from "@/engine/skia/scene-render";
+import { makeSceneSampler } from "@/lib/skia-export/scene-sample";
 import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import { auroraGraph, AURORA_TIMELINE } from "../fixtures/skia/aurora-graph";
 import { auroraSceneGraph } from "../fixtures/skia/aurora-scene-graph";
@@ -20,6 +22,7 @@ import { easingsGraph, EASINGS_TIMELINE } from "../fixtures/skia/easings-graph";
 import { atlasGraph, ATLAS_TIMELINE } from "../fixtures/skia/atlas-graph";
 import { imageEffectGraph, imageFixtureReady, IMAGE_TIMELINE } from "../fixtures/skia/image-graph";
 import { proceduralAuroraGraph } from "../fixtures/skia/procedural-graph";
+import { filtersGraph, FILTERS_HARNESS_CANVAS, FILTERS_SIZE, FILTERS_TIMELINE } from "../fixtures/skia/filters-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -38,6 +41,22 @@ function fromB64(b64: string): Uint8Array {
   return out;
 }
 
+// One CanvasKit per page: the engine's shared Skia surface and the SkSL
+// compile cache hold objects of the instance that made them, so a second
+// CanvasKitInit would mix two instances (a fused program then fails to
+// draw on the first one's surface).
+let kitPromise: Promise<never> | null = null;
+function loadKit(): Promise<never> {
+  if (!kitPromise) {
+    const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
+    kitPromise = init({ locateFile: (f: string) => CANVASKIT_BASE + f }).then((kit) => {
+      setCanvasKit(kit);
+      return kit;
+    });
+  }
+  return kitPromise;
+}
+
 // `which`: "effect" renders the M0 SkSL Shader node (src/bundle) — also the
 // reference for "baked" (src/bundle-baked, the same node exported with its
 // timeline inside the SkSL) — "scene" the Skia-layer chain's Skia Canvas
@@ -52,14 +71,24 @@ function fromB64(b64: string): Uint8Array {
 // Source into iImage1 + ramp / curve LUT channels (src/bundle-image).
 // "procedural" / "procedural-baked" (Wave 3 lane P) the Aurora node on
 // procedural drivers (procedural-graph.ts) — the graph both slots export.
+// "filters" (src/bundle-filters) is the Skia filter family's web-playable
+// canvas (filters-graph.ts native_all_s), whose params are canvas PIXELS: at
+// the composition's own size (512) it renders through the real path like
+// every slot; at any other size the export's root group scales the 512 px
+// scene to the device canvas, blur sigmas and offsets with it, so toolbox
+// draws the same scene IR under that scale (renderScene on a CanvasKit
+// WebGL surface with canvas.scale(size / 512), what React Native Skia
+// replays) — and renderFiltersReference gives the editor's 512² frames
+// box-downsampled, the density cross-check.
 export async function renderToolbox(
   frames: number[],
   size: number,
-  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" = "effect"
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" | "filters" = "effect"
 ): Promise<string[]> {
   registerAllNodes();
-  const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
-  setCanvasKit(await init({ locateFile: (f: string) => CANVASKIT_BASE + f }));
+  const kit = await loadKit();
+  if (which === "filters" && size !== FILTERS_SIZE) return renderFiltersScaled(kit, frames, size);
+  if (which === "filters") return renderFiltersReal(frames, FILTERS_SIZE);
   const backend = createEngineBackend(size, size);
   const { nodes, edges, targetId } =
     which === "scene" || which === "native-scene"
@@ -95,6 +124,97 @@ export async function renderToolbox(
   }
   backend.destroy();
   return out;
+}
+
+// The filters canvas through toolbox's real path (evaluateGraph → Skia
+// Canvas → engine image → readImagePixels) at `size`.
+function renderFiltersReal(frames: number[], size: number): string[] {
+  const backend = createEngineBackend(size, size);
+  const { nodes, edges } = filtersGraph();
+  const { fps, ticksPerFrame } = FILTERS_TIMELINE;
+  const out: string[] = [];
+  for (const f of frames) {
+    const ctx = backend.makeContext(f / fps, f, undefined, false, { tick: f * ticksPerFrame, ticksPerFrame, fps }, true);
+    const r = evaluateGraph(nodes, edges, ctx, new Map() as EvalCache, FILTERS_HARNESS_CANVAS);
+    const img = r.outputs.get(FILTERS_HARNESS_CANVAS)?.primary;
+    if (!img || img.kind !== "image") throw new Error(`frame ${f}: no image (${JSON.stringify(r.errors)})`);
+    const px = backend.readImagePixels(img);
+    if (!px) throw new Error(`frame ${f}: readback failed`);
+    out.push(toB64(px));
+  }
+  backend.destroy();
+  return out;
+}
+
+// The 512 px scene IR drawn at size × size under the export's root scale.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderFiltersScaled(kit: any, frames: number[], size: number): string[] {
+  const { nodes, edges } = filtersGraph();
+  const comp = { width: FILTERS_SIZE, height: FILTERS_SIZE };
+  const sampler = makeSceneSampler(nodes, edges, FILTERS_HARNESS_CANVAS, comp, FILTERS_TIMELINE);
+  if ("problem" in sampler) throw new Error(sampler.problem);
+  const el = document.createElement("canvas");
+  el.width = size;
+  el.height = size;
+  const surface = kit.MakeWebGLCanvasSurface(el, kit.ColorSpace.SRGB, { premultipliedAlpha: 0, preserveDrawingBuffer: 1 });
+  if (!surface) throw new Error("no CanvasKit WebGL surface");
+  const out: string[] = [];
+  for (const f of frames) {
+    const scene = sampler.sampleAt(f * FILTERS_TIMELINE.ticksPerFrame);
+    if (!scene) throw new Error(`frame ${f}: ${sampler.lastProblem()}`);
+    const c = surface.getCanvas();
+    c.clear(kit.TRANSPARENT);
+    c.save();
+    c.scale(size / FILTERS_SIZE, size / FILTERS_SIZE);
+    const r = renderScene(kit, c, scene, { surfaceSize: [size, size] });
+    c.restore();
+    surface.flush();
+    if (r.problems.length) throw new Error(`frame ${f}: ${r.problems.join(" | ")}`);
+    const px = c.readPixels(0, 0, { width: size, height: size, colorType: kit.ColorType.RGBA_8888, alphaType: kit.AlphaType.Unpremul, colorSpace: kit.ColorSpace.SRGB });
+    r.release();
+    if (!px) throw new Error(`frame ${f}: readPixels failed`);
+    out.push(toB64(new Uint8Array(px)));
+  }
+  surface.delete();
+  return out;
+}
+
+// The editor's frames (the real path at the composition's 512²), box-
+// downsampled to `size` (512 must be a multiple): the density cross-check
+// for a parity run at another size. Premultiplied box average, then
+// unpremultiplied, so transparent pixels don't darken edges.
+export async function renderFiltersReference(frames: number[], size: number): Promise<string[]> {
+  registerAllNodes();
+  await loadKit();
+  const k = FILTERS_SIZE / size;
+  if (!Number.isInteger(k)) throw new Error(`${FILTERS_SIZE} is not a multiple of ${size}`);
+  return renderFiltersReal(frames, FILTERS_SIZE).map((b64) => {
+    const src = fromB64(b64);
+    const out = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const acc = [0, 0, 0, 0];
+        for (let dy = 0; dy < k; dy++) {
+          for (let dx = 0; dx < k; dx++) {
+            const i = ((y * k + dy) * FILTERS_SIZE + (x * k + dx)) * 4;
+            const a = src[i + 3] / 255;
+            acc[0] += src[i] * a;
+            acc[1] += src[i + 1] * a;
+            acc[2] += src[i + 2] * a;
+            acc[3] += src[i + 3];
+          }
+        }
+        const o = (y * size + x) * 4;
+        const a = acc[3] / (k * k);
+        const al = a / 255;
+        out[o] = al > 0 ? Math.round(acc[0] / (k * k) / al) : 0;
+        out[o + 1] = al > 0 ? Math.round(acc[1] / (k * k) / al) : 0;
+        out[o + 2] = al > 0 ? Math.round(acc[2] / (k * k) / al) : 0;
+        out[o + 3] = Math.round(a);
+      }
+    }
+    return toB64(out);
+  });
 }
 
 export function compare(a: string, b: string, width: number, height: number) {

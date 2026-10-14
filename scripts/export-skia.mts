@@ -18,6 +18,7 @@
 //                         /fonts/… come from public/, data: / blob: / file:
 //                         resolve locally, anything else ships unbundled
 //                         with a warning)
+//   npx tsx scripts/export-skia.mts --fixture filters --out skia-harness/src/bundle-filters [--node <canvas>]
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
 // (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame,
@@ -64,7 +65,7 @@ async function resolveAssets(uses: AssetUse[]) {
 const out = arg("out");
 if (!out) {
   console.error(
-    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural|filters [--node canvas] | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
   );
   process.exit(2);
 }
@@ -162,8 +163,18 @@ if (sceneFile) {
     timeline = { ...pfx.PROCEDURAL_TIMELINE, markers: pfx.PROCEDURAL_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Aurora (procedural)";
+  } else if (fixture === "filters") {
+    // The Skia filter family (filters-graph.ts): by default its web-playable
+    // canvas (keyframed blur, shadow, morphology, colour matrix) for the
+    // harness's ?bundle=filters slot; --node picks another canvas.
+    const fx = await import("./fixtures/skia/filters-graph.ts");
+    ({ nodes, edges } = fx.filtersGraph());
+    targetId = arg("node") ?? fx.FILTERS_HARNESS_CANVAS;
+    timeline = { ...fx.FILTERS_TIMELINE, markers: fx.FILTERS_MARKERS };
+    canvas = { width: fx.FILTERS_SIZE, height: fx.FILTERS_SIZE };
+    name = "Skia filters";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural, filters)`);
   } else {
     const file = arg("graph");
     const node = arg("node");

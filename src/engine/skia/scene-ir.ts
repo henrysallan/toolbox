@@ -28,7 +28,8 @@
 //     numbers.
 //   - Group opacity / blendMode are per-draw props, not a layer; `layer`
 //     is a saveLayer outside the group's own transform/clip/opacity, image
-//     filters before its color filters. Clips are local and anti-aliased.
+//     filters before its color filters, composited with `layer.blendMode`
+//     (default srcOver). Clips are local and anti-aliased.
 //   - A paint's shader replaces its color's RGB; the color's alpha still
 //     scales. Default paint: opaque black, antiAlias on.
 //   - `trim` applies to the geometry first wherever it sits in pathEffects.
@@ -197,7 +198,12 @@ export type SkiaNode =
       blendMode?: BlendMode;
       clip?: { geom: GeomIR; invert?: boolean };
       // Rendered to an offscreen layer, then filtered (RN Group `layer`).
-      layer?: { imageFilters?: ImageFilterIR[]; colorFilters?: ColorFilterIR[] };
+      // `blendMode` (additive, 2026-10-14, Wave 3 lane F) is how the
+      // filtered layer composites onto what is below it — the layer
+      // paint's blend mode, RN `layer={<Paint blendMode="…">}` — default
+      // srcOver. Unlike the group's own `blendMode` (inherited per draw
+      // INSIDE the layer) it applies once, to the whole layer.
+      layer?: { imageFilters?: ImageFilterIR[]; colorFilters?: ColorFilterIR[]; blendMode?: BlendMode };
       children: SkiaNode[];
     }
   | { k: "fill"; id?: string; paint: PaintIR }
