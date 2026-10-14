@@ -47,7 +47,10 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // (`--animation native`: src/bundle-native = Aurora, src/bundle-native-
 // easings = every easing kind, src/bundle-native-scene = Aurora as a Skia
 // layer); atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`:
-// sprite-sheet atlases + vector copy groups). The native pages run on the harness's fake clock
+// sprite-sheet atlases + vector copy groups); procedural / procedural-baked =
+// Aurora on procedural drivers (LFO, Expressions, Scene Time: `--fixture
+// procedural`, src/bundle-procedural and its `--animation baked` twin). The
+// native pages run on the harness's fake clock
 // (?clock=fake): each capture steps Reanimated frame by frame from play(),
 // so frames must ascend, and the run also reports every animated value's
 // drift from the worklet-mode curve at every frame (drift.json).
@@ -85,11 +88,11 @@ if (
   !(SIZE > 0) ||
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked] [--jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }

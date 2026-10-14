@@ -136,6 +136,9 @@ export const sceneTimeNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Skia layers: a procedural driver the export compiles to a worklet of the
+  // tick (spec §3.5e).
+  skia: { class: "driver" },
   stable: false,
   inputs: [],
   params: [

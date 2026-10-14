@@ -7,7 +7,10 @@
 //
 // Exportable keyframe SOURCES: Animated Value (scalar, unwired clock),
 // Constant (static only — it snaps to its step), Color (8-bit hex round
-// trip, OKLab/RGB). Anything else is a refusal with a reason.
+// trip, OKLab/RGB). Anything else is a refusal with a reason — which both
+// planners then hand to procedural/ (spec §3.5e) when the driver is one it
+// compiles (Expression, LFO, Math, Scene Time, Random, a keyframed / wired
+// Constant, an Animated Value on a wired clock).
 
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import { channelKind, readChannelValue } from "@/engine/expr-channels";
@@ -207,7 +210,9 @@ export function resolveDriver(
   }
 
   const subject = opts.subject ?? `Channel "${name}"`;
-  const tail = opts.tail ?? "only Animated Value (scalar), Constant (scalar) and Color (color) drive an exported Skia uniform in M0.";
+  const tail =
+    opts.tail ??
+    "only Animated Value (scalar), Constant (scalar), Color (color) and, on a scalar channel, the procedural drivers (Expression, LFO, Math, Scene Time, Random) drive an exported Skia uniform.";
   problems.push(`${subject} (${kind}) is driven by a ${src.type} node — ${tail}`);
   return { binding: null, problems };
 }

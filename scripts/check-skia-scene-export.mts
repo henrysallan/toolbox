@@ -266,10 +266,16 @@ const kf = (frames: [number, unknown][], easingOut: any = "linear") => ({
 });
 {
   const r = refuse((n, e) => {
+    n.push({ id: "sm", type: "smooth", params: {} });
+    e.find((x) => x.source === "av")!.source = "sm";
+  });
+  check("refuses a param driven by a node that is neither a keyframe source nor a procedural driver (Smooth)", has(r, "driven by a smooth node"), r.problems.join(" | "));
+  // Since Wave 3 lane P (spec §3.5e) an LFO compiles to a procedural driver.
+  const l = refuse((n, e) => {
     n.push({ id: "wob", type: "lfo", params: {} });
     e.find((x) => x.source === "av")!.source = "wob";
   });
-  check("refuses a param driven by a non-keyframe node (LFO)", has(r, "driven by a lfo node"), r.problems.join(" | "));
+  check("a param driven by an LFO exports as a procedural driver (expr)", !!l.files && JSON.parse(l.files["manifest.json"]).bindCounts.expr >= 1, l.problems.join(" | ") || JSON.stringify(l.files && JSON.parse(l.files["manifest.json"]).bindCounts));
 }
 {
   const r = refuse((n) => {
@@ -278,17 +284,20 @@ const kf = (frames: [number, unknown][], easingOut: any = "linear") => ({
   check("refuses translucent color keys", has(r, "carry alpha"), r.problems.join(" | "));
 }
 {
+  // Since Wave 3 lane P (spec §3.5e): a keyframed Constant (snapped to its
+  // step every frame) and an Animated Value on a wired clock compile to
+  // procedural drivers, verified against the producer at every frame.
   const r = refuse((n) => {
     node(n, "k").animation = { value: kf([[0, 0.5], [30, 1]]) };
   });
-  check("refuses a keyframed Constant driver", has(r, "Constant snaps"), r.problems.join(" | "));
+  check("a keyframed Constant driver exports as a procedural driver (expr), not a track", !!r.files && JSON.parse(r.files["manifest.json"]).bindCounts.expr >= 1, r.problems.join(" | "));
 }
 {
   const r = refuse((n, e) => {
     n.push({ id: "clk", type: "constant", params: { value: 10 } });
     e.push({ id: "c", source: "clk", sourceHandle: "out:primary", target: "av", targetHandle: "in:time" });
   });
-  check("refuses an Animated Value on a wired clock", has(r, "only an unwired clock exports"), r.problems.join(" | "));
+  check("an Animated Value on a wired clock exports as a procedural driver (its keys sampled at the clock)", !!r.files && JSON.parse(r.files["manifest.json"]).bindCounts.expr >= 1, r.problems.join(" | "));
 }
 {
   const r = refuse((n) => {
@@ -410,7 +419,15 @@ const circle = (r: Bind<number>): SkiaNode => ({ k: "shape", geom: { k: "circle"
   gg.nodes.push({ id: "wob", type: "lfo", params: {} });
   gg.edges.find((e) => e.id === "c1")!.source = "wob";
   const lfo = planOf(sceneOf(prog({ amount: { v: 2, ref: { node: "sk", param: "ch:amount" } } })), gg.nodes, gg.edges);
-  check("refuses a ch: channel driven by an LFO", lfo.problems.some((x) => x.includes("driven by a lfo")), lfo.problems.join(" | "));
+  check(
+    "a ch: channel driven by an LFO plans as a procedural driver (expr)",
+    lfo.binds.find((b: any) => b.path.endsWith("uniforms.amount"))?.plan.kind === "expr",
+    lfo.problems.join(" | ")
+  );
+  gg.nodes.push({ id: "sm", type: "smooth", params: {} });
+  gg.edges.find((e) => e.id === "c1")!.source = "sm";
+  const sm = planOf(sceneOf(prog({ amount: { v: 2, ref: { node: "sk", param: "ch:amount" } } })), gg.nodes, gg.edges);
+  check("refuses a ch: channel driven by a Smooth (neither a keyframe source nor a procedural driver)", sm.problems.some((x) => x.includes("driven by a smooth")), sm.problems.join(" | "));
 
   // Lane L4: keyframes on the channel itself (`ch:<name>` on the node).
   const own = fx.sceneFixtureGraph();

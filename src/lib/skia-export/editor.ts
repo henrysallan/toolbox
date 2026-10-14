@@ -344,6 +344,8 @@ export interface SkiaPlanSummary {
     name: string;
     kind: string;
     animated: boolean;
+    // A procedural driver compiled to a worklet of the tick (spec §3.5e).
+    procedural?: boolean;
     from: string;
     value?: number | number[];
     keys?: number;
@@ -422,7 +424,8 @@ export async function planSkiaExportForEditor(
         return {
           name: u.name,
           kind: u.kind,
-          animated: !!u.track,
+          animated: !!u.track || !!u.expr,
+          ...(u.expr ? { procedural: true } : {}),
           from: u.from,
           ...(u.value !== undefined ? { value: u.value } : {}),
           ...(keys.length

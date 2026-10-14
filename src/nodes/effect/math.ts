@@ -348,6 +348,9 @@ export const mathNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Skia layers: a procedural driver in scalar mode, compiled by the export
+  // to a worklet of the tick (spec §3.5e; uv mode doesn't export).
+  skia: { class: "driver" },
   // Scalar math has no GL work and no per-frame state — cache-safe.
   stable: true,
   inputs: [

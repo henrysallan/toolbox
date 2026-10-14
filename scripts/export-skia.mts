@@ -12,6 +12,8 @@
 //   … --animation native  Reanimated-native animations (emit-native.ts):
 //   npx tsx scripts/export-skia.mts --fixture easings --animation native --out skia-harness/src/bundle-native-easings
 //   npx tsx scripts/export-skia.mts --fixture image --out skia-harness/src/bundle-image
+//   npx tsx scripts/export-skia.mts --fixture procedural --out skia-harness/src/bundle-procedural
+//   npx tsx scripts/export-skia.mts --fixture procedural --animation baked --out skia-harness/src/bundle-procedural-baked
 //   … --fetch             also fetch http(s) asset URLs (default: offline —
 //                         /fonts/… come from public/, data: / blob: / file:
 //                         resolve locally, anything else ships unbundled
@@ -62,7 +64,7 @@ async function resolveAssets(uses: AssetUse[]) {
 const out = arg("out");
 if (!out) {
   console.error(
-    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
   );
   process.exit(2);
 }
@@ -150,8 +152,18 @@ if (sceneFile) {
     timeline = { ...fx.IMAGE_TIMELINE, markers: (await import("./fixtures/skia/aurora-graph.ts")).AURORA_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Image tint";
+  } else if (fixture === "procedural") {
+    // Aurora on procedural drivers (procedural-graph.ts: LFO, Expression ← LFO,
+    // Expression ← Scene Time, a Color track): ?bundle=procedural, and with
+    // `--animation baked` ?bundle=procedural-baked.
+    const fx = await import("./fixtures/skia/aurora.ts");
+    const pfx = await import("./fixtures/skia/procedural-graph.ts");
+    ({ nodes, edges, targetId } = pfx.proceduralAuroraGraph(fx.AURORA_SKSL));
+    timeline = { ...pfx.PROCEDURAL_TIMELINE, markers: pfx.PROCEDURAL_MARKERS };
+    canvas = { width: 512, height: 512 };
+    name = "Aurora (procedural)";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural)`);
   } else {
     const file = arg("graph");
     const node = arg("node");

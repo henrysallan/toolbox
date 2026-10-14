@@ -7,9 +7,12 @@
 // track — engine/channel-keyframes.ts), or wired from a keyframe SOURCE
 // whose curve the runtime can replay exactly — Animated Value (unwired
 // clock) for scalars, the Color node for colors, Constant for a fixed
-// number. Any other driver, clips and retimed clocks are reported as
-// problems: the export refuses instead of shipping something that will not
-// match the editor.
+// number — or, for a scalar channel, a procedural driver (Expression, LFO,
+// Math, Scene Time, Random, a keyframed / wired Constant, an Animated Value
+// on a wired clock) that procedural/ compiles to a program of the tick
+// (spec §3.5e, Wave 3 lane P). Any other driver, clips and retimed clocks
+// are reported as problems: the export refuses instead of shipping
+// something that will not match the editor.
 //
 // Children (Wave 3 lane I, §3.8 items 2–3), in the program's `uniform
 // shader` order:
@@ -34,6 +37,8 @@ import type { SkiaExportAssets } from "./api";
 import { assetWarnings, type AssetUse } from "./asset-bundle";
 import { liveBlock, resolveDriver, toTimelineKey } from "./drivers";
 import { IMAGE_SOURCE_PARAMS, imageFitParam, skiaImageSourceOf } from "./image-asset";
+import { compileDriver, PROCEDURAL_DRIVER_TYPES } from "./procedural/compile";
+import type { ProcProgram } from "./procedural/ir";
 import type { TimelineTrack } from "./runtime/toolbox-timeline";
 
 // One child shader of the exported program.
@@ -54,9 +59,13 @@ export type SkiaEffectChild =
 export interface SkiaUniformBinding {
   name: string;
   kind: "float" | "int" | "color";
-  // Exactly one of the two.
+  // Exactly one of the three.
   value?: number | number[];
   track?: TimelineTrack;
+  // A procedural driver compiled to a program of the tick (procedural/,
+  // spec §3.5e): a worklet in worklet / native bundles, SkSL when baked.
+  // Additive (2026-10-14, Wave 3 lane P).
+  expr?: ProcProgram;
   // Human-readable provenance for the manifest / README.
   from: string;
 }
@@ -304,6 +313,17 @@ export function planSkiaExport(
       continue;
     }
     const r = resolveDriver(src, edge, edges, kind, ch.name);
+    if (!r.binding && kind === "scalar" && PROCEDURAL_DRIVER_TYPES.has(src.type)) {
+      // Expression / LFO / Math / Scene Time / Random, a keyframed or wired
+      // Constant, an Animated Value on a wired clock: compiled to a program
+      // of the tick (procedural/, spec §3.5e) instead of refused.
+      const c = compileDriver(edge, byId, edges, opts.timeline);
+      if (c.ok) {
+        warnings.push(...c.warnings);
+        uniforms.push({ name: ch.name, kind: ukind, expr: c.program, from: c.from });
+      } else problems.push(`Channel "${ch.name}" is driven by ${src.type} "${src.id}", which doesn't compile for export: ${c.reason}.`);
+      continue;
+    }
     problems.push(...r.problems);
     if (r.binding) uniforms.push({ name: ch.name, kind: ukind, ...r.binding });
   }

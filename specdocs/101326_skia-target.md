@@ -532,9 +532,11 @@ type ShaderIR = { k: "runtime"; sksl: string; uniforms: Record<string, Bind<Unif
 type Bind<T> = { value: T } | { track: TimelineTrack } | { expr: WorkletExpr };
 ```
 
-- Every bindable value is static, a track (exact replay, §2.3), or (M5) a
-  worklet expression compiled from an Expression node's JS, so procedural
-  drivers can ship too.
+- Every bindable value is static, a track (exact replay, §2.3), or a
+  worklet expression compiled from a procedural driver subgraph
+  (Expression's JS, LFO, Math, Scene Time, Random…), so procedural drivers
+  ship too. *Built in M4 (Wave 3 lane P, §3.5e): the planner's `expr` bind
+  kind, not an IR change.*
 - **Preview:** a CanvasKit renderer for the IR (`src/engine/skia/scene-render.ts`)
   that evaluates `Bind`s at the current tick, using the same
   `toolbox-timeline.ts` the device runs.
@@ -799,6 +801,123 @@ against a golden. Native: app-driven motion — a state you start with
 a gesture (`cancelAnimation`, `withSpring` to a new target, `playSegment(…,
 { from: "current" })`), springs that should feel physical; it is exact on a
 steady clock and within a frame per step otherwise.
+
+#### 3.5e Procedural drivers — built and measured (Wave 3 lane P, 2026-10-14)
+
+Before: a scene bind or an SkSL Shader channel wired from anything but
+Animated Value / Color / Constant refused (a *derived* bind upstream of one
+sampled per frame). Now the driver subgraph compiles to a **program of the
+tick** (`src/lib/skia-export/procedural/`): `parse.ts` (a real tokenizer +
+precedence parser for the Expression node's JS), `ir.ts` (the program IR and
+an interpreter), `compile.ts` (driver nodes → IR, each compute transcribed
+operation for operation), `emit-js.ts` (→ `procedural.ts`, one worklet
+`P_<key>(tick)` per value), `emit-sksl.ts` (→ `float tbk_p<k>(float tk)` for
+baked programs). No user string is evaluated: code is generated from the
+AST (the gate also asserts the sources contain no `eval` / `new Function`).
+
+Where it plugs in:
+- SkSL Shader: `SkiaUniformBinding.expr` (scalar channels); worklet bundles
+  call `P_<name>(tick)` in `sampleUniforms`; baked ones bake it next to the
+  tracks; native ones evaluate it from the linear clock's tick
+  (`ticksAt(A.clock.value, …)`, the clock now exists whenever a value is
+  procedural).
+- Scenes: `BindPlan { kind: "expr", program, scale? }` beside
+  static / track / clock / sampled. The planner verifies it against the
+  sampled producer at every frame (bit for bit; within float rounding when a
+  `BindRef.scale` multiplies) and falls back to sampling with a warning when
+  it doesn't. Baked: an expr *program uniform* becomes SkSL; other expr binds
+  stay in `sampleBinds` (listed in `manifest.baked.worklet`). Native: expr
+  binds stay in `sampleBinds` on the linear clock, like sampled ones.
+- Manifests: SkSL Shader `uniforms[].procedural { nodes, tracks, random }`
+  and a top-level `procedural.values`; scene `binds[]` entries of kind
+  `expr` with `procedural`. MCP `plan_skia_export` rows gain
+  `procedural: true`.
+- LFO, Expression, Math, Scene Time and Random declare `skia: { class:
+  "driver" }`, so a Skia layer offers them.
+
+| node | compiled | refused (with the reason) |
+|---|---|---|
+| Expression | numbers (dec / 0x / 0o / 0b), `true` / `false`, input variables (wire → coerced scalar, else the row default), the globals (`t` `time` `frame` `fps` `u` `PI` `TAU` `E`), `Math.<const>`, calls of the env functions and `Math.*` (fixed arity), unary `- + !`, `+ - * / % **`, `< <= > >= == != === !==`, `&& \|\|`, `?:`, `return <expr>`, an array literal as the whole result (vec2..4 outputs, padding, broadcast, scalar `raw[0]`); `random()` (mulberry32 seeded `hash(nodeId) ^ ((frame >>> 0) + φ)`, the state threaded through the expression in JS order so an untaken `?:` branch draws nothing); `toNum`'s non-finite → 0 | bitwise ops, assignment, `++`, strings / templates, member access other than `Math.x`, calls of call results, comma, `??`, `?.`, arrows, blocks / statements beyond one `return`, BigInt / separators / legacy octal, unknown names or functions, `===` between a boolean and a number; the editor's own failures (a bare `x;`, a trailing `//` comment, `-x ** 2`, `return` + line break, variable names that shadow a global / `Math` / are reserved — all output 0 in the editor); `Math.random()` (not sampleable); `out_type: curve` |
+| LFO | every shape; playhead or wired `clock` (seconds / frames); wired inputs and wired / keyframed params | clips, bypass, keyframed `shape` |
+| Math | scalar mode, all 41 ops + clamp, the op's own socket set | uv mode, scalar_field inputs |
+| Scene Time | linear / ping-pong / sawtooth / stepped, seconds / frames, every named easing (unknown → linear), `custom` with a drawn curve (monotone cubic, tangents in double at export), keyframed params | a wired `easing_curve` |
+| Random | seeded, uniform / gauss, scalar / vec2; params read at the frame's tick (the node caches per frame) | frame mode (`Math.random()`) |
+| Constant | keyframed / wired value through `parseFloat((round(v / step) · step).toFixed(6))`, integer mode | keyframed `mode` / `step` |
+| Animated Value | keyframes on a wired clock: `round(clock · ticks)` while finite, else the playhead | — |
+
+Clocks: every node reads the scoped clock the evaluator gives it (`tick`,
+`time = tick / (ticksPerFrame · fps)`, `frame = floor(tick / ticksPerFrame)`).
+The export plays the target's layer-local clock from 0 and a driver rides
+the same clock — as a track does (a driver *outside* a late layer shifts with
+it, exactly like an Animated Value; editor.ts already warns about the late
+layer). An Animated Value's wired clock and an LFO's wired clock are
+honoured; a clip window on any driver refuses (a gate, not a clock).
+Integer hashing (Random, `random()`) and non-finite constants have no fp32
+SkSL form: they refuse to bake (worklet / native export them).
+
+Measured (`npm run check:skia-procedural`, 34 s; `parity:skia`):
+
+| what | result |
+|---|---|
+| 135 driver cases × 301 frames × 4 ticks per frame (every frame + 3 sub-frame ticks) vs `evaluateGraph` | **bit-identical**, 162,540 values — the IR interpreter, the emitted `procedural.ts`, and the worklets Babel plugin's output rebuilt on an emulated UI runtime alike |
+| emitted easing helpers (35 names + an unknown one) and the custom-curve helper vs engine/easing.ts, 1,201-point grid | bit-identical |
+| Aurora on procedural drivers (`?bundle=procedural`: LFO → drift_x, Expression ← LFO → scale, Expression ← Scene Time → contrast, a Color track) vs toolbox, RN Skia web, 512², 8 frames | **pixel-identical**, 0/255, 100.00 % identical on every frame |
+| …baked (`?bundle=procedural-baked`) | MATCH on 8/8, max 1/255, ≥ 99.97 % identical |
+| …the three drivers baked vs the worklet, 1,204 ticks each (CanvasKit F32) | scale 1.8e-7, drift_x 5.3e-7, contrast 3.0e-7 (≤ 1e-6) |
+| …baked bundle vs worklet bundle, CanvasKit CPU 32², every frame (301) | max 1/255 |
+| baked, all 126 bakeable cases × 1,204 ticks (148,221 finite samples) | every sample within 4× the first-order fp32 error bound (worst 3.05×), 69 samples on a jump's other side (proven per sample); **97.1 % within 1e-6 × max(1, \|v\|)**; one LFO node ≤ 8.6e-7 |
+| …where it isn't 1e-6 | fp32 conditioning, not lowering: √ at the end of ease-in-circ (1.0e-3), asin / acos near ±1 (1.1e-4), a To Degrees ×57 gain on an LFO's rounding (3.9e-5), 1 / √a near 0 (2.1e-5), mid-curve quint / back (5e-6) |
+| scene binds (Noise (Skia) scale / offset_x / contrast, a Skia Circle centre × width) | plan as `expr`; `sampleBinds` == the producer at every frame (bit for bit; the scaled one within float rounding); all six bundles (effect / scene × worklet / baked / native) type-check in skia-harness |
+
+What makes the exact column exact, found while building it:
+- **The editor's wrapper decides what compiles.** `return (<source>);` turns
+  a bare `x;` or a trailing `// note` into a SyntaxError and the node
+  outputs 0; the parser refuses those with that reason instead of shipping
+  `x`.
+- **Random's per-frame cache** (`lastFrame` / `lastSeed`) means its value
+  comes from the frame's first evaluation; the program reads its params at
+  `frame · ticksPerFrame`, which is that evaluation during export or
+  stepping (a sub-frame first evaluation during live playback with
+  keyframed lo / hi is history-dependent in the editor itself).
+- **Booleans** are numberized to 1 / 0 where JS converts them anyway
+  (arithmetic, truthiness, toNum), so the printed TypeScript is plain
+  `number` code; the one place they differ, `===` between a boolean and a
+  number, refuses.
+- **Constant folding only, no algebra** (`x + 0` is not `x` for `x = −0`);
+  a folded literal is the interpreter's double, i.e. the worklet's.
+
+What makes the baked column what it is:
+- fp32 has no uniform 1e-6 for chains: an LFO's phase rounding times a
+  product's gain, asin near ±1, √ at the end of ease-in-circ. The gate
+  therefore holds baked SkSL to a first-order fp32 error bound (running
+  error analysis on the double evaluation) and reports where 1e-6 holds;
+  any wrong lowering misses by orders of magnitude more.
+- **LFO phase reduction:** on the playhead with a constant frequency, the
+  tick is split by the period rounded to whole ticks M (`tick = q·M + r`,
+  exact below 2^24) and the phase is `fract(r·K + q·ε + phase)` with
+  `M·K = 1 + ε` in double — `raw = t · f` in fp32 would round at ulp(t·f)
+  (2.4e-7 of a cycle after two cycles, 1.5e-6 on a sine). The 0.7 Hz
+  fixture LFO went from 1.03e-6 to under 1e-6.
+- Penner's expo / elastic in-shapes jump at 0 (`inExpo(0⁺) = 2⁻¹⁰`), so a
+  ramp a hair off its end in fp32 reads the other side — a jump sample.
+- `% 1` at an exact multiple can come out as the divisor when Skia divides
+  by a reciprocal; the phase's second wrap absorbs it.
+
+Open:
+- On device the worklet runs Hermes's `Math` (libm), not V8's: the
+  bit-for-bit claim is V8 (the gate); transcendentals may differ by an ulp
+  on device (not measured — no Xcode here).
+- NaN / Infinity: a domain error inside a driver (asin(1.2), √−1) that the
+  engine's toNum maps to 0 is not reproduced by baked SkSL (the GPU makes no
+  NaN promise); 3,483 fixture samples pass through one and are not held.
+- Native mode evaluates procedural values from the linear clock, so they
+  are as exact as the worklet at the clock's tick but don't animate
+  independently (no withTiming per value).
+- An Expression's statement form beyond a single `return`, `out_type:
+  curve`, and wired `easing_curve`s still refuse.
+- `scripts/toolbox-tool-defs.mjs` (`plan_skia_export` / `export_skia`
+  descriptions) doesn't mention `procedural` / `procedural.ts` yet (a shared
+  registration point — left to the integrator).
 
 ### 3.6 Device parity harness (iOS/Android)
 

@@ -63,6 +63,9 @@ export const lfoNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Skia layers: a procedural driver the export compiles to a worklet of the
+  // tick (src/lib/skia-export/procedural/, spec §3.5e).
+  skia: { class: "driver" },
   // Pure function of (inputs, params, scoped tick): cacheable, with the tick
   // in the fingerprint so the unwired playhead still advances the wave.
   // `tickDriven` tells the Iterate / Time Offset interior hash the same.

@@ -1,0 +1,231 @@
+{
+  "format": 3,
+  "name": "Aurora (procedural)",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "usesTime": true,
+  "uniforms": [
+    {
+      "name": "scale",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: Expression scale_expr ← LFO wob",
+      "procedural": {
+        "nodes": [
+          "expression scale_expr",
+          "lfo wob"
+        ]
+      },
+      "baked": true
+    },
+    {
+      "name": "octaves",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "persistence",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "lacunarity",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "drift_x",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: LFO lfo",
+      "procedural": {
+        "nodes": [
+          "lfo lfo"
+        ]
+      },
+      "baked": true
+    },
+    {
+      "name": "drift_y",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "contrast",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: Expression contrast_expr ← Scene Time st",
+      "procedural": {
+        "nodes": [
+          "expression contrast_expr",
+          "scene-time st"
+        ]
+      },
+      "baked": true
+    },
+    {
+      "name": "c0",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c1",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c2",
+      "kind": "color",
+      "animated": true,
+      "keys": 3,
+      "from": "Color glow.color (3 keys, oklab)",
+      "baked": true
+    },
+    {
+      "name": "c3",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    }
+  ],
+  "warnings": [],
+  "animation": "baked",
+  "baked": {
+    "note": "Animated uniforms are SkSL functions of iTime inside the program; the component drives iTime from the master clock and supplies the static uniforms. No worklet timeline ships (toolbox-timeline.ts is omitted).",
+    "time": "tick = iTime × 60000 in fp32, snapped to the nearest integer tick within 1e-6 + 2.5e-7·tick; scenes must stay below 2^24 ticks",
+    "programs": [
+      {
+        "where": "effect",
+        "baked": [
+          {
+            "name": "scale",
+            "kind": "procedural",
+            "from": "procedural: Expression scale_expr ← LFO wob",
+            "type": "float",
+            "points": 0,
+            "color": false
+          },
+          {
+            "name": "drift_x",
+            "kind": "procedural",
+            "from": "procedural: LFO lfo",
+            "type": "float",
+            "points": 0,
+            "color": false
+          },
+          {
+            "name": "contrast",
+            "kind": "procedural",
+            "from": "procedural: Expression contrast_expr ← Scene Time st",
+            "type": "float",
+            "points": 0,
+            "color": false
+          },
+          {
+            "name": "c2",
+            "kind": "track",
+            "from": "Color glow.color (3 keys, oklab)",
+            "type": "float4",
+            "points": 3,
+            "color": true
+          }
+        ],
+        "uniforms": [
+          "octaves",
+          "persistence",
+          "lacunarity",
+          "drift_y",
+          "c0",
+          "c1",
+          "c3"
+        ]
+      }
+    ],
+    "worklet": {
+      "binds": 0
+    },
+    "limits": {
+      "maxTicks": 16777216,
+      "trackKeys": 1024,
+      "seriesFrames": 1024,
+      "seriesLiterals": 16384
+    }
+  }
+}

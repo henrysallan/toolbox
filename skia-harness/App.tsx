@@ -17,6 +17,11 @@
 // window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
 // returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
+// ?bundle=scene | atlas | baked | image | procedural | procedural-baked picks
+// another export on the same master clock (procedural: Aurora on LFO /
+// Expression / Scene Time drivers compiled to worklets; -baked: the same
+// drivers in the SkSL).
+//
 // ?bundle=native | native-easings | native-scene plays a Reanimated-native export instead
 // (native-harness.tsx; with ?clock=fake its capture steps Reanimated's own
 // clock frame by frame — the `time` freeze below doesn't apply).
@@ -33,6 +38,8 @@ import * as Scene from "./src/bundle-scene";
 import * as AtlasScene from "./src/bundle-atlas";
 import * as Baked from "./src/bundle-baked";
 import * as ImageBundle from "./src/bundle-image";
+import * as Procedural from "./src/bundle-procedural";
+import * as ProceduralBaked from "./src/bundle-procedural-baked";
 import * as NativeAurora from "./src/bundle-native";
 import { evaluateTrack as nativeAuroraTrack } from "./src/bundle-native/toolbox-timeline";
 import * as NativeEasings from "./src/bundle-native-easings";
@@ -59,7 +66,19 @@ const SceneBundle = query?.get("bundle") === "scene" ? Scene : query?.get("bundl
 // ?bundle=image: an SkSL Shader sampling a bundled image (iImage1, an
 // ImageShader of assets/iImage1.png) through ramp / curve LUT children
 // (src/bundle-image, `export-skia.mts --fixture image`).
-const EffectBundle = query?.get("bundle") === "baked" ? Baked : query?.get("bundle") === "image" ? ImageBundle : Effect;
+// ?bundle=procedural: Aurora on procedural drivers (LFO, Expressions, Scene
+// Time) compiled to worklets (src/bundle-procedural); procedural-baked: the
+// same drivers as SkSL (src/bundle-procedural-baked).
+const EffectBundle =
+  query?.get("bundle") === "baked"
+    ? Baked
+    : query?.get("bundle") === "image"
+      ? ImageBundle
+      : query?.get("bundle") === "procedural"
+        ? Procedural
+        : query?.get("bundle") === "procedural-baked"
+          ? ProceduralBaked
+          : Effect;
 const { CANVAS, NAME, TIMELINE } = SceneBundle ?? EffectBundle;
 // (The atlas slot has no markers — its SEGMENTS is {} — so read every slot's
 // table as the Aurora one; the chrome lists only the names it really has.)

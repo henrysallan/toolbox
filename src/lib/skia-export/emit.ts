@@ -4,6 +4,8 @@
 //   effect.ts           the SkSL program (prelude + source, verbatim)
 //   timeline.ts         track data + sampleUniforms(t, w, h) — a worklet
 //   toolbox-timeline.ts the keyframe evaluator (src/lib/skia-export/runtime)
+//   procedural.ts       only with procedural drivers (spec §3.5e): one
+//                       worklet P_<uniform>(tick) per driven uniform
 //   ToolboxEffect.tsx   <ToolboxEffect time={sharedValue} width height />
 //                       (re-exports useToolboxClock)
 //   toolbox-clock.ts    useToolboxClock() — one master clock, so every
@@ -30,6 +32,8 @@ import { assetSourcesModule, manifestAsset, writeAssetFiles } from "./asset-bund
 import { IMAGE_MATRIX_SOURCE, mappingOf } from "./image-asset";
 import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { SkiaEffectChild, SkiaExportPlan } from "./plan";
+import { emitProceduralModule, proceduralFnName } from "./procedural/emit-js";
+import { proceduralManifest } from "./procedural";
 import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 
 // 3: useToolboxClock() returns { time, …controls } (was the bare shared
@@ -196,17 +200,23 @@ export function emitSkiaBundle(
   const trackDecls = tracks
     .map((u) => `// ${u.name}: ${u.from}\nconst ${ident(u.name)}: TimelineTrack = ${JSON.stringify(u.track)};`)
     .join("\n\n");
+  // Procedural drivers (spec §3.5e): one worklet of the tick per uniform, in
+  // procedural.ts.
+  const procedural = plan.uniforms.flatMap((u) => (u.expr ? [{ key: u.name, program: u.expr, from: u.from }] : []));
   const fields = plan.uniforms
     .map((u) => {
       const expr = u.track
         ? `evaluateTrack(${ident(u.name)}, tick)`
-        : JSON.stringify(u.value);
+        : u.expr
+          ? `${proceduralFnName(u.name)}(tick)`
+          : JSON.stringify(u.value);
       return `    ${u.name}: ${expr}, // ${u.from}`;
     })
     .join("\n");
   files["timeline.ts"] =
     HEADER("the animation timeline") +
-    `\nimport { evaluateTrack, ticksAt, type TimelineTrack } from "./toolbox-timeline";\n` +
+    `\nimport { ${tracks.length || !procedural.length ? "evaluateTrack, ticksAt, type TimelineTrack" : "ticksAt"} } from "./toolbox-timeline";\n` +
+    (procedural.length ? `import { ${procedural.map((p) => proceduralFnName(p.key)).join(", ")} } from "./procedural";\n` : "") +
     timelineConstSource(plan.timeline) +
     `\nexport const CANVAS = { width: ${plan.canvas.width}, height: ${plan.canvas.height} } as const;\n` +
     (trackDecls ? `\n${trackDecls}\n` : "") +
@@ -218,6 +228,7 @@ export function emitSkiaBundle(
     `  return {\n    iResolution: [width, height, 1],\n    iTime: seconds,\n${fields}\n  };\n}\n`;
 
   files["toolbox-timeline.ts"] = runtimeSource;
+  if (procedural.length) files["procedural.ts"] = emitProceduralModule(procedural);
 
   const kids = effectChildrenCode(plan, HEADER);
   if (kids) Object.assign(files, kids.files);
@@ -258,12 +269,22 @@ export function emitSkiaBundle(
         uniforms: plan.uniforms.map((u) => ({
           name: u.name,
           kind: u.kind,
-          animated: !!u.track,
+          animated: !!u.track || !!u.expr,
           keys: u.track?.keys.length ?? 0,
           from: u.from,
+          // Compiled from a driver subgraph (procedural.ts P_<name>).
+          ...(u.expr ? { procedural: proceduralManifest(u.expr) } : {}),
         })),
         // Child shaders in declaration order, and the bundled image files.
         ...(kids ? { children: kids.manifest.children, assets: kids.manifest.assets } : {}),
+        ...(procedural.length
+          ? {
+              procedural: {
+                values: procedural.map((p) => p.key),
+                note: "These uniforms come from procedural driver nodes (Expression / LFO / Math / Scene Time / Random / Constant / Animated Value) compiled to worklets of the toolbox tick (procedural.ts) — the editor's evaluation, bit for bit.",
+              },
+            }
+          : {}),
         warnings: plan.warnings,
       },
       null,
