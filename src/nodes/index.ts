@@ -328,6 +328,9 @@ import { skiaCanvasNode } from "./skia/canvas";
 import { skiaFillNode } from "./skia/fill";
 import { skiaGroupNode } from "./skia/group";
 import { skiaShapeNode } from "./skia/shape";
+import { skiaShapeCellsNode } from "./skia/shape-cells";
+import { skiaLyapunovNode } from "./skia/lyapunov";
+import { skiaTextureCoordinateNode } from "./skia/texture-coordinate";
 
 let registered = false;
 
@@ -694,5 +697,8 @@ export function registerAllNodes() {
   registerNode(skiaFillNode);
   registerNode(skiaGroupNode);
   registerNode(skiaShapeNode);
+  registerNode(skiaShapeCellsNode);
+  registerNode(skiaLyapunovNode);
+  registerNode(skiaTextureCoordinateNode);
   registered = true;
 }
