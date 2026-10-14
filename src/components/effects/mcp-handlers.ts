@@ -90,6 +90,7 @@ import {
   type PlanNodeInfo,
 } from "@/lib/glsl-translation";
 import { enclosingSkiaLayer, type SkiaLayerRef } from "@/engine/skia/layer-target";
+import { SKIA_ANIMATION_MODES, isSkiaAnimationMode } from "@/lib/skia-export/animation-modes";
 import type { SkiaExportEnv } from "@/lib/skia-export/editor";
 import {
   describeMarkers,
@@ -393,12 +394,19 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
 
   // Export environment for the Skia tools: the composition canvas and the
   // project timeline, as the editor's export action uses them.
-  const skiaEnv = (): SkiaExportEnv => ({
-    canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
-    fps: deps.status.fps,
-    frames: deps.status.loopFrames,
-    markers: deps.getMarkers?.(),
-  });
+  const skiaEnv = (animation?: unknown): SkiaExportEnv => {
+    if (animation != null && !isSkiaAnimationMode(animation))
+      throw new Error(
+        `animation must be one of ${SKIA_ANIMATION_MODES.map((m) => `"${m.id}"`).join(", ")} — got ${JSON.stringify(animation)}.`
+      );
+    return {
+      canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
+      fps: deps.status.fps,
+      frames: deps.status.loopFrames,
+      markers: deps.getMarkers?.(),
+      ...(animation != null ? { animation } : {}),
+    };
+  };
   const skiaTargetId = (raw: unknown): string => {
     const id = raw != null && String(raw).trim() ? String(raw).trim() : deps.status.selectedNodeId;
     if (!id)
@@ -1824,36 +1832,43 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     // the composition canvas. Default target: the selected node.
     // Lazy like the editor's export action: the exporter + runtime string
     // load on first use.
-    plan_skia_export: async ({ target }) => {
+    plan_skia_export: async ({ target, animation }) => {
+      const env = skiaEnv(animation);
       const id = skiaTargetId(target);
       const { planSkiaExportForEditor } = await import("@/lib/skia-export/editor");
-      return planSkiaExportForEditor(deps.nodesRef.current, deps.edgesRef.current, id, skiaEnv());
+      return planSkiaExportForEditor(deps.nodesRef.current, deps.edgesRef.current, id, env);
     },
 
-    export_skia: async ({ target }) => {
+    export_skia: async ({ target, animation }) => {
+      const env = skiaEnv(animation);
       const id = skiaTargetId(target);
       const { exportSkiaFromEditor, skiaBundleSlug } = await import("@/lib/skia-export/editor");
       const { prepared, result } = exportSkiaFromEditor(
         deps.nodesRef.current,
         deps.edgesRef.current,
         id,
-        skiaEnv()
+        env
       );
       if (!result.files)
         throw new Error(
           `Nothing exported — fix these and retry (plan_skia_export shows the full plan):\n- ${result.problems.join("\n- ")}`
         );
       const folder = skiaBundleSlug(prepared.request?.name ?? "toolbox-effect");
+      const mode = env.animation ?? "worklet";
       return {
         ok: true,
         target: prepared.target,
         layer: prepared.layer,
         name: prepared.request?.name,
+        animation: mode,
         folder,
         files: result.files,
         warnings: result.warnings,
         note:
           `Write every file verbatim into one folder of the React Native app (e.g. src/toolbox/${folder}/); index.ts is the entry point. ` +
+          (mode === "native"
+            ? "Native mode: const animations = useToolboxAnimations(); <ToolboxEffect animations={animations} width height /> (animations.play / playSegment / stop). "
+            : "const clock = useToolboxClock(); <ToolboxEffect time={clock.time} width height /> (clock.loopSegment / playAll / pause / play / seek). ") +
           "Files under assets/ ending in .b64 are base64: decode them to binary and drop the .b64 suffix.",
       };
     },

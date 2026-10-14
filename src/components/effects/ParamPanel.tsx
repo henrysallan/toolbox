@@ -47,6 +47,7 @@ import {
   readLayerTarget,
 } from "@/engine/skia/layer-target";
 import type { SkiaExportReport } from "@/lib/skia-export/editor";
+import { SKIA_ANIMATION_MODES, isSkiaAnimationMode, type SkiaAnimationMode } from "@/lib/skia-export/animation-modes";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { liveGizmoKind } from "@/lib/live-gizmo";
 import { isFileParamType } from "@/lib/export-manifest";
@@ -2876,10 +2877,23 @@ function LayerTargetSection({
   );
 }
 
+// The export's timeline shape, remembered per browser (a convenience: the
+// default is "worklet" when storage is unavailable).
+const SKIA_ANIMATION_STORAGE_KEY = "toolbox.skiaExport.animation";
+function readSkiaAnimation(): SkiaAnimationMode {
+  try {
+    const v = window.localStorage.getItem(SKIA_ANIMATION_STORAGE_KEY);
+    return isSkiaAnimationMode(v) ? v : "worklet";
+  } catch {
+    return "worklet";
+  }
+}
+
 // "Export for React Native Skia →" on SkSL Shader / Skia Canvas nodes and
-// Skia layers. EffectsApp's effect-node-export listener runs the export and
-// downloads the zip; its report (problems / warnings of the last attempt on
-// this node) is listed underneath.
+// Skia layers, with the timeline shape (spec §3.5) picked above it.
+// EffectsApp's effect-node-export listener runs the export and downloads
+// the zip; its report (problems / warnings of the last attempt on this
+// node) is listed underneath.
 function SkiaExportAction({
   nodeId,
   report,
@@ -2887,13 +2901,34 @@ function SkiaExportAction({
   nodeId: string;
   report: SkiaExportReport | null;
 }) {
+  const [animation, setAnimation] = useState<SkiaAnimationMode>(readSkiaAnimation);
+  const mode = SKIA_ANIMATION_MODES.find((m) => m.id === animation) ?? SKIA_ANIMATION_MODES[0];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--tb-n-10)" }}>
+        <span>Animation</span>
+        <Dropdown
+          value={animation}
+          options={SKIA_ANIMATION_MODES.map((m) => ({ value: m.id, label: m.label }))}
+          onChange={(v) => {
+            if (!isSkiaAnimationMode(v)) return;
+            setAnimation(v);
+            try {
+              window.localStorage.setItem(SKIA_ANIMATION_STORAGE_KEY, v);
+            } catch {
+              // storage blocked — the choice lasts for this panel only
+            }
+          }}
+          title={mode.hint}
+          style={{ flex: 1 }}
+        />
+      </div>
+      <div style={{ fontSize: 10, lineHeight: 1.45, color: "var(--tb-n-10)" }}>{mode.hint}</div>
       <button
         onClick={() =>
           window.dispatchEvent(
             new CustomEvent("effect-node-export", {
-              detail: { id: nodeId, kind: "skia" },
+              detail: { id: nodeId, kind: "skia", animation },
             })
           )
         }
@@ -2909,7 +2944,7 @@ function SkiaExportAction({
           textAlign: "center",
           letterSpacing: 0.3,
         }}
-        title="Download a React Native Skia + Reanimated bundle (zip): the SkSL program, its keyframes as a worklet timeline, and a ready-to-use component"
+        title="Download a React Native Skia + Reanimated bundle (zip): the SkSL program, its keyframes in the animation shape above, and a ready-to-use component"
       >
         Export for React Native Skia →
       </button>
@@ -2917,7 +2952,8 @@ function SkiaExportAction({
         <div style={{ fontSize: 10, lineHeight: 1.45, display: "flex", flexDirection: "column", gap: 3 }}>
           {report.ok && (
             <div style={{ color: "var(--tb-a-emerald-400)" }}>
-              Exported {report.files ?? 0} files.
+              Exported {report.files ?? 0} files
+              {report.animation ? ` (${SKIA_ANIMATION_MODES.find((m) => m.id === report.animation)?.label ?? report.animation})` : ""}.
             </div>
           )}
           {report.problems.map((p, i) => (

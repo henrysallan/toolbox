@@ -23,6 +23,9 @@ import { planSkiaExport } from "./plan";
 import { TOOLBOX_TIMELINE_SOURCE } from "./runtime.generated";
 import { exportSegments, type ExportSegment } from "./segments";
 
+import type { SkiaAnimationMode } from "./animation-modes";
+export { SKIA_ANIMATION_MODES, isSkiaAnimationMode, type SkiaAnimationMode } from "./animation-modes";
+
 export interface SkiaExportEnv {
   // The composition canvas in px.
   canvas: { width: number; height: number };
@@ -35,6 +38,8 @@ export interface SkiaExportEnv {
   // Defaults to the generated runtime module; the gate passes the file on
   // disk to prove the two agree.
   runtimeSource?: string;
+  // Default "worklet".
+  animation?: SkiaAnimationMode;
 }
 
 export interface SkiaExportNodeRef {
@@ -217,6 +222,7 @@ export function prepareSkiaExport(
       ...(markers ? { markers } : {}),
     },
     runtimeSource: env.runtimeSource ?? TOOLBOX_TIMELINE_SOURCE,
+    ...(env.animation && env.animation !== "worklet" ? { animation: env.animation } : {}),
   };
   return { request, clicked, target, layer, problems, warnings };
 }
@@ -275,6 +281,8 @@ export interface SkiaPlanSummary {
   layer: PreparedSkiaExport["layer"];
   problems: string[];
   warnings: string[];
+  // The timeline shape this plan is for.
+  animation: SkiaAnimationMode;
   canvas?: { width: number; height: number };
   timeline?: { fps: number; ticksPerFrame: number; durationTicks: number; frames: number; seconds: number };
   // The bundle's SEGMENTS (seconds + frames on the exported clock).
@@ -307,10 +315,12 @@ export function planSkiaExportForEditor(
   env: SkiaExportEnv
 ): SkiaPlanSummary {
   const prepared = prepareSkiaExport(nodes, edges, clickedId, env);
+  const animation: SkiaAnimationMode = env.animation ?? "worklet";
   const base = {
     clicked: prepared.clicked,
     target: prepared.target,
     layer: prepared.layer,
+    animation,
   };
   const req = prepared.request;
   if (!req) {
@@ -334,6 +344,13 @@ export function planSkiaExportForEditor(
     });
     const warnings = [...prepared.warnings, ...(plan?.warnings ?? []), ...(plan ? segs.warnings : [])];
     if (!plan) return { ok: false, ...base, problems, warnings, canvas: req.canvas, timeline };
+    // Baked / native emit from the same plan but can refuse or warn on
+    // their own (an easing with no SkSL / Reanimated form): run the export.
+    if (req.animation) {
+      const r = safeExport(req);
+      if (!r.files) return { ok: false, ...base, problems: r.problems, warnings, canvas: req.canvas, timeline };
+      warnings.push(...r.warnings.filter((w) => !warnings.includes(w)));
+    }
     return {
       ok: true,
       ...base,
@@ -451,4 +468,6 @@ export interface SkiaExportReport {
   warnings: string[];
   // File count of a successful export.
   files?: number;
+  // The timeline shape it was exported with.
+  animation?: SkiaAnimationMode;
 }

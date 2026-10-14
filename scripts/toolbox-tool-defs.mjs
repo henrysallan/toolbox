@@ -19,6 +19,13 @@
 
 import { z } from "zod";
 
+// plan_skia_export / export_skia: how the timeline ships (spec
+// 101326_skia-target.md §3.5; lib/skia-export/editor.ts SKIA_ANIMATION_MODES).
+const SKIA_ANIMATION_SCHEMA = z
+  .enum(["worklet", "baked", "native"])
+  .optional()
+  .describe('Timeline shape: "worklet" (default, frame-exact master clock), "baked" (keyframes in the SkSL), "native" (Reanimated withTiming / withSpring per value).');
+
 export const CMD_TIMEOUT_MS = 10_000;
 export const SCREENSHOT_TIMEOUT_MS = 30_000;
 export const MUTATION_TIMEOUT_MS = 60_000;
@@ -848,12 +855,15 @@ export const BRIDGED_TOOLS = [
       "Animated Value track, a Color track, a Constant), the static `value` " +
       "or the key count and first/last keyframe frames. Other targets list " +
       "the `files` export_skia would write plus the bundle's `manifest`. " +
+      "`animation` picks the timeline shape (see export_skia); the plan " +
+      "reports that mode's own refusals and warnings. " +
       "Call this before export_skia.",
     inputSchema: {
       target: z
         .string()
         .optional()
         .describe("SkSL Shader / Skia Canvas node id, or a Skia layer id. Default: the selected node."),
+      animation: SKIA_ANIMATION_SCHEMA,
     },
   },
   {
@@ -871,12 +881,19 @@ export const BRIDGED_TOOLS = [
       "name), `warnings`, and a `note`. Write every file verbatim into one " +
       "folder of the app; `assets/*.b64` entries are base64 — decode to " +
       "binary and drop the suffix. Fails with the plan's problems when the " +
-      "target can't export.",
+      "target can't export. `animation` (default \"worklet\"): \"worklet\" " +
+      "replays every track on one master clock (frame-exact, scrubbable; " +
+      "useToolboxClock); \"baked\" compiles the keyframes into the SkSL as " +
+      "functions of iTime (one program, no per-frame JS); \"native\" gives " +
+      "each animated value its own shared value on withTiming / withSpring " +
+      "(useToolboxAnimations → <ToolboxEffect animations={…}>; interruptible, " +
+      "exact on a steady 60 Hz clock, a late frame can push a step a frame late).",
     inputSchema: {
       target: z
         .string()
         .optional()
         .describe("SkSL Shader / Skia Canvas node id, or a Skia layer id. Default: the selected node."),
+      animation: SKIA_ANIMATION_SCHEMA,
     },
   },
   // --- Timeline markers (spec 101326_skia-target.md §3.5a, M3) --------------

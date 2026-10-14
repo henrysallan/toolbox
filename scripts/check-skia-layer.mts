@@ -631,6 +631,42 @@ function auroraInLayer(layerName = "Aurora Layer", target: "skia" | "default" = 
     refused = (e as Error).message;
   }
   check("export_skia refusals list the problems", refused.includes("Nothing exported") && refused.includes("is a noise"), refused);
+
+  // The timeline shape (animation-modes.ts): worklet by default, baked /
+  // native on request — the editor's dropdown and the MCP argument.
+  check("export_skia defaults to the worklet timeline", exp.ok && exp.value.animation === "worklet", exp.ok ? String(exp.value.animation) : exp.error);
+  const expBaked = await call("export_skia", { target: "aurora", animation: "baked" });
+  const bakedManifest = expBaked.ok ? JSON.parse(expBaked.value.files?.["manifest.json"] ?? "{}") : {};
+  check(
+    "export_skia animation baked ships the baked bundle",
+    expBaked.ok && expBaked.value.animation === "baked" && bakedManifest.animation === "baked",
+    expBaked.ok ? JSON.stringify({ animation: expBaked.value.animation, manifest: bakedManifest.animation }) : expBaked.error
+  );
+  const expNative = await call("export_skia", { target: "aurora", animation: "native" });
+  check(
+    "export_skia animation native ships useToolboxAnimations and says how to mount it",
+    expNative.ok &&
+      expNative.value.animation === "native" &&
+      String(expNative.value.files?.["index.ts"]).includes("useToolboxAnimations") &&
+      String(expNative.value.note).includes("useToolboxAnimations"),
+    expNative.ok ? Object.keys(expNative.value.files ?? {}).join(",") : expNative.error
+  );
+  const planNative = await call("plan_skia_export", { target: "aurora", animation: "native" });
+  check(
+    "plan_skia_export echoes the animation it planned",
+    planNative.ok && planNative.value.ok === true && planNative.value.animation === "native",
+    planNative.ok ? JSON.stringify(planNative.value).slice(0, 300) : planNative.error
+  );
+  const expOdd = await call("export_skia", { target: "aurora", animation: "springy" });
+  check(
+    "an unknown animation is a tool error naming the choices",
+    !expOdd.ok && expOdd.error.includes('"worklet", "baked", "native"'),
+    expOdd.ok ? "exported" : expOdd.error
+  );
+  check(
+    "the mode list matches the request type's modes",
+    JSON.stringify(ed.SKIA_ANIMATION_MODES.map((m) => m.id)) === JSON.stringify(["worklet", "baked", "native"])
+  );
   check("nothing here toasted (read-only + dry runs)", toasts.length === 0, toasts.join(" | "));
 }
 

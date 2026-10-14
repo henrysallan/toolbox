@@ -11800,8 +11800,9 @@ function EffectsShell({
   const [skiaExportReport, setSkiaExportReport] =
     useState<SkiaExportReport | null>(null);
   const exportSkiaNode = useCallback(
-    async (nodeId: string) => {
+    async (nodeId: string, animation?: string) => {
       const m = await import("@/lib/skia-export/editor");
+      const mode = m.isSkiaAnimationMode(animation) ? animation : "worklet";
       const fps = fpsRef.current;
       const lf = loopFramesRef.current;
       const { prepared, result } = m.exportSkiaFromEditor(
@@ -11814,6 +11815,7 @@ function EffectsShell({
           frames: lf != null && lf > 0 ? lf : fps * 5,
           // → the bundle's SEGMENTS / MARKERS.
           markers: activeMarkersRef.current,
+          animation: mode,
         }
       );
       const files = result.files;
@@ -11822,7 +11824,7 @@ function EffectsShell({
         ok: !!files,
         problems: result.problems,
         warnings: result.warnings,
-        ...(files ? { files: Object.keys(files).length } : {}),
+        ...(files ? { files: Object.keys(files).length, animation: mode } : {}),
       });
       if (!files) {
         const [first = "nothing to export", ...rest] = result.problems;
@@ -11837,10 +11839,10 @@ function EffectsShell({
       const slug = m.skiaBundleSlug(name);
       try {
         const zip = await m.buildSkiaZip(m.skiaZipEntries(files, slug), "blob");
-        downloadBlob(zip, `${slug}-rn-skia.zip`);
+        downloadBlob(zip, `${slug}-rn-skia${mode === "worklet" ? "" : `-${mode}`}.zip`);
         const w = result.warnings.length;
         flashToast(
-          `Exported "${name}" for React Native Skia (${Object.keys(files).length} files${
+          `Exported "${name}" for React Native Skia (${mode}, ${Object.keys(files).length} files${
             w ? `, ${w} warning${w === 1 ? "" : "s"}` : ""
           })`
         );
@@ -11859,11 +11861,13 @@ function EffectsShell({
         e as CustomEvent<{
           id: string;
           kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg" | "skia";
+          // kind "skia": the timeline shape (lib/skia-export/animation-modes).
+          animation?: string;
         }>
       ).detail;
       if (!detail) return;
       if (detail.kind === "skia") {
-        await exportSkiaNode(detail.id);
+        await exportSkiaNode(detail.id, detail.animation);
         return;
       }
       // The offline single-export kinds share offlineRenderingRef and the

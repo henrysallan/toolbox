@@ -129,8 +129,8 @@ names (we parse them from source).
 ### 1.3 Reanimated 4.7 easing vs toolbox presets
 
 Read from `react-native-reanimated/src/Easing.ts`. Only relevant for
-app-authored transitions (§3.5c). The master-clock export uses toolbox's
-math and is exact regardless.
+`animation: "native"` exports (§3.5c, built in M3 with measured numbers).
+The master-clock export uses toolbox's math and is exact regardless.
 
 | toolbox | Reanimated | parity |
 |---|---|---|
@@ -141,7 +141,7 @@ math and is exact regardless.
 | easeOutElastic | — (`elastic(b)` is a different curve) | **none**: ship toolbox's formula as a worklet easing |
 | cubicBezier | `Easing.bezier(x1,y1,x2,y2)` | same curve; different solver (4 Newton + 10 subdivision steps): ~1e-6 |
 | hold | — | `withSequence` + `withDelay` + 0-ms set |
-| springs | `withSpring` | **toolbox has none** (§3.5d) |
+| spring (M3) | `withSpring` | toolbox's `spring` easing is Reanimated's solution from rest (≤ 1e-9; §2d, §3.5d) |
 
 ### 1.4 Toolchain notes
 
@@ -396,6 +396,36 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 - Text IR: `lineHeight` and a vertical anchor (F8).
 - `trim` inverted mode (F8).
 
+## 2d. M3 results: timeline shapes + P3 (2026-10-14, on `main`)
+
+The owner asked to "switch to p3 and then do the m3 work" and chose "identical everywhere" for P3. Five lanes ran in parallel worktrees and each merged to `main` after a full `npm run check` + `check:mcp` and `parity:skia` on every harness bundle. All harness slots (`bundle`, `bundle-scene`, `bundle-baked`, `bundle-native`, `bundle-native-easings`, `bundle-native-scene`) match toolbox on every frame, and each is byte-identical to a fresh `export-skia.mts` run.
+
+| lane | what shipped | measured | gate |
+|---|---|---|---|
+| C: spring easing | `spring` keyframe easing whose curve *is* Reanimated 4.7's `withSpring` from rest, normalised to the segment (`engine/spring-easing.ts`, `Keyframe.spring {dampingRatio, settle?}`); `springToReanimated` / `springSksl*` for exporters (`lib/skia-export/spring.ts`); Spring tile + damping / settle fields in the editors; MCP `set_keyframes` easing `"spring"` | vs real Reanimated `withSpring` ≤ 1e-9 (measured 6.8e-13); energy snap at settle / 1.01, so the value is exactly B before the next key | `check:spring-easing` |
+| A: baked | `animation: "baked"`: every program uniform planned as a track or sampled series becomes SkSL from `iTime` (`emit-baked.ts`): if-tree over keys, presets as closed forms, bezier via 8 Newton + 32 bisection, OKLab / RGB lerp + quantize, springs via `tbk_spring`; transcendentals as polynomials (CanvasKit CPU builtins are ~1e-4 off) | baked vs worklet: every frame of Aurora, Aurora scene and an every-easing fixture ≤ 1/255; `tbk_spring` 2.4e-7 vs reference (builtin version 2.2e-4) | `check:skia-baked`, `parity:skia -- --bundle baked` |
+| B: markers + segments | per-composition timeline markers (`lib/timeline-markers.ts`, `SavedComposition.markers`, MarkerRuler on the Tracks / Layers rulers, MCP `set_markers`, transport seek by name); every bundle ships `toolbox-clock.ts`: `SEGMENTS`, `MARKERS`, `useToolboxClock()` → `{ time, play, pause, seek, playSegment, loopSegment, playAll, … }` (manifest format 3) | clock wraps frame-exact on fake frames, as TS and as the worklets plugin's output on an emulated UI runtime | `check-skia-segments` |
+| D: Reanimated native | `animation: "native"`: one shared value per animated value on `withSequence` / `withTiming` / `withSpring`, `useToolboxAnimations()` → `{ values, play, playSegment, stop }` (`emit-native.ts`, `reanimated-easing.ts`) | §3.5c: exact on a steady 60 Hz clock (≤ 7.5e-6 of range, 0 frames late); jittered vsync pushes a step a frame late | `check:skia-native`, `parity:skia -- --bundle native*` |
+| CM: P3 colour management | every generated program does sRGB math and converts at its boundaries (`tbx.color.cm`, `engine/skia/library/color-management.ts`); colour uniforms plain `float4`; manifests `colorManaged: true` | sRGB vs Display P3 ≤ 1/255 on every generated program (uncorrected: up to 116/255); sRGB output byte-identical to before | `check:skia-color-management` (§5.5, §4) |
+
+**Integration (while merging):**
+- **Worklet capture order.** Lane C's runtime had `easeOf` calling `springEase`, declared below it. The worklets Babel plugin turns worklet functions into consts that capture their callees when created, so every exported bundle threw "Cannot access 'springEase' before initialization" on RN web and device. Node hoists functions, so no gate saw it until the harness ran. The spring block now sits above `easeOf`; `check-skia-export` checks that each runtime function calls only functions declared above it, and `check-skia-native` does the same for every emitted native module.
+- **Mode choice everywhere** (`lib/skia-export/animation-modes.ts`): the param panel's export action has an *Animation* dropdown (worklet / baked / native, remembered per browser; the zip and toast name the mode). MCP `plan_skia_export` / `export_skia` take `animation`; the plan runs the chosen mode's emitter so its refusals show, and the export's `note` says how to mount that mode. Covered in `check-skia-layer`.
+- The baked P3 warning from lane A is gone: baked programs keep the colour-managed main as `tbk_main`.
+
+**Open after M3:**
+- **Device runs (CI dispatch, owner's OK).** Each needs an on-device run to confirm:
+  - P3 on-screen colours: CI snapshots are untagged and can't see them; Metal's fp16 intrinsics may add ~0.5/255.
+  - Native mode under real iOS / Android vsync, and at 120 Hz.
+- **Native drawing on P3.** Native gradients (up to ~24/255), translucent overlaps (~28/255) and native group blend modes (up to ~100/255) still shift. Lowering them to programs would close it (fused Gradient (Skia) / Merge (Skia) are exact).
+- **Native mode:**
+  - `playSegment(…, { from: "current" })` starts colours at the segment start;
+  - segment playback is verified offline, not by harness pixels;
+  - each window edge inside a key segment adds a cut easing (89 in the easings fixture).
+- **Baked mode:** a scene's binds outside programs stay on the worklet timeline (warned in the manifest).
+- **SkSL Shader:** an `iImageN` passed into a user helper function is sampled without conversion (direct `iImageN.eval` is converted).
+- **Still carried from §2c:** font / image assets in bundles, filter-stage splitting, the shared texel helper, Merge (Skia) grow-on-wire.
+
 ## 3. Design for the full implementation
 
 ### 3.1 The Skia layer
@@ -519,7 +549,8 @@ a. **Worklet timeline (default, built in M0).** Exact, one clock, app
    controls time. M3 adds **markers and segments** (toolbox timeline markers →
    `SEGMENTS = { intro: [0, 1.2], loop: [1.2, 5] }` + `useToolboxClock`
    helpers: `playSegment`, `loopSegment`, `seek`). Designers then author
-   "intro then idle loop" states that app code triggers.
+   "intro then idle loop" states that app code triggers. *Built in M3
+   (§2d lane B): `toolbox-clock.ts` in every bundle.*
 b. **Baked into the shader** (the owner's "single shader with the animation
    baked in"). Tracks compile to SkSL piecewise functions of `iTime`: an
    unrolled `if` chain over keys, presets as closed forms, cubic-bezier via
@@ -527,7 +558,8 @@ b. **Baked into the shader** (the owner's "single shader with the animation
    reproduced in float. One file, zero JS per frame; but no scrubbing,
    segments or interaction except through `iTime` itself. Parity
    expectation: ≤ 1e-6 per value (fp32 vs JS doubles). The gate compares
-   it per frame against the worklet path. Best for ambient loops.
+   it per frame against the worklet path. Best for ambient loops. *Built in
+   M3 (§2d lane A): `animation: "baked"`, ≤ 1/255 vs worklet every frame.*
 c. **Reanimated-native transitions.** For app state changes (tap → expand),
    export per-property `withTiming(target, { duration, easing })` using
    §1.3's mapping. Exact presets map directly; expo/elastic ship as worklet
@@ -537,7 +569,7 @@ d. **Springs (new).** Add a `spring` easing to toolbox whose evaluator *is*
    Reanimated 4's spring solver (`springUtils.ts`: duration + dampingRatio
    or mass/stiffness/damping). Preview and device then share the physics,
    and exports emit `withSpring(config)`. The analytic solution is a worklet
-   too, so mode (a) replays it exactly.
+   too, so mode (a) replays it exactly. *Built in M3 (§2d lane C).*
 
 #### 3.5c built and measured (M3 lane D, 2026-10-14)
 
@@ -665,12 +697,15 @@ steady clock and within a frame per step otherwise.
   writes a zip (`jszip`) of the bundle, or copies `ToolboxEffect.tsx` +
   data to the clipboard. The runtime source ships as a generated module
   (`runtime.generated.ts`, the `docs.generated.ts` pattern with `--check`).
+  An *Animation* dropdown above the button picks worklet / baked / native
+  (§3.5; `animation-modes.ts`, M3).
 - **Skia layer chrome:** target toggle on the Layer shell, badge in the
   Layers panel, per-node lowering badges, the cost readout.
 - **Code editing:** the on-node SkSL editor is the GLSL one; add SkSL syntax
   mode and inline CanvasKit errors under the line.
 - **MCP:** `plan_skia_export` (read-only plan: classes, uniforms, problems,
-  cost), `export_skia` (returns the files as text for the agent to write),
+  cost), `export_skia` (returns the files as text for the agent to write;
+  both take `animation`), `set_markers` (the segments, M3),
   `get_catalog({ target: "skia" })`. `get_shader_errors`, `get_graph`,
   `screenshot` and `compare_renders` already handle SkSL. A
   **`graph-to-sksl` skill** (the graph-to-glsl loop with SkSL docs) ports an
@@ -784,7 +819,8 @@ Frozen contracts (2026-10-13, additive changes only):
 - **M2 — library fan-out (Wave 2).** `sksl` families and `native` families in
   parallel, each proven with `compare:skia` against the node it mirrors.
 - **M3 — timeline shapes.** Baked-into-shader emitter, segments/markers,
-  Reanimated-native transitions, spring easing.
+  Reanimated-native transitions, spring easing. **Done 2026-10-14 (§2d)**,
+  with P3 colour management (§5.5).
 - **M4 — completion.** Filters/`RuntimeShader` stages, text, Atlas, the
   `bake` class, procedural drivers (Expression → worklet).
 - **M5 — polish.** Cost readout, docs pages, the `graph-to-sksl` skill.
