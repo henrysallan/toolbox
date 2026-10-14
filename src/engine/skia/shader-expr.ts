@@ -13,11 +13,15 @@
 //
 //   uniform float3 iResolution;            // xy = canvas size
 //   uniform float iTime;
-//   uniform shader s0; …                   // one per `leaf` / `program` expr
+//   uniform shader s0; …                   // one per distinct `leaf` / `program` expr
 //   uniform <type> n<node>_<param>; …      // one per call param
-//   <shared helpers, deduped by id>
-//   <each library function once, by entry name>
-//   float4 g<k>(float2 uv) { … }           // generated per GATHER input edge
+//   <shared helpers, deduped by id, dependencies first>
+//   float4 c<k>(float2 uv) { … }           // child wrapper: uv → px, un-premultiply
+//   float4 g<k>(float2 uv);                // prototypes, one per GATHER input edge
+//   <each library function once, by entry name; a function whose gather
+//    edges differ between uses is copied with every <entry>-prefixed
+//    identifier renamed <entry>_G<j>>
+//   float4 g<k>(float2 uv) { … }           // gather bodies
 //   half4 main(float2 fc) {
 //     float2 uv = float2(fc.x / iResolution.x, 1.0 - fc.y / iResolution.y);
 //     float4 c = <root call>;
@@ -49,7 +53,9 @@ export interface SkslLibFunction {
   // The entry plus private helpers (prefixed with the entry name).
   // Signature: float4 <entry>(float2 uv, float2 res, <params…>, <pure inputs…>)
   source: string;
-  params: { name: string; type: SkslParamType }[];
+  // `count` makes the param a uniform ARRAY (read only by a loop index);
+  // added 2026-10-13 by lane L2, additive.
+  params: { name: string; type: SkslParamType; count?: number }[];
   inputs: { name: string; mode: "pure" | "gather"; taps?: number | "param" }[];
   // Shared helper ids (see SkslHelper) the source calls.
   uses?: string[];
