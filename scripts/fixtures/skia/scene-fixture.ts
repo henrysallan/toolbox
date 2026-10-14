@@ -22,7 +22,7 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { Keyframe, KeyframeAnimationBlock } from "@/engine/keyframes";
 import { getNodeDef, registerNode } from "@/engine/registry";
-import { bindDerived, bindParam, bindStatic, type AssetIR, type Bind, type BindRef, type RGBA, type SkiaNode } from "@/engine/skia/scene-ir";
+import { bindDerived, bindParam, bindStatic, type AssetIR, type Bind, type RGBA, type SkiaNode } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
 import type { NodeDefinition, SkiaDrawValue } from "@/engine/types";
 
@@ -143,8 +143,8 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
       id,
       transform: {
         translate: [bindParam(center[0], id, "center", 0), bindParam(center[1], id, "center", 1)],
-        // Skia Group's convention: a degrees param bound as radians.
-        rotate: { v: (num(P.turn) * Math.PI) / 180, ref: { node: id, param: "turn", scale: Math.PI / 180 } as BindRef },
+        // `spin` is degrees; the IR wants radians (BindRef.scale).
+        rotate: { v: spin * (Math.PI / 180), ref: { node: id, param: "spin", scale: Math.PI / 180 } },
         scale: [bindParam(gain, id, "gain"), bindParam(gain, id, "gain")],
         origin: [s(0), s(0)],
       },
@@ -287,28 +287,26 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
     },
     // 3 — image.
     { k: "image", id, asset: "logo", x: s(16), y: s(16), w: s(48), h: s(48), fit: "contain" },
-    // 4 — a paragraph (width set: top-left at x, y, centered in the width)
-    //     whose content changes each frame without tags.
+    // 4 — centered text whose content changes each frame without tags.
     {
       k: "text",
       id,
       text: s(`frame ${frame}`),
       font: { asset: "inter", size: s(24) },
       x: s(156),
-      y: s(460),
-      width: s(200),
+      y: s(480),
+      // Single-line text (no width): y is the baseline; align anchors at x.
       align: "center",
-      paint: { style: "fill", color: bindParam(tint, id, "tint") },
+      paint: { style: "fill", color: s([1, 1, 1, 1] as RGBA) },
     },
-    // 5 — one line at the baseline, right-anchored at x, keyframed size.
+    // 5 — text with a keyframed size.
     {
       k: "text",
       id,
       text: bindParam(String(P.label), id, "label"),
       font: { asset: "inter", size: bindParam(num(P.size, 24), id, "size") },
-      x: s(240),
+      x: s(24),
       y: s(110),
-      align: "right",
       paint: { style: "fill", color: s([1, 1, 1, 1] as RGBA), opacity: s(0.8) },
     },
     // 6 — atlas with derived xforms.
@@ -326,6 +324,38 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
       k: "group",
       clip: { geom: { k: "path", d: s("M400 400 L500 400 L450 500 Z") } },
       children: [{ k: "fill", paint: { style: "fill", shader: { k: "color", color: s([0.1, 0.6, 0.3, 1] as RGBA) }, opacity: bindParam(gain, id, "gain") } }],
+    },
+    // 10 — a paragraph (width set: top-left at x, y, centered in the width)
+    //      whose color is keyframed and whose content changes untagged.
+    {
+      k: "text",
+      id,
+      text: s(`para ${frame}`),
+      font: { asset: "inter", size: s(20) },
+      x: s(156),
+      y: s(420),
+      width: s(200),
+      align: "center",
+      paint: { style: "fill", color: bindParam(tint, id, "tint") },
+    },
+    // 11 — one line at the baseline, right-anchored at x, keyframed size.
+    {
+      k: "text",
+      id,
+      text: s("Right"),
+      font: { asset: "inter", size: bindParam(num(P.size, 24), id, "size") },
+      x: s(500),
+      y: s(140),
+      align: "right",
+      paint: { style: "fill", color: s([1, 1, 1, 1] as RGBA) },
+    },
+    // 12 — Skia Group's own rounding of a degrees param: (deg · π) / 180,
+    //      not deg · (π / 180) — equal to the scaled track within an ulp.
+    {
+      k: "group",
+      id,
+      transform: { rotate: { v: (num(P.turn) * Math.PI) / 180, ref: { node: id, param: "turn", scale: Math.PI / 180 } }, origin: [s(256), s(256)] },
+      children: [{ k: "shape", geom: { k: "rect", x: s(236), y: s(236), w: s(40), h: s(40) }, paint: { style: "stroke", strokeWidth: s(2) } }],
     },
   ];
   if (P.extra === true) children.push({ k: "fill", paint: { style: "fill", color: s([1, 0, 0, 0.1] as RGBA) } });
@@ -363,7 +393,7 @@ const producer: NodeDefinition = {
   auxOutputs: [],
   compute({ params, ctx, nodeId }) {
     // `problems` is SkiaDrawValue's additive producer-failure list.
-    const value: SkiaDrawValue & { problems?: string[] } = {
+    const value: SkiaDrawValue = {
       kind: "skia_draw",
       node: buildScene(params, nodeId, ctx.frame, ctx.time),
       assets: SCENE_ASSETS,

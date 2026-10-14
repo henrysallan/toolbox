@@ -919,11 +919,18 @@ export interface SkiaDrawValue {
   node: SkiaNode;
   // Images / fonts the tree references by id.
   assets?: Record<string, AssetIR>;
+  // Producer failures (a Skia Fill whose shader didn't fuse, an unported
+  // option) for the Skia Canvas's problem list. Additive (2026-10-13).
+  problems?: string[];
 }
 
 export interface SkiaShaderValue {
   kind: "skia_shader";
   expr: ShaderExpr;
+  // Why the producer could not express what its params ask for (an
+  // unported mode, a refused option) — consumers surface it instead of
+  // silently drawing the fallback. Additive (2026-10-13).
+  problems?: string[];
 }
 
 // SDF AST. Every SDF node's compute() returns one of these — a small

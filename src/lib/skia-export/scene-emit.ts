@@ -186,7 +186,7 @@ export function sampleKeys(plan: ScenePlan): Map<string, string> {
   for (const b of plan.binds) {
     const p = b.plan;
     let key: string;
-    if (p.kind === "track") key = JSON.stringify(["t", b.role, p.pick ?? null, p.scale ?? null, p.tracks]);
+    if (p.kind === "track") key = JSON.stringify(["t", b.role, p.pick ?? null, p.tracks]);
     else if (p.kind === "clock") key = "clock";
     else if (p.kind === "sampled") key = JSON.stringify(["s", b.role, p.values]);
     else continue;
@@ -812,17 +812,14 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter): string {
     if (p.kind === "track") {
       usesTick = true;
       const ts = b.role === "array" && p.pick === undefined && p.tracks.length === 1 ? "number[]" : "number";
-      // BindRef.scale: the IR value is the evaluated param × scale.
-      const sc = p.scale === undefined ? "" : ` * ${lit(p.scale)}`;
+      // (A BindRef.scale rides on the track: the runtime multiplies.)
       if (p.tracks.length === 1) {
         decls.push(`${note}\nconst T_${b.id}: TimelineTrack = ${JSON.stringify(p.tracks[0])};`);
-        let read = p.pick === undefined ? `evaluateTrack(T_${b.id}, tick) as ${ts}` : `(evaluateTrack(T_${b.id}, tick) as number[])[${p.pick}]`;
-        if (sc) read = ts === "number[]" && p.pick === undefined ? `(${read}).map((x) => x${sc})` : `(${read})${sc}`;
+        const read = p.pick === undefined ? `evaluateTrack(T_${b.id}, tick) as ${ts}` : `(evaluateTrack(T_${b.id}, tick) as number[])[${p.pick}]`;
         fields.push(`    ${b.id}: ${read}, // ${p.from}`);
       } else {
         p.tracks.forEach((t, i) => decls.push(`${i === 0 ? `${note}\n` : ""}const T_${b.id}_${i}: TimelineTrack = ${JSON.stringify(t)};`));
-        const one = (i: number) => (sc ? `(evaluateTrack(T_${b.id}_${i}, tick) as number)${sc}` : `evaluateTrack(T_${b.id}_${i}, tick) as number`);
-        fields.push(`    ${b.id}: [${p.tracks.map((_, i) => one(i)).join(", ")}], // ${p.from}`);
+        fields.push(`    ${b.id}: [${p.tracks.map((_, i) => `evaluateTrack(T_${b.id}_${i}, tick) as number`).join(", ")}], // ${p.from}`);
       }
     } else if (p.kind === "clock") {
       fields.push(`    ${b.id}: seconds, // ${p.from}`);
@@ -1031,7 +1028,7 @@ export function emitSceneBundle(plan: ScenePlan, runtimeSource: string): Record<
           const base = { id: b.id, path: b.path, kind: p.kind, sample: em.keys.get(b.id) };
           switch (p.kind) {
             case "track":
-              return [{ ...base, from: p.from, keys: p.tracks.reduce((n, t) => n + t.keys.length, 0), ...(p.scale === undefined ? {} : { scale: p.scale }) }];
+              return [{ ...base, from: p.from, keys: p.tracks.reduce((n, t) => n + t.keys.length, 0), ...(p.tracks[0].scale === undefined ? {} : { scale: p.tracks[0].scale }) }];
             case "clock":
               return [{ ...base, from: p.from }];
             case "sampled":

@@ -46,6 +46,7 @@ import {
   Text,
   TextAlign,
   TwoPointConicalGradient,
+  useFont,
   useFonts,
   useImage,
   usePathInterpolation,
@@ -134,8 +135,8 @@ const K9 = parsePath("M160 400L134.562 410.58L132.361 438.042L114.438 417.119L87
 const K11 = toPoints([10, 10, 20, 20, 30, 10]);
 const K12 = Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false);
 const PATHS_b126 = PATH_b126.v.map(parsePath);
-const K19 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
-const K22 = parsePath("M400 400 L500 400 L450 500 Z");
+const K18 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
+const K21 = parsePath("M400 400 L500 400 L450 500 Z");
 
 export interface ToolboxSceneGroupProps {
   // Seconds on the toolbox timeline (see useToolboxClock).
@@ -165,17 +166,21 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
   const D10 = useDerivedValue(() => Skia.Path.Polygon(toPoints(B.value.b113), true));
   const P_b126 = usePathInterpolation(F, PATH_b126.f, PATHS_b126, "clamp");
   const IMG13 = useImage(ASSET_SOURCES["logo"]);
-  const FONTS14 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
-  const D15 = useDerivedValue(() => makeParagraph(FONTS14, "inter", B.value.b133, 24, TextAlign.Center, B.value.b3, 1));
+  const FONT14 = useFont(ASSET_SOURCES["inter"], 24);
+  const D15 = useDerivedValue(() => 156 - textAdvance(FONT14, B.value.b133) / 2);
   const TF16 = useTypeface(ASSET_SOURCES["inter"]);
-  const D17 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b140) : null);
-  const D18 = useDerivedValue(() => 240 - textAdvance(D17.value, "Hello"));
-  const XF20 = useRSXformBuffer(2, (xf, i) => {
+  const D17 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
+  const XF19 = useRSXformBuffer(2, (xf, i) => {
     "worklet";
-    const a = B.value.b145;
+    const a = B.value.b144;
     xf.set(a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]);
   });
-  const IMG21 = useImage(ASSET_SOURCES["sprites"]);
+  const IMG20 = useImage(ASSET_SOURCES["sprites"]);
+  const FONTS22 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
+  const D23 = useDerivedValue(() => makeParagraph(FONTS22, "inter", B.value.b161, 20, TextAlign.Center, B.value.b3, 1));
+  const D24 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
+  const D25 = useDerivedValue(() => 500 - textAdvance(D24.value, "Right"));
+  const D26 = useDerivedValue((): Transforms3d => [{ rotate: B.value.b172 }]);
   return (
     <Group transform={[{ scaleX: width / CANVAS.width }, { scaleY: height / CANVAS.height }]}>
       <Fill color={[0.06274509803921569, 0.12549019607843137, 0.18823529411764706, 0.5019607843137255]} />
@@ -295,9 +300,9 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
           <Path path={P_b126} style="stroke" color={[1, 1, 1, 1]} strokeWidth={4} strokeCap="round" />
         </Group>
         <Image image={IMG13} x={16} y={16} width={48} height={48} fit="contain" />
-        <Paragraph paragraph={D15} x={156} y={460} width={200} />
-        <Text font={D17} text="Hello" x={D18} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
-        <Atlas image={IMG21} sprites={K19} transforms={XF20} />
+        <Text font={FONT14} text={select(B, "b133")} x={D15} y={480} color={[1, 1, 1, 1]} />
+        <Text font={D17} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
+        <Atlas image={IMG20} sprites={K18} transforms={XF19} />
         <Rect x={400} y={16} width={96} height={96}>
           <ImageShader
             image={IMG13}
@@ -313,15 +318,20 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
         <Circle
           cx={450}
           cy={450}
-          r={select(B, "b156")}
+          r={select(B, "b155")}
           style="stroke"
           color={[1, 1, 1, 0.5]}
           strokeWidth={1}
         />
-        <Group clip={K22}>
+        <Group clip={K21}>
           <Fill opacity={0.75}>
             <ColorShader color={[0.1, 0.6, 0.3, 1]} />
           </Fill>
+        </Group>
+        <Paragraph paragraph={D23} x={156} y={420} width={200} />
+        <Text font={D24} text="Right" x={D25} y={140} color={[1, 1, 1, 1]} />
+        <Group transform={D26} origin={vec(256, 256)}>
+          <Rect x={236} y={236} width={40} height={40} style="stroke" strokeWidth={2} />
         </Group>
       </Group>
     </Group>

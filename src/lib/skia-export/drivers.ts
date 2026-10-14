@@ -46,11 +46,6 @@ export function liveBlock(node: GraphNode, param: string): KeyframeAnimationBloc
   return b && b.animated && b.keyframes.length > 0 ? b : null;
 }
 
-// L4's runtime flag (toolbox-timeline.ts on skia-wave1): with quantize8,
-// alpha interpolates with the color and snaps to 8 bits too. Declared here
-// so this branch builds before the runtime type carries it.
-export type TimelineTrackQ = TimelineTrack & { quantizeAlpha?: boolean };
-
 // A channel's own `ch:<name>` keyframes as a track, matching what the
 // evaluator delivers (lane L4, engine/channel-keyframes.ts; the same
 // semantics as plan.ts's channelTrack on skia-wave1):
@@ -63,7 +58,7 @@ export function channelKeyTrack(
   row: ExprInput,
   block: KeyframeAnimationBlock,
   problems: string[]
-): TimelineTrackQ | null {
+): TimelineTrack | null {
   const kind = channelKind(row);
   if (kind === "scalar") {
     if (block.keyframes.some((k) => typeof k.value !== "number" || !Number.isFinite(k.value))) {

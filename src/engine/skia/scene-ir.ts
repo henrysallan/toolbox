@@ -15,6 +15,26 @@
 //
 // The SDF socket is the precedent: nodes return small data trees and do no
 // GL work; one terminal (Skia Canvas) renders the tree.
+//
+// Semantics both consumers implement (scene-render.ts draws them, the
+// exporter maps them to React Native Skia — recorded 2026-10-13 from
+// lanes L1 / L3):
+//   - imageFilters / colorFilters / pathEffects apply in ARRAY order
+//     (index 0 first); RN composes siblings last-first, so the emitter
+//     reverses or nests them.
+//   - Group transform = T(origin)·T(translate)·R·S·skewX·skewY·T(−origin);
+//     skew values are angles (RN applies tan); `matrix` is 9 row-major
+//     numbers.
+//   - Group opacity / blendMode are per-draw props, not a layer; `layer`
+//     is a saveLayer outside the group's own transform/clip/opacity, image
+//     filters before its color filters. Clips are local and anti-aliased.
+//   - A paint's shader replaces its color's RGB; the color's alpha still
+//     scales. Default paint: opaque black, antiAlias on.
+//   - `trim` applies to the geometry first wherever it sits in pathEffects.
+//   - Blur / shadow / mask sizes are sigmas. Sweep start/end are radians
+//     (RN takes degrees — the emitter converts).
+//   - Image shaders default to decal tiling, gradients to clamp.
+//   - A runtime ImageFilter's `content` must be its only child shader.
 
 export const SKIA_IR_VERSION = 1;
 
@@ -33,6 +53,9 @@ export interface BindRef {
   param: string;
   // When the bind is one component of a vector / color param.
   component?: number;
+  // The IR value is the param value × scale (degrees param → radians IR:
+  // Math.PI / 180). Tracks export scaled. Additive (2026-10-13, lane L1).
+  scale?: number;
 }
 
 export interface Bind<T> {
@@ -189,6 +212,9 @@ export type SkiaNode =
       text: Bind<string>;
       // Fonts ship as assets; system fonts are a parity hazard (spec §4).
       font: { asset: string; size: Bind<number> };
+      // No `width`: one line, y = the BASELINE, `align` anchors the line's
+      // advance at x (RN <Text>). With `width`: a paragraph wrapped to that
+      // width, top-left at (x, y), aligned within it (RN <Paragraph>).
       x: Bind<number>;
       y: Bind<number>;
       width?: Bind<number>;

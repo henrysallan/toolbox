@@ -78,10 +78,6 @@ export interface SceneSampler {
   producerProblems(): string[];
 }
 
-// SkiaDrawValue.problems (additive, skia-wave1): producer failures the
-// Skia Canvas lists — an export must refuse on them.
-type DrawWithProblems = SkiaDrawValue & { problems?: string[] };
-
 // Evaluates the producer wired into `canvasId`'s scene input. One cache
 // across calls: tick-independent nodes compute once.
 export function makeSceneSampler(
@@ -122,7 +118,7 @@ export function makeSceneSampler(
         return null;
       }
       last = null;
-      for (const p of (v as DrawWithProblems).problems ?? []) seen.add(p);
+      for (const p of (v as SkiaDrawValue).problems ?? []) seen.add(p);
       return {
         version: SKIA_IR_VERSION,
         width: canvas.width,

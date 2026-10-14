@@ -118,8 +118,12 @@ check(
 check("deps: [] resolved through the producer's wires raises no warning", !res.warnings.some((w) => w.includes("children.2.children.6")));
 const rot = plan("root.children.1.transform.rotate") as any;
 check(
-  "a scaled ref exports the raw track × scale",
-  rot?.scale === Math.PI / 180 && rot.tracks[0].keys[1].value === 90 && files["timeline.ts"].includes(`* ${Math.PI / 180}, // keyframes scene.turn`)
+  "a scaled ref exports the raw keys with the track's scale (the runtime multiplies)",
+  rot?.tracks?.[0]?.scale === Math.PI / 180 && rot.tracks[0].keys[1].value === Math.PI && files["timeline.ts"].includes(`"scale":${Math.PI / 180}`)
+);
+check(
+  "Skia Group's (deg · π) / 180 rounding still verifies as a track (within an ulp), not a sampled fallback",
+  kindOf("root.children.12.transform.rotate") === "track" && !res.warnings.some((w) => w.includes("children.12"))
 );
 check(
   "manifest flags RN-web-unplayable features (runtime image filter, composed path effects)",
@@ -131,10 +135,10 @@ check(
   const tsx = files["ToolboxScene.tsx"];
   check(
     "text with a width → <Paragraph> (top-left, aligned in the width); without → <Text> anchored by its advance",
-    /<Paragraph paragraph=\{D\d+\} x=\{156\} y=\{460\} width=\{200\} \/>/.test(tsx) &&
+    /<Paragraph paragraph=\{D\d+\} x=\{156\} y=\{420\} width=\{200\} \/>/.test(tsx) &&
       tsx.includes("makeParagraph(FONTS") &&
       tsx.includes("TextAlign.Center") &&
-      /240 - textAdvance\(/.test(tsx)
+      /500 - textAdvance\(/.test(tsx)
   );
   check("several trims compose into one interval", tsx.includes("trimSpan([0, 0.75, 0.2, 1], 0)") && tsx.includes("trimSpan([0, 0.75, 0.2, 1], 1)"));
   check("a trimmed open polyline draws as its open path", tsx.includes("Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false)"));

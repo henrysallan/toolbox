@@ -31,7 +31,6 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { ExprInput } from "@/engine/types";
 import { channelKind } from "@/engine/expr-channels";
-import { parseRampParamKey } from "@/engine/conventions";
 import type { Keyframe } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
 import {
@@ -48,23 +47,16 @@ import {
   type SkslProgramIR,
 } from "@/engine/skia/scene-ir";
 import {
-  byte01,
   channelKeyTrack,
   hexToTuple,
   liveBlock,
   resolveDriver,
   toTimelineKey,
   type DriverBinding,
-  type TimelineTrackQ,
 } from "./drivers";
-import { evaluateTrack, evaluateTrackRaw, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
+import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
 
 export type BindValue = number | number[] | string;
-
-// BindRef.scale (additive, skia-wave1): the IR value is the param value ×
-// scale (a degrees param bound as radians). Read through this alias so the
-// planner builds on either side of that contract change.
-type ScaledRef = BindRef & { scale?: number };
 
 // How the emitter types and reads a bind.
 //   number  a scalar prop / uniform
@@ -76,9 +68,8 @@ export type BindRole = "number" | "array" | "string" | "path";
 export type BindPlan =
   | { kind: "static"; value: BindValue; from: string }
   // One track ⇒ its value (or component `pick` of a color track); several
-  // ⇒ a vector, one scalar track per component. `scale` multiplies the
-  // evaluated value (BindRef.scale).
-  | { kind: "track"; tracks: TimelineTrack[]; pick?: number; scale?: number; from: string }
+  // ⇒ a vector, one scalar track per component.
+  | { kind: "track"; tracks: TimelineTrack[]; pick?: number; from: string }
   // Seconds on the master clock (a fused program's iTime).
   | { kind: "clock"; from: string }
   // The producer's value at every frame 0..frames-1 (dense; scene-emit
@@ -367,8 +358,8 @@ interface Ctx {
   warnings: string[];
 }
 
-function refLabel(r: ScaledRef): string {
-  return `${r.node}.${r.param}${r.component === undefined ? "" : `[${r.component}]`}${r.scale !== undefined && r.scale !== 1 ? ` ×${r.scale}` : ""}`;
+function refLabel(r: BindRef): string {
+  return `${r.node}.${r.param}${r.component === undefined ? "" : `[${r.component}]`}`;
 }
 
 function channelRow(node: GraphNode, name: string): ExprInput | undefined {
@@ -388,26 +379,32 @@ function wireInto(c: Ctx, node: GraphNode, param: string): GraphEdge | undefined
   return c.edges.find((e) => e.target === node.id && e.targetHandle === `in:param:${param}`);
 }
 
-// Ramp params animate per stop through virtual keys (`ramp_c:<param>:<id>`,
-// `ramp_a:` / `ramp_p:` — conventions.ts), keyframed or exposed and wired.
-function rampStopAnimates(c: Ctx, node: GraphNode, param: string): boolean {
-  for (const k of Object.keys(node.animation ?? {})) {
-    if (parseRampParamKey(k)?.paramName === param && liveBlock(node, k)) return true;
-  }
-  return (node.exposedParams ?? []).some(
-    (p) => parseRampParamKey(p)?.paramName === param && c.edges.some((e) => e.target === node.id && e.targetHandle === `in:param:${p}`)
-  );
+// Could this ref's value change over the scene? (keyframed, wired —
+// including an input socket of that name — or clipped). Over-approximate:
+// sampling collapses a value that turns out constant.
+// Virtual sub-keys that animate PART of a param (engine/conventions.ts): a
+// ramp's stops (`ramp_c|a|p:<param>:<stopId>`), a Merge's layer opacities,
+// a multipoint gradient's points. Keyframed or wired, they move the param.
+function subKeysOf(node: GraphNode, param: string): (key: string) => boolean {
+  const t = getNodeDef(node.type)?.params.find((p) => p.name === param)?.type;
+  return (key) =>
+    key.startsWith(`ramp_c:${param}:`) ||
+    key.startsWith(`ramp_a:${param}:`) ||
+    key.startsWith(`ramp_p:${param}:`) ||
+    (t === "merge_layers" && key.startsWith("layer_opacity:")) ||
+    (t === "gradient_points" && /^gpoint_[xyc]:/.test(key));
 }
 
-// Could this ref's value change over the scene? (keyframed — the param or a
-// ramp stop of it —, wired — including an input socket of that name —, or
-// clipped). Over-approximate: sampling collapses a value that turns out
-// constant.
 function refAnimates(c: Ctx, r: BindRef): boolean {
   const node = c.byId.get(r.node);
   if (!node) return false;
-  if (liveBlock(node, r.param) || rampStopAnimates(c, node, r.param)) return true;
+  if (liveBlock(node, r.param)) return true;
   if (wireInto(c, node, r.param)) return true;
+  const sub = subKeysOf(node, r.param);
+  if (Object.keys(node.animation ?? {}).some((k) => sub(k) && liveBlock(node, k))) return true;
+  if (c.edges.some((e) => e.target === node.id && e.targetHandle.startsWith("in:param:") && sub(e.targetHandle.slice("in:param:".length)))) {
+    return true;
+  }
   if (c.edges.some((e) => e.target === node.id && e.targetHandle === `in:${r.param}`)) return true;
   return !!node.clips?.some((cl) => cl.enabled);
 }
@@ -467,10 +464,8 @@ function paramKindOf(
 
 // A static driver is "plain": the producer's `v` already holds its value
 // (in whatever units the producer draws in).
-function bindingToPlan(b: DriverBinding, pick: number | undefined, scale: number | undefined): BindPlan | Plain {
-  if (b.track) {
-    return { kind: "track", tracks: [b.track], ...(pick === undefined ? {} : { pick }), ...(scale === undefined ? {} : { scale }), from: b.from };
-  }
+function bindingToPlan(b: DriverBinding, pick: number | undefined): BindPlan | Plain {
+  if (b.track) return { kind: "track", tracks: [b.track], ...(pick === undefined ? {} : { pick }), from: b.from };
   return { kind: "plain", from: b.from };
 }
 
@@ -489,7 +484,7 @@ function componentTrack(keys: Keyframe[], c: number): TimelineTrack | null {
   return { kind: "scalar", keys: out };
 }
 
-function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
+function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
   const node = c.byId.get(r.node);
   const label = refLabel(r);
   if (!node) return { kind: "refused", reason: `${path} reads ${label}, but node "${r.node}" is not in the graph.` };
@@ -504,7 +499,6 @@ function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
     return { kind: "refused", reason: `${path} reads channel "${r.param.slice(3)}", which node "${r.node}" does not have.` };
   }
   const comp = r.component;
-  const scale = typeof r.scale === "number" && r.scale !== 1 ? r.scale : undefined;
   const isVec = pk.kind === "vec2" || pk.kind === "vec3" || pk.kind === "vec4";
   const block = liveBlock(node, r.param);
 
@@ -526,7 +520,7 @@ function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
       tail: "only Animated Value (scalar), Constant (scalar) and Color (color) drive an exported Skia value.",
     });
     if (res.problems.length || !res.binding) return { kind: "refused", reason: res.problems.join(" ") };
-    return bindingToPlan(res.binding, pk.kind === "color" ? comp : undefined, pk.kind === "color" ? undefined : scale);
+    return bindingToPlan(res.binding, pk.kind === "color" ? comp : undefined);
   }
 
   // 2. Keyframes on the node itself.
@@ -538,42 +532,41 @@ function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
     }
     const n = block.keyframes.length;
     const from = `keyframes ${node.id}.${r.param} (${n} keys)`;
-    const withScale = (p: Extract<BindPlan, { kind: "track" }>): BindPlan => (scale === undefined ? p : { ...p, scale });
     if (isChannel && pk.row) {
       // Lane L4's channel keyframes (`ch:<name>` on the node itself).
       const problems: string[] = [];
       const track = channelKeyTrack(pk.row, block, problems);
       if (!track) return { kind: "refused", reason: `${path}: ${problems.join(" ")}` };
-      return withScale({
+      return {
         kind: "track",
         tracks: [track],
         ...(comp === undefined || track.kind !== "color" ? {} : { pick: comp }),
         from: `channel keyframes ${node.id}.${r.param} (${n} keys${track.kind === "color" ? `, ${track.colorSpace}` : ""})`,
-      });
+      };
     }
     if (pk.kind === "scalar") {
       if (block.keyframes.some((k) => typeof k.value !== "number")) {
         return { kind: "refused", reason: `${path}: keyframes on ${label} hold non-numbers.` };
       }
-      return withScale({ kind: "track", tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => toTimelineKey(k, "scalar")) }], from });
+      return { kind: "track", tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => toTimelineKey(k, "scalar")) }], from };
     }
     if (pk.kind === "boolean" || pk.kind === "enum") {
       // Step-only params snap (keyframes.ts isStepOnly); the producer binds
       // the number it uploads: 0 | 1, or the option index (define-node.ts).
       const num = (v: unknown) =>
         pk.kind === "boolean" ? (v === true || (typeof v === "number" && v !== 0) ? 1 : 0) : Math.max(0, (pk.options ?? []).indexOf(String(v)));
-      return withScale({
+      return {
         kind: "track",
         tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => ({ tick: k.tick, value: num(k.value), easing: "hold" })) }],
         from: `${from}, stepped`,
-      });
+      };
     }
     if (isVec) {
       const width = Number(pk.kind.slice(3));
       const comps = comp === undefined ? Array.from({ length: width }, (_, i) => i) : [comp];
       const tracks = comps.map((i) => componentTrack(block.keyframes, i));
       if (tracks.some((t) => !t)) return { kind: "refused", reason: `${path}: keyframes on ${label} are not ${pk.kind} values.` };
-      return withScale({ kind: "track", tracks: tracks as TimelineTrack[], from });
+      return { kind: "track", tracks: tracks as TimelineTrack[], from };
     }
     if (pk.kind === "color") {
       // A color param stores hex: every sample snaps to 8 bits
@@ -586,7 +579,7 @@ function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
         return { kind: "refused", reason: `${path}: keyframes on ${label} carry alpha, which this param drops between keys — make the keys opaque (or animate an opacity).` };
       }
       const keys = block.keyframes.map((k) => toTimelineKey(k, "color"));
-      const track: TimelineTrackQ = pk.alpha
+      const track: TimelineTrack = pk.alpha
         ? { kind: "color", colorSpace: block.colorSpace ?? "oklab", quantize8: true, quantizeAlpha: true, keys }
         : { kind: "color", colorSpace: block.colorSpace ?? "oklab", quantize8: true, alpha: 1, keys };
       return { kind: "track", tracks: [track], ...(comp === undefined ? {} : { pick: comp }), from: `${from}, ${track.colorSpace}` };
@@ -629,30 +622,28 @@ function resolveBind(c: Ctx, fb: FoundBind, sampler: boolean): BindPlan | NeedsS
   }
   if (b.ref) {
     const r = resolveRef(c, b.ref, fb.path);
-    return r.kind === "plain" ? { kind: "static", value: b.v as BindValue, from: r.from } : r;
+    if (r.kind === "plain") return { kind: "static", value: b.v as BindValue, from: r.from };
+    const scale = b.ref.scale;
+    if (scale !== undefined && r.kind === "track") {
+      if (r.tracks.some((t) => t.kind !== "scalar")) {
+        return { kind: "refused", reason: `${fb.path} scales ${refLabel(b.ref)} — a scaled ref must be a scalar.` };
+      }
+      return { ...r, tracks: r.tracks.map((t) => ({ ...t, scale })), from: `${r.from} × ${scale}` };
+    }
+    return r;
   }
   if (/\.program\.uniforms\.iTime$/.test(fb.path)) return { kind: "clock", from: "master clock (seconds)" };
   return { kind: "static", value: b.v as BindValue, from: "static" };
 }
 
-// What a track plan evaluates to at `tick` (the emitted sampler's math).
-// quantizeAlpha is applied here as well, so the result is the same with
-// the M0 runtime and with lane L4's (which applies it itself).
-export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number; scale?: number }, tick: number): number | number[] {
-  const one = (t: TimelineTrackQ) => {
-    const v = evaluateTrack(t, tick);
-    if (!t.quantizeAlpha || !Array.isArray(v)) return v;
-    const raw = evaluateTrackRaw(t, tick) as number[];
-    return [v[0], v[1], v[2], byte01(raw[3])];
-  };
-  const s = p.scale;
+// What a track plan evaluates to at `tick` (the emitted sampler's math;
+// the runtime applies a track's scale and quantizeAlpha).
+export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number }, tick: number): number | number[] {
   if (p.tracks.length === 1) {
-    const v = one(p.tracks[0]);
-    const picked = p.pick !== undefined && Array.isArray(v) ? v[p.pick] : v;
-    if (s === undefined) return picked;
-    return Array.isArray(picked) ? picked.map((x) => x * s) : picked * s;
+    const v = evaluateTrack(p.tracks[0], tick);
+    return p.pick !== undefined && Array.isArray(v) ? v[p.pick] : v;
   }
-  return p.tracks.map((t) => (one(t) as number) * (s ?? 1));
+  return p.tracks.map((t) => evaluateTrack(t, tick) as number);
 }
 
 // ---- the planner ----------------------------------------------------------------------
@@ -746,7 +737,7 @@ export function planSceneExport(
       // A scaled track (BindRef.scale) multiplies after evaluation; the
       // producer may have rounded `(deg * π) / 180` instead of
       // `deg * (π / 180)` — equal within a few ulps, never bit for bit.
-      const eq = r.scale === undefined ? sameValue : closeValue;
+      const eq = r.tracks.some((t) => t.scale !== undefined) ? closeValue : sameValue;
       const bad = vals.findIndex((v, f) => !eq(evaluateTrackPlan(r, f * tl.ticksPerFrame), v));
       if (bad < 0) plan = r;
       else {
