@@ -10,8 +10,11 @@
 // trip, OKLab/RGB). Anything else is a refusal with a reason.
 
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
+import { channelKind, readChannelValue } from "@/engine/expr-channels";
 import type { Keyframe, KeyframeAnimationBlock } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
+import { channelUniformValues } from "@/engine/skia/sksl-program";
+import type { ExprInput } from "@/engine/types";
 import type { TimelineKey, TimelineTrack } from "./runtime/toolbox-timeline";
 
 export function hexToTuple(v: unknown): number[] {
@@ -41,6 +44,56 @@ export function toTimelineKey(k: Keyframe, kind: "scalar" | "color"): TimelineKe
 export function liveBlock(node: GraphNode, param: string): KeyframeAnimationBlock | null {
   const b = node.animation?.[param];
   return b && b.animated && b.keyframes.length > 0 ? b : null;
+}
+
+// A channel's own `ch:<name>` keyframes as a track, matching what the
+// evaluator delivers (lane L4, engine/channel-keyframes.ts; the same
+// semantics as plan.ts's channelTrack on skia-wave1):
+//   scalar   the keys verbatim;
+//   color    interpolated in the block's space, then through the row's hex:
+//            8 bits per channel, alpha included (quantizeAlpha);
+//   toggle / pick   step keys carrying the int the uniform receives.
+// Null + a problem when a key can't be replayed exactly.
+export function channelKeyTrack(
+  row: ExprInput,
+  block: KeyframeAnimationBlock,
+  problems: string[]
+): TimelineTrack | null {
+  const kind = channelKind(row);
+  if (kind === "scalar") {
+    if (block.keyframes.some((k) => typeof k.value !== "number" || !Number.isFinite(k.value))) {
+      problems.push(`Channel "${row.name}" has a keyframe that isn't a finite number.`);
+      return null;
+    }
+    return { kind: "scalar", keys: block.keyframes.map((k) => toTimelineKey(k, "scalar")) };
+  }
+  if (kind === "color") {
+    const ok = (v: unknown) =>
+      Array.isArray(v)
+        ? v.length >= 3 && v.length <= 4 && v.every((x) => typeof x === "number" && Number.isFinite(x))
+        : typeof v === "string" && /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v);
+    if (!block.keyframes.every((k) => ok(k.value))) {
+      problems.push(`Channel "${row.name}" has a keyframe that isn't a "#hex" color or an RGBA tuple.`);
+      return null;
+    }
+    return {
+      kind: "color",
+      colorSpace: block.colorSpace ?? "oklab",
+      quantize8: true,
+      quantizeAlpha: true,
+      keys: block.keyframes.map((k) => toTimelineKey(k, "color")),
+    };
+  }
+  if (kind === "toggle" || kind === "enum") {
+    const uniformOf = (v: unknown) => {
+      const stored = kind === "toggle" ? (typeof v === "boolean" ? v : typeof v === "number" ? v !== 0 : row.default) : typeof v === "string" ? v : row.default;
+      const r = { ...row, default: stored as ExprInput["default"] };
+      return channelUniformValues([r], { [row.name]: readChannelValue(r, undefined) })[row.name] as number;
+    };
+    return { kind: "scalar", keys: block.keyframes.map((k) => ({ tick: k.tick, value: uniformOf(k.value), easing: "hold" })) };
+  }
+  problems.push(`Channel "${row.name}" (${kind}) can't be keyframed for export.`);
+  return null;
 }
 
 // One 8-bit channel the way colorValueToHex writes it and hexToTuple reads

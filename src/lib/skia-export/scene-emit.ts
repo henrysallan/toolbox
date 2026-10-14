@@ -350,7 +350,9 @@ class SceneEmitter {
       case "points":
         this.helpers.add("toPoints");
         this.rn.add("vec");
-        return this.composite([this.bind(g.pts)], ([p]) => `Skia.Path.Polygon(toPoints(${p}), true)`, { hoist: true });
+        // Open unless it is a polygon (Skia PathBuilder.addPolygon, as the
+        // preview converts it).
+        return this.composite([this.bind(g.pts)], ([p]) => `Skia.Path.Polygon(toPoints(${p}), ${g.mode === "polygon"})`, { hoist: true });
     }
   }
 
@@ -397,6 +399,18 @@ class SceneEmitter {
     }
     this.rn.add("Skia");
     return this.composite([{ kind: "render", code: tf }, sv], ([t, s]) => `${t} ? Skia.Font(${t}, ${s}) : null`);
+  }
+
+  // A font provider for Paragraphs; the family is the asset id.
+  fonts(asset: string): V {
+    let name = this.assetHooks.get(`fonts:${asset}`);
+    if (!name) {
+      name = this.name("FONTS");
+      this.rn.add("useFonts");
+      this.hooks.push(`const ${name} = useFonts({ ${JSON.stringify(asset)}: [ASSET_SOURCES[${lit(asset)}]] });`);
+      this.assetHooks.set(`fonts:${asset}`, name);
+    }
+    return { kind: "render", code: name };
   }
 
   effect(p: SkslProgramIR, where: string): string {
@@ -623,15 +637,27 @@ class SceneEmitter {
   shape(n: Extract<SkiaNode, { k: "shape" }>, where: string): El {
     const g = n.geom;
     const p = this.paint(n.paint, where);
-    const trim = n.paint.pathEffects?.find((e): e is Extract<PathEffectIR, { k: "trim" }> => e.k === "trim");
+    // RN <Path start end> trims the geometry before fill type, stroke and
+    // every path effect, so trims apply first wherever they sit; several
+    // compose into one interval. Any other geometry becomes its Skia path
+    // (the contour start, e.g. a circle's rightmost point, is what trim
+    // measures from).
+    const trims = (n.paint.pathEffects ?? []).filter((e): e is Extract<PathEffectIR, { k: "trim" }> => e.k === "trim");
     const fillType: [string, string | undefined] = ["fillType", g.k === "path" && g.fillType ? lit(g.fillType) : undefined];
-    if (trim) {
+    if (trims.length) {
       this.rn.add("Path");
-      return el(
-        "Path",
-        [["path", prop(this.geomPath(g))], ["start", prop(this.bind(trim.start))], ["end", prop(this.bind(trim.end))], fillType, ...p.props],
-        p.children
-      );
+      let start: V;
+      let end: V;
+      if (trims.length === 1) {
+        start = this.bind(trims[0].start);
+        end = this.bind(trims[0].end);
+      } else {
+        this.helpers.add("trimSpan");
+        const vs = trims.flatMap((t) => [this.bind(t.start), this.bind(t.end)]);
+        start = this.composite(vs, (c) => `trimSpan([${c.join(", ")}], 0)`);
+        end = this.composite(vs, (c) => `trimSpan([${c.join(", ")}], 1)`);
+      }
+      return el("Path", [["path", prop(this.geomPath(g))], ["start", prop(start)], ["end", prop(end)], fillType, ...p.props], p.children);
     }
     switch (g.k) {
       case "rect": {
@@ -698,16 +724,37 @@ class SceneEmitter {
           ["fit", lit(n.fit)],
         ]);
       case "text": {
+        if (n.width) {
+          // A paragraph laid out to `width`, top-left at (x, y), aligned in
+          // it (RN <Paragraph>); its run takes the paint's color + opacity
+          // (the planner refuses anything else on such a paint).
+          this.rn.add("Paragraph");
+          this.rn.add("TextAlign");
+          this.rn.add("Skia");
+          this.helpers.add("makeParagraph");
+          const align = n.align === "center" ? "TextAlign.Center" : n.align === "right" ? "TextAlign.Right" : "TextAlign.Left";
+          const para = this.composite(
+            [
+              this.fonts(n.font.asset),
+              this.bind(n.text),
+              this.bind(n.font.size),
+              n.paint.color ? this.bind(n.paint.color) : { kind: "static", code: "[0, 0, 0, 1]" },
+              n.paint.opacity ? this.bind(n.paint.opacity) : { kind: "static", code: "1" },
+            ],
+            ([f, t, s, c, o]) => `makeParagraph(${f}, ${lit(n.font.asset)}, ${t}, ${s}, ${align}, ${c}, ${o})`
+          );
+          return el("Paragraph", [["paragraph", prop(para)], ["x", prop(this.bind(n.x))], ["y", prop(this.bind(n.y))], ["width", prop(this.bind(n.width))]]);
+        }
+        // One line with y the baseline (RN <Text>); `align` anchors the
+        // run's advance at x.
         this.rn.add("Text");
         const font = this.font(n.font.asset, n.font.size);
         const p = this.paint(n.paint, where);
         let x = this.bind(n.x);
-        if (n.width && n.align && n.align !== "left") {
-          // Align inside `width` by the run's advance (RN <Text> draws from
-          // the baseline-left point).
+        if (n.align === "center" || n.align === "right") {
           this.helpers.add("textAdvance");
-          const k = n.align === "center" ? "0.5" : "1";
-          x = this.composite([x, this.bind(n.width), font, this.bind(n.text)], ([xx, w, f, t]) => `${xx} + (${w} - textAdvance(${f}, ${t})) * ${k}`);
+          const k = n.align === "center" ? " / 2" : "";
+          x = this.composite([x, font, this.bind(n.text)], ([xx, f, t]) => `${xx} - textAdvance(${f}, ${t})${k}`);
         }
         return el("Text", [["font", prop(font)], ["text", prop(this.bind(n.text))], ["x", prop(x)], ["y", prop(this.bind(n.y))], ...p.props], p.children);
       }
@@ -765,6 +812,7 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter): string {
     if (p.kind === "track") {
       usesTick = true;
       const ts = b.role === "array" && p.pick === undefined && p.tracks.length === 1 ? "number[]" : "number";
+      // (A BindRef.scale rides on the track: the runtime multiplies.)
       if (p.tracks.length === 1) {
         decls.push(`${note}\nconst T_${b.id}: TimelineTrack = ${JSON.stringify(p.tracks[0])};`);
         const read = p.pick === undefined ? `evaluateTrack(T_${b.id}, tick) as ${ts}` : `(evaluateTrack(T_${b.id}, tick) as number[])[${p.pick}]`;
@@ -919,10 +967,15 @@ export function emitSceneBundle(plan: ScenePlan, runtimeSource: string): Record<
     toPoints:
       `// Flat x,y pairs → points.\nfunction toPoints(xy: number[]) {\n  "worklet";\n  const out = [];\n  for (let i = 0; i + 1 < xy.length; i += 2) out.push(vec(xy[i], xy[i + 1]));\n  return out;\n}\n`,
     textAdvance:
-      `// The run's advance width (what Paragraph aligns by).\nfunction textAdvance(font: SkFont | null, text: string) {\n  "worklet";\n  if (!font) return 0;\n  return font.getGlyphWidths(font.getGlyphIDs(text)).reduce((a, b) => a + b, 0);\n}\n`,
+      `// The run's advance width (what <Text> alignment anchors).\nfunction textAdvance(font: SkFont | null, text: string) {\n  "worklet";\n  if (!font) return 0;\n  return font.getGlyphWidths(font.getGlyphIDs(text)).reduce((a, b) => a + b, 0);\n}\n`,
+    makeParagraph:
+      `// One run in the scene font, its paint the text's color × opacity.\nfunction makeParagraph(\n  fonts: SkTypefaceFontProvider | null,\n  family: string,\n  text: string,\n  size: number,\n  align: TextAlign,\n  color: number[],\n  opacity: number\n) {\n  "worklet";\n  if (!fonts) return null;\n  const paint = Skia.Paint();\n  paint.setColor(Skia.Color(color));\n  paint.setAlphaf(color[3] * opacity);\n  const style = { fontFamilies: [family], fontSize: size };\n  return Skia.ParagraphBuilder.Make({ textAlign: align, textStyle: style }, fonts).pushStyle(style, paint).addText(text).build();\n}\n`,
+    trimSpan:
+      `// Several trims compose by length fraction, each over what the previous kept.\nfunction trimSpan(t: number[], which: number) {\n  "worklet";\n  let s = 0;\n  let e = 1;\n  for (let i = 0; i + 1 < t.length; i += 2) {\n    const span = e - s;\n    const ns = s + Math.min(1, Math.max(0, t[i])) * span;\n    e = s + Math.min(1, Math.max(0, t[i + 1])) * span;\n    s = ns;\n  }\n  return which === 0 ? s : e;\n}\n`,
   };
   if (em.helpers.has("makeEffect") || em.helpers.has("parsePath")) em.rn.add("Skia");
   if (em.helpers.has("textAdvance")) em.rnTypes.add("SkFont");
+  if (em.helpers.has("makeParagraph")) em.rnTypes.add("SkTypefaceFontProvider");
   em.rnTypes.add("CanvasRef");
   const rnNames = [...em.rn].sort((a, b) => a.localeCompare(b));
   const rnTypes = [...em.rnTypes].sort((a, b) => a.localeCompare(b)).map((t) => `type ${t}`);
@@ -937,7 +990,7 @@ export function emitSceneBundle(plan: ScenePlan, runtimeSource: string): Record<
     (em.effects.length ? `import { ${em.effects.map((_, i) => `SKSL_${i}`).join(", ")} } from "./effects";\n` : "") +
     (assetEntries.length ? `import { ASSET_SOURCES } from "./assets";\n` : "") +
     `import { ${tlNames.join(", ")} } from "./timeline";\n` +
-    (em.helpers.size ? `\n${["makeEffect", "parsePath", "toPoints", "textAdvance"].filter((h) => em.helpers.has(h)).map((h) => helperSrc[h]).join("\n")}` : "") +
+    (em.helpers.size ? `\n${["makeEffect", "parsePath", "toPoints", "textAdvance", "makeParagraph", "trimSpan"].filter((h) => em.helpers.has(h)).map((h) => helperSrc[h]).join("\n")}` : "") +
     (em.consts.length ? `\n${em.consts.join("\n")}\n` : "") +
     `\nexport interface ToolboxSceneGroupProps {\n  // Seconds on the toolbox timeline (see useToolboxClock).\n  time: SharedValue<number>;\n  // The size to draw at, in points; the scene is authored at CANVAS px.\n  width: number;\n  height: number;\n}\n` +
     `\nexport interface ToolboxSceneProps extends ToolboxSceneGroupProps {\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +
@@ -963,6 +1016,9 @@ export function emitSceneBundle(plan: ScenePlan, runtimeSource: string): Record<
         canvas: plan.canvas,
         timeline: { fps: plan.timeline.fps, ticksPerFrame: plan.timeline.ticksPerFrame, durationTicks: plan.timeline.durationTicks, durationSec, frames: plan.timeline.frames },
         sampledFrames: plan.sampledFrames,
+        // React Native Skia web (CanvasKit) lacks runtime image filters and
+        // path-effect composition; the warnings say which node needs them.
+        webPlayable: !plan.warnings.some((w) => w.includes("not playable on React Native Skia web")),
         // Every bind by kind; only the animated ones are listed below
         // (`sample` = the sampleBinds key it reads; path geometry reads the
         // PATH_<sample> series instead).
@@ -972,7 +1028,7 @@ export function emitSceneBundle(plan: ScenePlan, runtimeSource: string): Record<
           const base = { id: b.id, path: b.path, kind: p.kind, sample: em.keys.get(b.id) };
           switch (p.kind) {
             case "track":
-              return [{ ...base, from: p.from, keys: p.tracks.reduce((n, t) => n + t.keys.length, 0) }];
+              return [{ ...base, from: p.from, keys: p.tracks.reduce((n, t) => n + t.keys.length, 0), ...(p.tracks[0].scale === undefined ? {} : { scale: p.tracks[0].scale }) }];
             case "clock":
               return [{ ...base, from: p.from }];
             case "sampled":

@@ -28,6 +28,7 @@ import {
   Offset,
   Oval,
   Paint,
+  Paragraph,
   Path,
   Points,
   RadialGradient,
@@ -43,21 +44,25 @@ import {
   SRGBToLinearGamma,
   SweepGradient,
   Text,
+  TextAlign,
   TwoPointConicalGradient,
   useFont,
+  useFonts,
   useImage,
   usePathInterpolation,
   useRSXformBuffer,
   useTypeface,
   vec,
   type CanvasRef,
+  type SkFont,
+  type SkTypefaceFontProvider,
   type Transforms3d,
   type Uniforms,
 } from "react-native-skia";
 import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } from "react-native-reanimated";
 import { SKSL_0, SKSL_1 } from "./effects";
 import { ASSET_SOURCES } from "./assets";
-import { CANVAS, frameAt, PATH_b104, PATH_b90, sampleBinds, seriesStep, TIMELINE } from "./timeline";
+import { CANVAS, frameAt, PATH_b104, PATH_b126, PATH_b90, sampleBinds, seriesStep, TIMELINE } from "./timeline";
 
 function makeEffect(sksl: string, n: number) {
   const effect = Skia.RuntimeEffect.Make(sksl);
@@ -79,6 +84,46 @@ function toPoints(xy: number[]) {
   return out;
 }
 
+// The run's advance width (what <Text> alignment anchors).
+function textAdvance(font: SkFont | null, text: string) {
+  "worklet";
+  if (!font) return 0;
+  return font.getGlyphWidths(font.getGlyphIDs(text)).reduce((a, b) => a + b, 0);
+}
+
+// One run in the scene font, its paint the text's color × opacity.
+function makeParagraph(
+  fonts: SkTypefaceFontProvider | null,
+  family: string,
+  text: string,
+  size: number,
+  align: TextAlign,
+  color: number[],
+  opacity: number
+) {
+  "worklet";
+  if (!fonts) return null;
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color(color));
+  paint.setAlphaf(color[3] * opacity);
+  const style = { fontFamilies: [family], fontSize: size };
+  return Skia.ParagraphBuilder.Make({ textAlign: align, textStyle: style }, fonts).pushStyle(style, paint).addText(text).build();
+}
+
+// Several trims compose by length fraction, each over what the previous kept.
+function trimSpan(t: number[], which: number) {
+  "worklet";
+  let s = 0;
+  let e = 1;
+  for (let i = 0; i + 1 < t.length; i += 2) {
+    const span = e - s;
+    const ns = s + Math.min(1, Math.max(0, t[i])) * span;
+    e = s + Math.min(1, Math.max(0, t[i + 1])) * span;
+    s = ns;
+  }
+  return which === 0 ? s : e;
+}
+
 const EFFECT_0 = makeEffect(SKSL_0, 0);
 const K3 = rrect(rect(-150, -150, 300, 300), 24, 24);
 const EFFECT_1 = makeEffect(SKSL_1, 1);
@@ -88,8 +133,10 @@ const PATHS_b90 = PATH_b90.v.map(parsePath);
 const PATHS_b104 = { f: PATH_b104.f, v: PATH_b104.v.map(parsePath) };
 const K9 = parsePath("M160 400L134.562 410.58L132.361 438.042L114.438 417.119L87.639 423.511L102 400L87.639 376.489L114.438 382.881L132.361 361.958L134.562 389.42Z");
 const K11 = toPoints([10, 10, 20, 20, 30, 10]);
-const K16 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
-const K19 = parsePath("M400 400 L500 400 L450 500 Z");
+const K12 = Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false);
+const PATHS_b126 = PATH_b126.v.map(parsePath);
+const K18 = [rect(0, 0, 32, 32), rect(32, 0, 32, 32)];
+const K21 = parsePath("M400 400 L500 400 L450 500 Z");
 
 export interface ToolboxSceneGroupProps {
   // Seconds on the toolbox timeline (see useToolboxClock).
@@ -116,19 +163,27 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
   const D7 = useDerivedValue(() => vec(B.value.b39, 0));
   const P_b90 = usePathInterpolation(F, PATH_b90.f, PATHS_b90, "clamp");
   const P_b104 = useDerivedValue(() => seriesStep(PATHS_b104, F.value));
-  const D10 = useDerivedValue(() => Skia.Path.Polygon(toPoints(B.value.b111), true));
-  const IMG12 = useImage(ASSET_SOURCES["logo"]);
-  const FONT13 = useFont(ASSET_SOURCES["inter"], 24);
-  const TF14 = useTypeface(ASSET_SOURCES["inter"]);
-  const D15 = useDerivedValue(() => TF14 ? Skia.Font(TF14, B.value.b129) : null);
-  const XF17 = useRSXformBuffer(2, (xf, i) => {
+  const D10 = useDerivedValue(() => Skia.Path.Polygon(toPoints(B.value.b113), true));
+  const P_b126 = usePathInterpolation(F, PATH_b126.f, PATHS_b126, "clamp");
+  const IMG13 = useImage(ASSET_SOURCES["logo"]);
+  const FONT14 = useFont(ASSET_SOURCES["inter"], 24);
+  const D15 = useDerivedValue(() => 156 - textAdvance(FONT14, B.value.b133) / 2);
+  const TF16 = useTypeface(ASSET_SOURCES["inter"]);
+  const D17 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
+  const XF19 = useRSXformBuffer(2, (xf, i) => {
     "worklet";
-    const a = B.value.b134;
+    const a = B.value.b144;
     xf.set(a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]);
   });
-  const IMG18 = useImage(ASSET_SOURCES["sprites"]);
+  const IMG20 = useImage(ASSET_SOURCES["sprites"]);
+  const FONTS22 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
+  const D23 = useDerivedValue(() => makeParagraph(FONTS22, "inter", B.value.b161, 20, TextAlign.Center, B.value.b3, 1));
+  const D24 = useDerivedValue(() => TF16 ? Skia.Font(TF16, B.value.b139) : null);
+  const D25 = useDerivedValue(() => 500 - textAdvance(D24.value, "Right"));
+  const D26 = useDerivedValue((): Transforms3d => [{ rotate: B.value.b172 }]);
   return (
     <Group transform={[{ scaleX: width / CANVAS.width }, { scaleY: height / CANVAS.height }]}>
+      <Fill color={[0.06274509803921569, 0.12549019607843137, 0.18823529411764706, 0.5019607843137255]} />
       <Group>
         <Fill>
           <Shader source={EFFECT_0} uniforms={D0}>
@@ -218,8 +273,8 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
           </Path>
           <Path
             path={P_b104}
-            start={0}
-            end={0.75}
+            start={trimSpan([0, 0.75, 0.2, 1], 0)}
+            end={trimSpan([0, 0.75, 0.2, 1], 1)}
             style="stroke"
             color={[0.4, 0.9, 1, 1]}
             strokeWidth={3}
@@ -241,14 +296,16 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
             strokeWidth={4}
             strokeCap="round"
           />
+          <Path path={K12} start={0} end={0.5} style="stroke" color={[1, 1, 0, 1]} strokeWidth={2} />
+          <Path path={P_b126} style="stroke" color={[1, 1, 1, 1]} strokeWidth={4} strokeCap="round" />
         </Group>
-        <Image image={IMG12} x={16} y={16} width={48} height={48} fit="contain" />
-        <Text font={FONT13} text={select(B, "b123")} x={156} y={480} color={[1, 1, 1, 1]} />
-        <Text font={D15} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
-        <Atlas image={IMG18} sprites={K16} transforms={XF17} />
+        <Image image={IMG13} x={16} y={16} width={48} height={48} fit="contain" />
+        <Text font={FONT14} text={select(B, "b133")} x={D15} y={480} color={[1, 1, 1, 1]} />
+        <Text font={D17} text="Hello" x={24} y={110} color={[1, 1, 1, 1]} opacity={0.8} />
+        <Atlas image={IMG20} sprites={K18} transforms={XF19} />
         <Rect x={400} y={16} width={96} height={96}>
           <ImageShader
-            image={IMG12}
+            image={IMG13}
             fit="cover"
             x={400}
             y={16}
@@ -261,15 +318,20 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
         <Circle
           cx={450}
           cy={450}
-          r={select(B, "b145")}
+          r={select(B, "b155")}
           style="stroke"
           color={[1, 1, 1, 0.5]}
           strokeWidth={1}
         />
-        <Group clip={K19}>
+        <Group clip={K21}>
           <Fill opacity={0.75}>
             <ColorShader color={[0.1, 0.6, 0.3, 1]} />
           </Fill>
+        </Group>
+        <Paragraph paragraph={D23} x={156} y={420} width={200} />
+        <Text font={D24} text="Right" x={D25} y={140} color={[1, 1, 1, 1]} />
+        <Group transform={D26} origin={vec(256, 256)}>
+          <Rect x={236} y={236} width={40} height={40} style="stroke" strokeWidth={2} />
         </Group>
       </Group>
     </Group>
