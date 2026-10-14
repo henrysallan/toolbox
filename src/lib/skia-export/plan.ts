@@ -7,19 +7,49 @@
 // track — engine/channel-keyframes.ts), or wired from a keyframe SOURCE
 // whose curve the runtime can replay exactly — Animated Value (unwired
 // clock) for scalars, the Color node for colors, Constant for a fixed
-// number. Any other driver, any wired image (iImage1..4), ramp/curve
-// channels, clips and retimed clocks are reported as problems: the export
-// refuses instead of shipping something that will not match the editor.
+// number. Any other driver, clips and retimed clocks are reported as
+// problems: the export refuses instead of shipping something that will not
+// match the editor.
+//
+// Children (Wave 3 lane I, §3.8 items 2–3), in the program's `uniform
+// shader` order:
+//   iImage1..4   a STATIC image — an Image Source, or Image (Skia)'s
+//                preview, with nothing keyframed or wired — ships as a
+//                bundled asset (useImage) mapped by an ImageShader exactly
+//                as Image Source fits it on the canvas; anything else wired
+//                (an animated image, a video, any other node) refuses with
+//                the reason, an unwired one is a transparent child;
+//   ramp / curve the channel's 256×1 LUT (skslLutBytes), the bytes the
+//                preview samples, as an ImageShader child.
 
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
-import type { ExprInput } from "@/engine/types";
+import type { ExprInput, SkiaImageSource } from "@/engine/types";
 import { channelKind, readChannelValue } from "@/engine/expr-channels";
 import { channelKeyframeType, channelStoredValue } from "@/engine/channel-keyframes";
 import { channelKey } from "@/engine/conventions";
 import type { KeyframeAnimationBlock } from "@/engine/keyframes";
-import { buildSkslProgram, channelUniformValues, lintSksl } from "@/engine/skia/sksl-program";
+import type { AssetIR } from "@/engine/skia/scene-ir";
+import { buildSkslProgram, channelUniformValues, lintSksl, skslLutBytes } from "@/engine/skia/sksl-program";
+import type { SkiaExportAssets } from "./api";
+import { assetWarnings, type AssetUse } from "./asset-bundle";
 import { liveBlock, resolveDriver, toTimelineKey } from "./drivers";
+import { IMAGE_SOURCE_PARAMS, imageFitParam, skiaImageSourceOf } from "./image-asset";
 import type { TimelineTrack } from "./runtime/toolbox-timeline";
+
+// One child shader of the exported program.
+export type SkiaEffectChild =
+  | {
+      name: string;
+      kind: "image";
+      asset: AssetIR;
+      // The file and Image Source's mapping onto the canvas (fit, then its
+      // TRS; tile = what lies outside the image) — what the preview samples.
+      source: SkiaImageSource;
+      from: string;
+    }
+  | { name: string; kind: "lut"; lut: { channel: string; kind: "ramp" | "curve"; rgba: number[] }; from: string }
+  // Sampled but unwired / no file: transparent, as the preview reads it.
+  | { name: string; kind: "empty"; from: string };
 
 export interface SkiaUniformBinding {
   name: string;
@@ -39,6 +69,13 @@ export interface SkiaExportPlan {
   canvas: { width: number; height: number };
   timeline: { fps: number; ticksPerFrame: number; durationTicks: number };
   uniforms: SkiaUniformBinding[];
+  // Child shaders in declaration order (additive, Wave 3 lane I; absent on
+  // a program that samples nothing).
+  children?: SkiaEffectChild[];
+  // The image children's assets with the nodes they come from, and the
+  // resolved bytes the emitter bundles (SkiaExportRequest.assets).
+  assetUses?: AssetUse[];
+  assetBytes?: SkiaExportAssets;
   warnings: string[];
 }
 
@@ -46,6 +83,53 @@ export interface SkiaExportOptions {
   name: string;
   canvas: { width: number; height: number };
   timeline: { fps: number; ticksPerFrame: number; sceneDurationTicks: number };
+  // SkiaExportRequest.assets (additive, Wave 3 lane I).
+  assets?: SkiaExportAssets;
+}
+
+// A wired iImageN as a static image child, or why it can't ship.
+function staticImageChild(
+  name: string,
+  src: GraphNode,
+  edge: GraphEdge,
+  edges: GraphEdge[]
+): { child: SkiaEffectChild; warning?: string } | { problem: string } {
+  const at = `${name} is wired from ${src.type} "${src.id}"`;
+  const okSource =
+    (src.type === "image-source" && edge.sourceHandle === "out:primary") ||
+    (src.type === "skia-image" && edge.sourceHandle === "out:aux:preview");
+  if (!okSource) {
+    return {
+      problem: `${at}${edge.sourceHandle !== "out:primary" ? ` (${edge.sourceHandle.replace(/^out:/, "")})` : ""} — only a static image exports (an Image Source, or Image (Skia)'s preview); an animated, video or computed input needs baking, which this exporter doesn't do yet.`,
+    };
+  }
+  if (src.bypassed) return { problem: `${at}, which is bypassed — un-bypass it or unwire ${name}.` };
+  if (src.clips?.length) return { problem: `${at}, which sits on a clip window — only an always-on image exports.` };
+  const keyed = IMAGE_SOURCE_PARAMS.filter((p) => liveBlock(src, p));
+  if (keyed.length) return { problem: `${at}, whose ${keyed.join(", ")} ${keyed.length > 1 ? "are" : "is"} keyframed — the image animates; only a static image exports.` };
+  const wired = edges.filter((e) => e.target === src.id).map((e) => e.targetHandle.replace(/^in:(param:)?/, ""));
+  if (wired.length) return { problem: `${at}, whose ${wired.join(", ")} ${wired.length > 1 ? "are" : "is"} wired — only a static image exports.` };
+  const opacity = typeof src.params.opacity === "number" ? src.params.opacity : 1;
+  if (opacity < 1) return { problem: `${at}, which fades it to opacity ${opacity} — set its Opacity to 1 and fade in the shader instead (an ImageShader has no opacity).` };
+  const r = skiaImageSourceOf(name, src.params);
+  if ("problem" in r) return { problem: `${at}: ${r.problem}.` };
+  if ("empty" in r) {
+    return {
+      child: { name, kind: "empty", from: `${src.type} "${src.id}" (no file loaded)` },
+      warning: `${at}, which has no file loaded — the export passes a transparent child, as the preview reads it.`,
+    };
+  }
+  const s = r.source;
+  const moved = s.translateX !== 0 || s.translateY !== 0 || s.scaleX !== 1 || s.scaleY !== 1 || s.rotate !== 0;
+  return {
+    child: {
+      name,
+      kind: "image",
+      asset: s.asset,
+      source: s,
+      from: `${src.type} "${src.id}" (${s.asset.width}×${s.asset.height}, fit ${imageFitParam(src.params.fit)}${moved ? ", transformed" : ""})`,
+    },
+  };
 }
 
 // What the uniform receives for one keyframe value of a channel's own track:
@@ -132,23 +216,65 @@ export function planSkiaExport(
   problems.push(...lint.problems);
   warnings.push(...lint.warnings);
   for (const n of prog.unsupported) {
-    problems.push(`Channel "${n}" is a ramp/curve — no SkSL lowering yet (spec M2).`);
+    problems.push(`Channel "${n}" has no SkSL lowering.`);
   }
   if (target.clips?.length) problems.push("The SkSL node sits on a clip window / time remap — retimed exports are not supported yet.");
 
   const incoming = edges.filter((e) => e.target === targetId);
-  for (const e of incoming) {
-    if (/^in:image[1-4]$/.test(e.targetHandle)) {
-      problems.push(`${e.targetHandle.slice(3)} is wired — image inputs (iImage1..4) don't export yet (spec M2).`);
-    }
-  }
-
   const edgeFor = (ch: ExprInput) =>
     incoming.find((e) => e.targetHandle === `in:in:${ch.id}` || e.targetHandle === `in:${ch.id}`);
+
+  // ---- children: iImage1..4 the source samples, then the LUT channels
+  const children: SkiaEffectChild[] = [];
+  const assetUses: AssetUse[] = [];
+  for (const name of prog.children) {
+    const edge = incoming.find((e) => e.targetHandle === `in:image${name.slice("iImage".length)}`);
+    if (!edge) {
+      children.push({ name, kind: "empty", from: "unwired" });
+      warnings.push(`The source samples ${name} but nothing is wired into it — the export passes a transparent child, as the preview reads it.`);
+      continue;
+    }
+    const src = byId.get(edge.source);
+    if (!src) {
+      problems.push(`${name} is wired from a missing node "${edge.source}".`);
+      continue;
+    }
+    const r = staticImageChild(name, src, edge, edges);
+    if ("problem" in r) {
+      problems.push(r.problem);
+      continue;
+    }
+    children.push(r.child);
+    if (r.warning) warnings.push(r.warning);
+    if (r.child.kind === "image") assetUses.push({ asset: r.child.asset, owners: [`${src.type} "${src.id}"`] });
+  }
+  for (const e of incoming) {
+    const m = /^in:image([1-4])$/.exec(e.targetHandle);
+    if (m && !prog.children.includes(`iImage${m[1]}`)) {
+      warnings.push(`image${m[1]} is wired but the source never samples iImage${m[1]} — nothing ships for it.`);
+    }
+  }
+  for (const l of prog.luts) {
+    const ch = prog.channels.find((c) => c.name === l.name);
+    if (!ch) continue;
+    if (edgeFor(ch)) {
+      problems.push(`The ${l.kind} channel "${l.name}" is wired — a wired ${l.kind} doesn't export yet (its lookup table would change per frame); set it on the node.`);
+      continue;
+    }
+    if (liveBlock(target, channelKey(l.name))) {
+      problems.push(`The ${l.kind} channel "${l.name}" is keyframed — an animated lookup table doesn't export yet.`);
+      continue;
+    }
+    const rgba = Array.from(skslLutBytes(l.kind, readChannelValue(ch, undefined)));
+    children.push({ name: l.child, kind: "lut", lut: { channel: l.name, kind: l.kind, rgba }, from: `${l.kind} channel "${l.name}" (256×1 lookup table)` });
+  }
+  warnings.push(...assetWarnings(assetUses, opts.assets));
 
   const uniforms: SkiaUniformBinding[] = [];
   for (const ch of prog.channels) {
     const kind = channelKind(ch);
+    // Ramp / curve channels are child shaders (above), not uniforms.
+    if (kind === "ramp" || kind === "curve") continue;
     const ukind: SkiaUniformBinding["kind"] = kind === "color" ? "color" : kind === "scalar" ? "float" : "int";
     const edge = edgeFor(ch);
     const own = liveBlock(target, channelKey(ch.name));
@@ -196,6 +322,9 @@ export function planSkiaExport(
         durationTicks: opts.timeline.sceneDurationTicks,
       },
       uniforms,
+      ...(children.length ? { children } : {}),
+      ...(assetUses.length ? { assetUses } : {}),
+      ...(opts.assets ? { assetBytes: opts.assets } : {}),
       warnings,
     },
     problems: [],

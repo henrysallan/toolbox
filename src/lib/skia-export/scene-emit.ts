@@ -12,8 +12,11 @@
 //   toolbox-timeline.ts the keyframe evaluator (src/lib/skia-export/runtime)
 //   effects.ts          the SkSL of every runtime program, deduped
 //   assets.ts           require() of every asset the scene draws, by IR id
-//   assets/*.b64        bytes the exporter had (data: URLs); manifest.json
-//                       lists the rest with their editor URLs
+//   assets/*.b64        bytes the exporter had (SkiaExportRequest.assets,
+//                       resolved through the URL → bytes seam before the
+//                       export, or data: URLs) + licence texts; manifest.json
+//                       lists every asset, the rest with their editor URLs
+//                       (asset-bundle.ts)
 //   manifest.json       format 3, kind "scene": binds, programs, assets,
 //                       segments
 //   index.ts            barrel
@@ -52,6 +55,7 @@ import {
 import { RN_SKIA_VERSION } from "./emit";
 import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { BindValue, PlannedBind, ScenePlan } from "./scene-plan";
+import { assetBytesOf, assetSourcesModule, manifestAsset, writeAssetFiles } from "./asset-bundle";
 import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 
 // 3: useToolboxClock() returns { time, …controls } and lives in
@@ -434,7 +438,10 @@ class SceneEmitter {
     if (!name) {
       name = this.name("FONTS");
       this.rn.add("useFonts");
-      this.hooks.push(`const ${name} = useFonts({ ${JSON.stringify(asset)}: [ASSET_SOURCES[${lit(asset)}]] });`);
+      // An unbundled font (ASSET_SOURCES[id] is null) registers no typeface.
+      const a = this.plan.assets.find((x) => x.id === asset);
+      const bundled = !!a && !!assetBytesOf(a.url, this.plan.assetBytes);
+      this.hooks.push(`const ${name} = useFonts({ ${JSON.stringify(asset)}: ${bundled ? `[ASSET_SOURCES[${lit(asset)}]]` : "[]"} });`);
       this.assetHooks.set(`fonts:${asset}`, name);
     }
     return { kind: "render", code: name };
@@ -902,39 +909,6 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, 
   return { text, fields: fields.length };
 }
 
-// ---- assets ------------------------------------------------------------------------------------
-
-const EXT: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-  "image/svg+xml": "svg",
-  "font/ttf": "ttf",
-  "font/otf": "otf",
-  "font/woff": "woff",
-  "font/woff2": "woff2",
-  "application/x-font-ttf": "ttf",
-  "application/font-sfnt": "ttf",
-};
-
-function assetFile(a: { id: string; mime: string; url: string }): string {
-  const fromUrl = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(a.url.startsWith("data:") ? "" : a.url)?.[1]?.toLowerCase();
-  const ext = EXT[a.mime.toLowerCase()] ?? fromUrl ?? "bin";
-  return `assets/${a.id.replace(/[^A-Za-z0-9_-]/g, "_")}.${ext}`;
-}
-
-function base64OfDataUrl(url: string): string | null {
-  const m = /^data:[^,]*?(;base64)?,([\s\S]*)$/.exec(url);
-  if (!m) return null;
-  if (m[1]) return m[2];
-  const bytes = new TextEncoder().encode(decodeURIComponent(m[2]));
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s);
-}
-
 // ---- the bundle ------------------------------------------------------------------------------
 
 // `segments`: the composition's markers on this timeline (exportSegments);
@@ -972,19 +946,10 @@ export function emitSceneBundle(
           .join("")
       : `\nexport {};\n`);
 
-  // ---- assets.ts + bytes
-  const assetEntries = plan.assets.map((a) => {
-    const file = assetFile(a);
-    const b64 = a.url.startsWith("data:") ? base64OfDataUrl(a.url) : null;
-    if (b64 !== null) files[`${file}.b64`] = b64;
-    return { a, file, bundled: b64 !== null };
-  });
-  files["assets.ts"] =
-    HEADER("the scene's assets") +
-    `\n// Every asset the scene draws, by IR id. Files the exporter had bytes for\n// are in ./assets/; manifest.json lists the rest with their editor URLs.\n` +
-    (assetEntries.length
-      ? `export const ASSET_SOURCES = {\n${assetEntries.map((e) => `  ${JSON.stringify(e.a.id)}: require(${JSON.stringify(`./${e.file}`)}),`).join("\n")}\n} as const;\n`
-      : `export const ASSET_SOURCES = {} as const;\n`);
+  // ---- assets.ts + bytes (asset-bundle.ts: the same rule the planner's
+  // "not bundled" warnings used)
+  const assetEntries = writeAssetFiles(plan.assetUses ?? plan.assets.map((asset) => ({ asset, owners: [] })), plan.assetBytes, files);
+  files["assets.ts"] = assetSourcesModule(HEADER("the scene's assets"), "the scene draws", assetEntries);
 
   // ---- timeline.ts
   const timeline = emitTimeline(plan, em, driver?.supplied);
@@ -1100,16 +1065,8 @@ export function emitSceneBundle(
           }
         }),
         programs: em.effects.map((e, i) => ({ id: `SKSL_${i}`, usedBy: e.where, fused: e.fused })),
-        assets: assetEntries.map(({ a, file, bundled }) => ({
-          id: a.id,
-          kind: a.kind,
-          mime: a.mime,
-          file,
-          bundled,
-          ...(bundled ? {} : { url: a.url }),
-          ...(a.width ? { width: a.width } : {}),
-          ...(a.height ? { height: a.height } : {}),
-        })),
+        // Every asset with its file, size and whether its bytes shipped.
+        assets: assetEntries.map(manifestAsset),
         warnings: plan.warnings,
       },
       null,

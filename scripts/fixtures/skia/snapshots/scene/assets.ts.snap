@@ -6,5 +6,5 @@
 export const ASSET_SOURCES = {
   "logo": require("./assets/logo.png"),
   "inter": require("./assets/inter.ttf"),
-  "sprites": require("./assets/sprites.png"),
+  "sprites": null,
 } as const;

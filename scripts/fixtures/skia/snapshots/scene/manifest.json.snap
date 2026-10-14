@@ -280,6 +280,7 @@
       "mime": "image/png",
       "file": "assets/logo.png",
       "bundled": true,
+      "bytes": 70,
       "width": 1,
       "height": 1
     },
@@ -288,7 +289,8 @@
       "kind": "font",
       "mime": "font/ttf",
       "file": "assets/inter.ttf",
-      "bundled": true
+      "bundled": true,
+      "bytes": 16
     },
     {
       "id": "sprites",
@@ -304,6 +306,7 @@
   "warnings": [
     "root.children.1 (group from scene): a runtime image filter (<RuntimeShader>) is not playable on React Native Skia web — CanvasKit has no factory for it; native only.",
     "root.children.1.children.4 (shape): 2 composed path effects (dash → corner) are not playable on React Native Skia web — CanvasKit can't compose path effects; native only.",
+    "Asset \"sprites\" (image, https://media.example.com/project/sprites.png) used by test-skia-scene \"scene\" was not bundled: the exporter was given no bytes for it (export from the editor or the CLI, which resolve every asset first) — manifest.json lists it and the app draws nothing for it.",
     "root.children.4.text changes over time but its tags (static) say static — sampled per frame; tag it with ref/deps in the producer.",
     "root.children.8.geom.r: keyframes scene.radius (4 keys) does not reproduce the producer's value at frame 0 (a transformed param tagged as a plain ref?) — sampled instead.",
     "root.children.10.text changes over time but its tags (static) say static — sampled per frame; tag it with ref/deps in the producer."

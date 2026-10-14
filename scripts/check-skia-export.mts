@@ -477,13 +477,25 @@ const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
     mut(g.nodes, g.edges);
     return planSkiaExport(g.nodes, g.edges, g.targetId, { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE }).problems;
   };
+  // (Wave 3 lane I: a STATIC image — Image Source / Image (Skia) — exports
+  // as a bundled child; check-skia-assets covers that. Anything else that
+  // the source samples still refuses; an unsampled wire only warns.)
   check(
-    "refuses a wired image child",
+    "refuses a sampled image child that isn't a static image",
     plan2((n, e) => {
+      const sk = n.find((x) => x.id === "aurora")!;
+      sk.params = { ...sk.params, expression: `${sk.params.expression}\nfloat4 probe_img(float2 p) { return float4(iImage1.eval(p)); }` };
       n.push({ id: "img", type: "solid-color", params: {} });
       e.push({ id: "i", source: "img", sourceHandle: "out:primary", target: "aurora", targetHandle: "in:image1" });
-    }).some((p) => p.includes("image1"))
+    }).some((p) => p.includes("iImage1") && p.includes("only a static image exports"))
   );
+  {
+    const g = fx.auroraGraph();
+    g.nodes.push({ id: "img", type: "solid-color", params: {} });
+    g.edges.push({ id: "i", source: "img", sourceHandle: "out:primary", target: "aurora", targetHandle: "in:image1" });
+    const r = planSkiaExport(g.nodes, g.edges, g.targetId, { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE });
+    check("an image wired but never sampled is a warning, not a refusal", !!r.plan && r.plan.warnings.some((w) => w.includes("never samples iImage1")), JSON.stringify(r.problems));
+  }
   check(
     "refuses a channel driven by a non-keyframe node",
     plan2((n, e) => {
@@ -499,14 +511,21 @@ const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
       e.find((x) => x.source === "drift")!.source = "k";
     }).some((p) => p.includes("Constant"))
   );
-  check(
-    "refuses ramp channels",
-    plan2((n) => {
-      const sk = n.find((x) => x.id === "aurora")!;
-      const src = `${sk.params.expression}\n// ramp("ink", "#000", "#fff")`;
-      sk.params = { ...sk.params, expression: src, inputs: syncChannelInputs(sk.params.inputs as any, src) };
-    }).some((p) => p.includes("ramp/curve"))
-  );
+  {
+    // Wave 3 lane I: ramp / curve channels export as 256×1 LUT children
+    // (check-skia-assets holds the bytes and the pixels).
+    const g = fx.auroraGraph();
+    const sk = g.nodes.find((x) => x.id === "aurora")!;
+    const src = `${sk.params.expression}\n// ramp("ink", "#000", "#fff")`;
+    sk.params = { ...sk.params, expression: src, inputs: syncChannelInputs(sk.params.inputs as any, src) };
+    const r = planSkiaExport(g.nodes, g.edges, g.targetId, { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE });
+    const lut = r.plan?.children?.find((c) => c.kind === "lut");
+    check(
+      "a ramp channel exports as a 256×1 lookup-table child, not a uniform",
+      !!r.plan && lut?.name === "tbx_lut_ink" && lut.kind === "lut" && lut.lut.rgba.length === 1024 && !r.plan.uniforms.some((u) => u.name === "ink"),
+      JSON.stringify(r.problems)
+    );
+  }
   check(
     "a static Constant exports its stepped value",
     (() => {

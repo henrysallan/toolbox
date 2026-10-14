@@ -34,5 +34,11 @@ export interface SkiaGraphFixture {
   frames?: readonly number[];
   /** Canvas size when --size is not given: an edge, or [width, height]. Default 512. */
   size?: number | readonly [number, number];
+  /**
+   * Awaited before the sides are prepared (optional): a fixture whose build
+   * needs something asynchronous — a decoded ImageBitmap — starts it on the
+   * first build and resolves here when it has landed.
+   */
+  ready?(): Promise<void>;
   build(ctx: SkiaFixtureContext): { nodes: GraphNode[]; edges: GraphEdge[] };
 }

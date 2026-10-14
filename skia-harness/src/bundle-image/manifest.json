@@ -1,0 +1,122 @@
+{
+  "format": 3,
+  "name": "Image tint",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "usesTime": false,
+  "uniforms": [
+    {
+      "name": "mixk",
+      "kind": "float",
+      "animated": true,
+      "keys": 3,
+      "from": "channel keyframes (3 keys)"
+    }
+  ],
+  "children": [
+    {
+      "name": "iImage1",
+      "kind": "image",
+      "asset": "iImage1",
+      "fit": "fill",
+      "tile": "decal",
+      "from": "image-source \"photo\" (96×64, fit stretch, transformed)"
+    },
+    {
+      "name": "tbx_lut_ink",
+      "kind": "lut",
+      "channel": "ink",
+      "channelKind": "ramp",
+      "size": [
+        256,
+        1
+      ],
+      "from": "ramp channel \"ink\" (256×1 lookup table)"
+    },
+    {
+      "name": "tbx_lut_lift",
+      "kind": "lut",
+      "channel": "lift",
+      "channelKind": "curve",
+      "size": [
+        256,
+        1
+      ],
+      "from": "curve channel \"lift\" (256×1 lookup table)"
+    }
+  ],
+  "assets": [
+    {
+      "id": "iImage1",
+      "kind": "image",
+      "mime": "image/png",
+      "file": "assets/iImage1.png",
+      "bundled": true,
+      "bytes": 24708,
+      "width": 96,
+      "height": 64
+    }
+  ],
+  "warnings": []
+}

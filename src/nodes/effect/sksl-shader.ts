@@ -1,4 +1,4 @@
-import type { ExprInput, InputSocketDef, NodeDefinition, RenderContext } from "@/engine/types";
+import type { ExprInput, ImageValue, InputSocketDef, NodeDefinition, RenderContext } from "@/engine/types";
 import { channelSocketType, readChannelValues, syncChannelInputs } from "@/engine/expr-channels";
 import {
   canvasKit,
@@ -6,6 +6,7 @@ import {
   canvasKitReady,
   ensureCanvasKit,
 } from "@/engine/skia/canvaskit";
+import type { CanvasKit, Image } from "canvaskit-wasm";
 import {
   buildSkslProgram,
   channelUniformValues,
@@ -13,9 +14,13 @@ import {
   lintSksl,
   packUniforms,
   SKSL_CHILD_NAMES,
+  SKSL_LUT_SIZE,
+  skslLutBytes,
   userLineError,
 } from "@/engine/skia/sksl-program";
-import { renderSkslToImage, skiaGpuError } from "@/engine/skia/sksl-render";
+import { renderSkslToImage, skiaGpuError, type SkslShaderChild } from "@/engine/skia/sksl-render";
+import { makeSceneAssetResolver, sceneAssetGeneration } from "@/engine/skia/scene-assets";
+import { imageLocalMatrix, mappingOf } from "@/lib/skia-export/image-asset";
 
 // SkSL Shader — a Skia runtime shader authored in toolbox and rendered BY
 // Skia (CanvasKit), so the preview is the program React Native Skia runs,
@@ -53,6 +58,47 @@ const TIME_RE = /\biTime\b/;
 
 interface SkslState {
   lastWarned?: string | null;
+  // Ramp / curve LUT images by child name, keyed by the bytes they hold
+  // (an untouched ramp never rebuilds). Deleted on change and in dispose.
+  luts?: Record<string, { key: string; image: Image }>;
+  // An input is a static image file sampled through the asset loader: fold
+  // its generation into the fingerprint (the decode lands asynchronously).
+  hasAssets?: boolean;
+}
+
+// The LUT image for one ramp / curve channel (skslLutBytes: 256×1 RGBA8,
+// unpremultiplied sRGB — the same bytes the export ships).
+function lutImage(kit: CanvasKit, state: SkslState, child: string, kind: "ramp" | "curve", value: unknown): Image | null {
+  const bytes = skslLutBytes(kind, value);
+  const key = `${kind}:${Array.prototype.join.call(bytes, ",")}`;
+  const luts = (state.luts ??= {});
+  const have = luts[child];
+  if (have && have.key === key) return have.image;
+  have?.image.delete();
+  delete luts[child];
+  const image = kit.MakeImage(
+    {
+      width: SKSL_LUT_SIZE,
+      height: 1,
+      alphaType: kit.AlphaType.Unpremul,
+      colorType: kit.ColorType.RGBA_8888,
+      colorSpace: kit.ColorSpace.SRGB,
+    },
+    bytes,
+    SKSL_LUT_SIZE * 4
+  );
+  if (!image) return null;
+  luts[child] = { key, image };
+  return image;
+}
+
+function releaseLuts(state: SkslState | undefined, keep?: Set<string>) {
+  if (!state?.luts) return;
+  for (const child of Object.keys(state.luts)) {
+    if (keep?.has(child)) continue;
+    state.luts[child].image.delete();
+    delete state.luts[child];
+  }
 }
 
 function getState(ctx: RenderContext, nodeId: string): SkslState {
@@ -103,7 +149,7 @@ export const skslShaderNode: NodeDefinition = {
   // Skia layers: already a runtime effect — it exports as itself.
   skia: { class: "sksl" },
   description:
-    "A Skia runtime shader (SkSL) rendered by Skia itself through CanvasKit — the same program React Native Skia runs on device, so the preview is the shipped shader rather than a translation. Write helpers plus `half4 main(float2 fragCoord)`: fragCoord is pixels Y-DOWN, iResolution.xy is the canvas size, iTime is seconds, wired images are iImage1..iImage4 (sample with iImage1.eval(xy)), and the return value is PREMULTIPLIED. Write sRGB math: channel colors, iImage samples and the returned color are gamma-encoded sRGB numbers on every canvas — the node converts the result (and the samples) for the device's color space (Display P3 on wide-gamut iPhones, sRGB on Android and the web), so the shader looks identical everywhere; don't call toLinearSrgb / fromLinearSrgb yourself. Tunables are // comments synced into controls: // ch(\"k\", 0.5, 0, 1) → float k; // color(\"tint\", \"#ff8800\") → float4 tint (straight alpha, sRGB numbers); // toggle(\"on\", true) → int on (SkSL forbids bool uniforms); // pick(\"mode\", \"a\", \"b\") → int mode plus const int mode_a, mode_b. Skia compiles strict GLSL ES 1.0: no uint or bitwise ops, no while loops, constant loop bounds (break out early), no dFdx/fwidth. ch/toggle/pick/color channels keyframe directly (set_keyframes with the channel name; a wire still wins), and scalar/toggle/color channels are also wireable from keyframed Animated Value / Color nodes — both export as a Reanimated timeline.",
+    "A Skia runtime shader (SkSL) rendered by Skia itself through CanvasKit — the same program React Native Skia runs on device, so the preview is the shipped shader rather than a translation. Write helpers plus `half4 main(float2 fragCoord)`: fragCoord is pixels Y-DOWN, iResolution.xy is the canvas size, iTime is seconds, wired images are iImage1..iImage4 (sample with iImage1.eval(xy)), and the return value is PREMULTIPLIED. Write sRGB math: channel colors, iImage samples and the returned color are gamma-encoded sRGB numbers on every canvas — the node converts the result (and the samples) for the device's color space (Display P3 on wide-gamut iPhones, sRGB on Android and the web), so the shader looks identical everywhere; don't call toLinearSrgb / fromLinearSrgb yourself. Tunables are // comments synced into controls: // ch(\"k\", 0.5, 0, 1) → float k; // color(\"tint\", \"#ff8800\") → float4 tint (straight alpha, sRGB numbers); // toggle(\"on\", true) → int on (SkSL forbids bool uniforms); // pick(\"mode\", \"a\", \"b\") → int mode plus const int mode_a, mode_b; // ramp(\"ink\", \"#000000\", \"#ffffff\") → float4 ink(float t) (straight alpha, sRGB) and // curve(\"fall\", 1, 0) → float fall(float x), both 256-entry lookup tables. Skia compiles strict GLSL ES 1.0: no uint or bitwise ops, no while loops, constant loop bounds (break out early), no dFdx/fwidth. ch/toggle/pick/color channels keyframe directly (set_keyframes with the channel name; a wire still wins), and scalar/toggle/color channels are also wireable from keyframed Animated Value / Color nodes — both export as a Reanimated timeline. Exports ship a static Image Source / Image (Skia) wired into iImage1..4 as a bundled image (useImage + ImageShader); animated or other image inputs refuse.",
   searchAliases: ["skia", "sksl", "react native", "runtime effect", "shader", "canvaskit"],
   facts: {
     reads: ["time"],
@@ -113,7 +159,8 @@ export const skslShaderNode: NodeDefinition = {
       "Colors are sRGB numbers on every canvas (Display P3 iPhones too): your main() becomes tbx_user_main and an appended main converts its result for the device. tbx_ names are reserved.",
       "Rendered by CanvasKit in its own WebGL context: the first frames are transparent until the 7 MB WASM loads, then it re-renders.",
       "Wired images cross into Skia as 8-bit RGBA through a CPU readback per frame, so HDR input values clip and large inputs cost.",
-      "ramp() and curve() channels have no SkSL lowering yet; they are reported as unsupported and their uniforms are not declared.",
+      "ramp() / curve() channels are 256×1 RGBA8 lookup-table children sampled at texel centres: within 0.5/255 of GLSL Expression's float LUT, and the export ships these exact bytes.",
+      "A static Image Source / Image (Skia) in iImage1..4 is sampled from its file through Skia (the exported ImageShader), not the engine's pixels, once the file has decoded.",
       "`half` is 16-bit on iOS Metal but 32-bit in this preview — keep hashes and large coordinates in float.",
     ],
   },
@@ -171,10 +218,12 @@ export const skslShaderNode: NodeDefinition = {
   // The clock only when the source reads iTime; CanvasKit readiness always,
   // so the transparent placeholder rendered before the WASM landed is not
   // served from cache afterwards.
-  fingerprintExtras(params, ctx) {
+  fingerprintExtras(params, ctx, nodeId) {
     const source = (params.expression as string) ?? "";
     const ck = canvasKitReady() ? "ck1" : "ck0";
-    return TIME_RE.test(source) ? `${ck}|t:${ctx.time}` : ck;
+    const s = nodeId ? (ctx.state[`sksl-shader:${nodeId}`] as SkslState | undefined) : undefined;
+    const a = s?.hasAssets ? `|a:${sceneAssetGeneration()}` : "";
+    return TIME_RE.test(source) ? `${ck}|t:${ctx.time}${a}` : `${ck}${a}`;
   },
 
   compute({ inputs, params, ctx, nodeId }) {
@@ -204,32 +253,52 @@ export const skslShaderNode: NodeDefinition = {
     if (lint.problems.length) return fail(lint.problems.join(" "));
     const compiled = compileSksl(kit, prog.sksl);
     if (!compiled.effect) return fail(userLineError(compiled.error, prog.preludeLines, prog.sourceLines));
-    if (prog.unsupported.length && state.lastWarned !== "unsupported") {
-      console.warn(
-        `[SkSL Shader ${nodeId}] ramp/curve channels have no SkSL lowering yet: ${prog.unsupported.join(", ")}`
-      );
-      state.lastWarned = "unsupported";
-    } else if (!prog.unsupported.length) {
-      state.lastWarned = null;
-    }
+    state.lastWarned = null;
 
     const width = ctx.width;
     const height = ctx.height;
+    const values = readChannelValues(prog.channels, inputs);
     const uniforms = packUniforms(compiled.effect, {
       iResolution: [width, height, 1],
       iTime: ctx.time,
-      ...channelUniformValues(prog.channels, readChannelValues(prog.channels, inputs)),
+      ...channelUniformValues(prog.channels, values),
     });
-    const children = prog.children.map((name) => {
+    // A static image file (ImageValue.skiaSource: Image Source, Image
+    // (Skia)'s preview) is sampled through Skia itself — the ImageShader the
+    // React Native export ships, same file, same local matrix — once the
+    // asset loader has decoded it; until then (and for any other image) the
+    // engine's pixels cross over as before.
+    let pendingAssets = false;
+    const resolveAsset = makeSceneAssetResolver(kit);
+    const children = prog.children.map((name): ImageValue | SkslShaderChild | undefined => {
       const v = inputs[IMAGE_SOCKETS[SKSL_CHILD_NAMES.indexOf(name as (typeof SKSL_CHILD_NAMES)[number])]];
-      return v && v.kind === "image" ? v : undefined;
+      if (!v || v.kind !== "image") return undefined;
+      const src = (v as ImageValue).skiaSource;
+      if (!src) return v as ImageValue;
+      pendingAssets = true;
+      const img = resolveAsset(src.asset.id, "image", src.asset);
+      if (!img || img instanceof ArrayBuffer || img instanceof Uint8Array) return v as ImageValue;
+      const tile = src.tile === "decal" ? kit.TileMode.Decal : kit.TileMode.Clamp;
+      return {
+        skiaShader: img.makeShaderOptions(tile, tile, kit.FilterMode.Linear, kit.MipmapMode.None, imageLocalMatrix(mappingOf(src), width, height)),
+      };
     });
-    const out = renderSkslToImage(ctx, kit, compiled.effect, uniforms, children, width, height);
+    state.hasAssets = pendingAssets;
+    // Ramp / curve channels: their LUT images, bound after the iImage children.
+    const luts: Image[] = [];
+    for (const l of prog.luts) {
+      const img = lutImage(kit, state, l.child, l.kind, values[l.name]);
+      if (!img) return fail(`CanvasKit could not build the lookup table for ${l.kind} channel "${l.name}"`);
+      luts.push(img);
+    }
+    releaseLuts(state, new Set(prog.luts.map((l) => l.child)));
+    const out = renderSkslToImage(ctx, kit, compiled.effect, uniforms, children, width, height, luts);
     if (!out) return fail(skiaGpuError() ?? "CanvasKit render failed");
     return { primary: out };
   },
 
   dispose(ctx, nodeId) {
+    releaseLuts(ctx.state[`sksl-shader:${nodeId}`] as SkslState | undefined);
     delete ctx.state[`sksl-shader:${nodeId}`];
   },
 

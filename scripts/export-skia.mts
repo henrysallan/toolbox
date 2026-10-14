@@ -11,6 +11,11 @@
 //                         (emit-baked.ts; default: the worklet timeline)
 //   … --animation native  Reanimated-native animations (emit-native.ts):
 //   npx tsx scripts/export-skia.mts --fixture easings --animation native --out skia-harness/src/bundle-native-easings
+//   npx tsx scripts/export-skia.mts --fixture image --out skia-harness/src/bundle-image
+//   … --fetch             also fetch http(s) asset URLs (default: offline —
+//                         /fonts/… come from public/, data: / blob: / file:
+//                         resolve locally, anything else ships unbundled
+//                         with a warning)
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
 // (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame,
@@ -39,7 +44,20 @@ function arg(name: string): string | undefined {
 
 const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes();
-const { exportSkia, exportSkiaScene } = await import("@/lib/skia-export");
+const { exportSkia, exportSkiaScene, collectSkiaExportAssets, resolveSkiaExportAssets, sceneAssetIds } = await import("@/lib/skia-export");
+const { nodeAssetHandles, nodeResolveAsset } = await import("./skia/node-assets.ts");
+type AssetUse = { asset: import("@/engine/skia/scene-ir").AssetIR; owners: string[] };
+
+// Assets resolve BEFORE the synchronous export, through the same seam the
+// editor uses (lib/skia-export/assets.ts) with a Node resolver
+// (scripts/skia/node-assets.ts): /fonts/… from public/, data:, blob:,
+// file:; http(s) only with --fetch (offline by default — an unresolved
+// asset ships unbundled with a warning naming its node).
+const remote = process.argv.includes("--fetch");
+async function resolveAssets(uses: AssetUse[]) {
+  const mine = uses.filter((u) => nodeAssetHandles(u.asset.url, { remote }));
+  return mine.length ? resolveSkiaExportAssets(mine, nodeResolveAsset({ remote })) : undefined;
+}
 
 const out = arg("out");
 if (!out) {
@@ -68,11 +86,16 @@ const sceneFile = arg("scene");
 if (sceneFile) {
   const j = JSON.parse(fs.readFileSync(sceneFile, "utf8"));
   label = arg("name") ?? j.name ?? path.basename(sceneFile, ".json");
+  const uses: AssetUse[] = [...sceneAssetIds(j.scene.root)].flatMap(([id, owners]) =>
+    j.scene.assets?.[id] ? [{ asset: j.scene.assets[id], owners: [...owners].map((o) => `"${o}"`) }] : []
+  );
+  const assets = await resolveAssets(uses);
   result = exportSkiaScene(j.scene, j.nodes ?? [], j.edges ?? [], {
     name: label,
     timeline: j.timeline ?? DEFAULT_TIMELINE,
     runtimeSource,
     animation,
+    ...(assets ? { assets } : {}),
   });
 } else {
   let nodes, edges, targetId: string, timeline, canvas, name: string;
@@ -108,8 +131,17 @@ if (sceneFile) {
     timeline = fx.EASINGS_TIMELINE;
     canvas = { width: fx.EASINGS_SIZE, height: fx.EASINGS_SIZE };
     name = "Easings";
+  } else if (fixture === "image") {
+    // An Image Source into iImage1 + ramp / curve channels + a keyframed
+    // channel (image-graph.ts): the ?bundle=image slot (bundle-image).
+    const fx = await import("./fixtures/skia/image-graph.ts");
+    ({ nodes, edges, targetId } = fx.imageEffectGraph(fx.imageFixtureStandIn(fx.imageFixturePng())));
+    // The Aurora markers, so the harness's SEGMENTS type is one type.
+    timeline = { ...fx.IMAGE_TIMELINE, markers: (await import("./fixtures/skia/aurora-graph.ts")).AURORA_MARKERS };
+    canvas = { width: 512, height: 512 };
+    name = "Image tint";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, image)`);
   } else {
     const file = arg("graph");
     const node = arg("node");
@@ -123,7 +155,9 @@ if (sceneFile) {
     name = arg("name") ?? node;
   }
   label = targetId;
-  result = exportSkia({ nodes, edges, targetId, name, canvas, timeline, runtimeSource, animation });
+  const req = { nodes, edges, targetId, name, canvas, timeline, runtimeSource, animation };
+  const assets = await resolveAssets(collectSkiaExportAssets(req));
+  result = exportSkia({ ...req, ...(assets ? { assets } : {}) });
 }
 
 if (!result.files) {

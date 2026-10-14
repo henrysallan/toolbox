@@ -40,6 +40,20 @@ export interface SkiaExportRequest {
   // (emit-baked.ts); "native" — each value its own shared value on idiomatic
   // Reanimated animations (emit-native.ts), interruptible, frame-scheduled.
   animation?: "worklet" | "baked" | "native";
+  // Asset bytes resolved BEFORE this synchronous call (additive, Wave 3
+  // lane I): the editor / MCP / CLI run the async pre-pass in assets.ts
+  // (collectSkiaExportAssets → resolveSkiaExportAssets, or
+  // exportSkiaWithAssets for both) through the one URL → bytes seam
+  // (engine/skia/asset-bytes.ts). Absent: only data: URLs are bundled and
+  // every other asset ships unbundled with a warning naming its node.
+  assets?: SkiaExportAssets;
+}
+
+// Bytes by URL — an AssetIR's `url` or its `license` URL — plus the
+// reason each URL that could not be resolved failed (the warning quotes it).
+export interface SkiaExportAssets {
+  bytes: Record<string, Uint8Array>;
+  failed?: Record<string, string>;
 }
 
 export interface SkiaExportResult {
@@ -58,6 +72,8 @@ export interface SkiaSceneExportOptions {
   // it, binds derived from animated params refuse and nothing is verified.
   sampleAt?: (tick: number) => SkiaScene | null;
   animation?: SkiaExportRequest["animation"];
+  // SkiaExportRequest.assets (additive, Wave 3 lane I).
+  assets?: SkiaExportAssets;
 }
 
 // Export a scene directly — the skia-canvas branch below after it has
@@ -73,6 +89,7 @@ export function exportSkiaScene(
     name: opts.name,
     timeline: opts.timeline,
     sampleAt: opts.sampleAt,
+    ...(opts.assets ? { assets: opts.assets } : {}),
   });
   if (!plan) return { files: null, problems, warnings: [], binds };
   const segments = exportSegments(opts.timeline.markers, opts.timeline);
@@ -101,6 +118,7 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         name: req.name,
         canvas: req.canvas,
         timeline: req.timeline,
+        ...(req.assets ? { assets: req.assets } : {}),
       });
       if (!plan) return { files: null, problems, warnings: [] };
       const segments = exportSegments(req.timeline.markers, req.timeline);
@@ -135,6 +153,7 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         runtimeSource: req.runtimeSource,
         sampleAt: (tick) => sampler.sampleAt(tick),
         animation: req.animation,
+        ...(req.assets ? { assets: req.assets } : {}),
       });
       // What the producers themselves could not express (an unfused shader,
       // an unported option) refuses the export, as it fails the preview.

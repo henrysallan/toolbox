@@ -28,6 +28,7 @@ import type {
   GrDirectContext,
   Image,
   RuntimeEffect,
+  Shader,
   Surface,
 } from "canvaskit-wasm";
 import type { ImageValue, RenderContext } from "../types";
@@ -181,7 +182,14 @@ export function engineImageToSkia(kit: CanvasKit, ctx: RenderContext, img: Image
   );
 }
 
-function childShader(kit: CanvasKit, ctx: RenderContext, img: ImageValue | undefined) {
+// A child the caller built itself (the SkSL Shader's ImageShader of a
+// static image file, ImageValue.skiaSource); deleted after the render.
+export interface SkslShaderChild {
+  skiaShader: Shader;
+}
+
+function childShader(kit: CanvasKit, ctx: RenderContext, img: ImageValue | SkslShaderChild | undefined) {
+  if (img && "skiaShader" in img) return { shader: img.skiaShader, image: null };
   if (!img) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
   const image = engineImageToSkia(kit, ctx, img);
   if (!image) return { shader: kit.Shader.MakeColor(kit.TRANSPARENT, kit.ColorSpace.SRGB), image: null };
@@ -194,17 +202,27 @@ function childShader(kit: CanvasKit, ctx: RenderContext, img: ImageValue | undef
   return { shader, image };
 }
 
+// `luts` (additive, Wave 3 lane I): CanvasKit images bound after the engine
+// images, in order — the SkSL Shader's ramp / curve lookup tables, sampled
+// with identity coordinates (clamp, linear). The caller owns them.
 export function renderSkslToImage(
   ctx: RenderContext,
   kit: CanvasKit,
   effect: RuntimeEffect,
   uniforms: Float32Array,
-  children: (ImageValue | undefined)[],
+  children: (ImageValue | SkslShaderChild | undefined)[],
   width: number,
-  height: number
+  height: number,
+  luts: Image[] = []
 ): ImageValue | null {
   return renderSkiaToImage(ctx, kit, width, height, (canvas) => {
-    const kids = children.map((c) => childShader(kit, ctx, c));
+    const kids = [
+      ...children.map((c) => childShader(kit, ctx, c)),
+      ...luts.map((img) => ({
+        shader: img.makeShaderOptions(kit.TileMode.Clamp, kit.TileMode.Clamp, kit.FilterMode.Linear, kit.MipmapMode.None),
+        image: null as Image | null,
+      })),
+    ];
     const shader = kids.length
       ? effect.makeShaderWithChildren(uniforms, kids.map((k) => k.shader))
       : effect.makeShader(uniforms);

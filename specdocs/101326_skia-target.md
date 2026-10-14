@@ -744,6 +744,124 @@ steady clock and within a frame per step otherwise.
    (64 effects), and a perf note in the profiler: CanvasKit time sits outside
    the engine's GPU timer.
 
+#### 3.8.2–3.8.3 built and measured (Wave 3 lane I, 2026-10-14)
+
+Images and assets, preview and export. Gate `check:skia-assets` (in `npm run
+check`); pixels against the GL nodes with `compare:skia` (fixture
+`scripts/fixtures/skia/image-graph.ts`); web parity with `parity:skia --
+--bundle image` (slot `skia-harness/src/bundle-image`, `export-skia.mts
+--fixture image`).
+
+What shipped:
+
+- **The asset seam.** One function turns an `AssetIR` URL into bytes:
+  `resolveSkiaAssetBytes` in `engine/skia/asset-bytes.ts`. It tries
+  registered schemes first (`registerSkiaAssetScheme("bake", fn)` is lane
+  B's hook for `bake:<nodeId>`), then decodes `data:` in place, then
+  fetches (project media `https:`, `/fonts/…`, `blob:`). The preview's
+  loader (`scene-assets.ts`) and every export use it. `exportSkia` stays
+  synchronous and pure. An async pre-pass runs in front of it
+  (`lib/skia-export/assets.ts`): `collectSkiaExportAssets` (the SkSL
+  planner's image children, or the Skia Canvas scene at tick 0), then
+  `resolveSkiaExportAssets`, then `exportSkia({ …request, assets: { bytes,
+  failed } })` — an additive request field.
+  - `exportSkiaFromEditor` and `planSkiaExportForEditor` are async. They take
+    `SkiaExportEnv.resolveAsset?: (asset: AssetIR) => Promise<Uint8Array |
+    null>` (default: the seam).
+  - The CLI resolves through `scripts/skia/node-assets.ts`: `public/` for
+    root-relative paths, and offline unless `--fetch`.
+  - Bytes land at `assets/<id>.<ext>`: base64 `.b64` text in `files`, which
+    MCP returns as it is and `skiaZipEntries` / the CLI decode to binary.
+    `asset-bundle.ts` holds the one rule the planners' warnings and the
+    emitters share.
+  - `manifest.json` lists every asset with `file`, `bytes`, `bundled` and
+    `license`.
+  - An asset without bytes is a warning naming the nodes that draw it and
+    quoting the reason (`HTTP 404 …`). Its `ASSET_SOURCES` entry is `null`,
+    which useImage / useFont / useTypeface accept, and the bundle still
+    type-checks. Before this, an unbundled asset was a `require()` of a file
+    that wasn't there, so Metro failed to bundle.
+- **Fonts.** `AssetIR.license` is additive. Geist's OFL text
+  (`public/fonts/Geist-OFL.txt`) ships beside `assets/geist.ttf` as
+  `assets/Geist-OFL.txt`. Inter has no licence file in `public/fonts`, so
+  none ships.
+- **Image (Skia)** (`skia-image`, `nodes/skia/image.ts`). It has Image
+  Source's `file`, `fit` and TRS params, and three outputs:
+  - **primary**: an `<Image>` over the canvas rect. Image Source applies its
+    TRS in per-axis uv space, so a rotation shears on a non-square canvas. In
+    canvas px that is `T(P)·T(t)·diag(a,1)·R(θ)·diag(sx/a,sy)·T(−P)` (a =
+    W/H), built as two Groups. Every bind is one param × a constant, so a
+    keyframed TRS exports as exact tracks.
+  - **aux `shader`**: `tbx.image.fit@1`, FIT_FS line for line, fused over an
+    image leaf (a clamp-tiled ImageShader of the file). It keeps Image
+    Source's hard edges.
+  - **aux `preview`**: the drawing rendered by CanvasKit.
+
+  Not mirrored: EXR stills (no RN float image format; reported as a problem)
+  and `uv_in`.
+- **Image leaves in fused programs.** The fuser already emitted `leaf`
+  children as `c<k>` wrappers (colour-managed with `tbx_cm_child`), and the
+  scene renderer and emitter already drew image shaders. The gaps were these:
+  - assets didn't travel with shader values. `SkiaShaderValue.assets` is
+    additive; every `defineSkslNode` output merges its inputs' assets and
+    the Skia Fill hands them to the scene;
+  - a skia-* node's own preview showed image (and gradient) children as
+    transparent with a problem. `renderShaderPreview` now renders such trees
+    whole through the scene renderer;
+  - nothing re-rendered when the file landed. Fingerprints fold the asset
+    loader's generation.
+- **SkSL Shader `iImage1..4`.** A static Image Source, or Image (Skia)'s
+  preview, exports as a bundled asset: `useImage` and an `<ImageShader
+  matrix>` child, with `images.ts`'s `imageMatrix` (fit, then TRS forward)
+  and decal tiling outside a letterboxed or transformed image. A
+  transparent `<ColorShader>` holds the slot while the image loads, so the
+  child count never changes. **The preview now samples the same file**:
+  Image Source and Image (Skia)'s preview tag their output
+  (`ImageValue.skiaSource`, additive). Once the loader has decoded the
+  file, the SkSL Shader binds an ImageShader of it with
+  `imageLocalMatrix` — the same arithmetic `images.ts` ships, held bit-equal
+  — instead of the 8-bit readback.
+
+  Refused, each with its reason:
+  - a keyframed, wired, faded (opacity < 1), clipped or bypassed source;
+  - a source on `cover` with a transform. An ImageShader can't clip the
+    cover crop to the moved rect, though the drawing can.
+  - EXR;
+  - any computed or animated image (left for lane B's bake).
+
+  An unwired but sampled child ships a transparent child, with a warning.
+  A wired but unsampled one only warns.
+- **Ramp / curve channels.** A channel becomes `uniform shader
+  tbx_lut_<name>;` plus its accessor: `float4 ink(float t)` (straight sRGB)
+  or `float lift(float x)`. The accessor samples a 256×1 RGBA8 LUT
+  (`skslLutBytes`: GLSL Expression's LUT quantized) at texel centres with
+  linear filtering, through `tbx_cm_child`. The preview binds it as a
+  CanvasKit image. The export builds the same bytes with
+  `Skia.Image.MakeImage` (`luts.ts`) and passes them as an `<ImageShader>`
+  child. Wired or keyframed ramps refuse: the table would change per frame.
+
+Measured:
+
+| what | result |
+|---|---|
+| Image Source vs Image (Skia), real engine, 320×180 (16:9: shear), `compare:skia --a image:<pair>n --b image:<pair>d\|s`, all 9 pairs (cover, contain, trs, cvtrs × drawing / shader, and Color Correction ← image) | **MATCH** on every pair, meanAbs 0.00034–0.00046. Premultiplied (edge-band): interior 0/255; band p95 1/255, max 1–2/255 for the shader path and every untransformed drawing. Transformed drawings max 127/255, but only on their outline: Skia anti-aliases where Image Source cuts hard (alpha meanAbs 0.003). compare's unpremultiplied max (~214/255) is the RGB of near-transparent pixels: the engine filters straight alpha, Skia premultiplied. |
+| SkSL Shader with iImage1 (Image Source, stretch, rotated 9°) + ramp + curve + a keyframed mix, toolbox vs React Native Skia web (`parity:skia -- --bundle image`, 512², 8 frames) | **pixel-identical: 8/8 frames, 0/255, 100.00 %** (motion f0→f150 meanAbs 0.147). Before the preview sampled the file itself it read MATCH with meanAbs 0.0042 and max 198/255 at the rotated edges, where GL cuts hard and the ImageShader fades. |
+| `imageMatrix` (shipped) vs `imageLocalMatrix` (preview) | bit-identical, 20 sizes × mappings |
+| Image Source's mapping three ways in CanvasKit (Group nest / FIT_FS port / ImageShader matrix) | ≤ 2/255 inside the image; the Group algebra ≤ 2e-15 relative vs an independent fitRects |
+| LUT accessors | exact at t = k/255 on sRGB (opaque ramp, translucent ramp, curve: 0/255); Display P3 F32 read as sRGB ≤ 1/255 |
+| Bundles with assets type-check against react-native-skia 3.4.0 | scene and effect bundles, worklet / baked / native |
+
+Open:
+- **Device.** Untagged `MakeImage` LUTs on a P3 iPhone rely on Skia treating
+  a null colour space as sRGB. The web tags them sRGB. Unmeasured on device.
+- **The drawing's edges.** RN `<Image>` uses `drawImageRect` with a strict
+  source rect, as the preview does. Its anti-aliased edges differ from Image
+  Source's hard cut by design.
+- **Lane B.** Animated, video and computed images into `iImage` (bake).
+  Wired or keyframed ramps.
+- **The SkSL Shader's other image inputs** still cross as an 8-bit readback.
+  The ImageShader path covers static files only.
+
 ### 3.9 Trust boundary
 
 SkSL is inert (no I/O). Risk is DoS-shaped, a pathological shader hanging the

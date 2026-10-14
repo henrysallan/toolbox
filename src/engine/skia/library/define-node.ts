@@ -84,7 +84,8 @@ import type {
   SkiaShaderValue,
   SocketValue,
 } from "../../types";
-import type { Bind, RGBA } from "../scene-ir";
+import type { AssetIR, Bind, RGBA } from "../scene-ir";
+import { sceneAssetGeneration } from "../scene-assets";
 import { bindParam, bindStatic } from "../scene-ir";
 import type { ShaderExpr } from "../shader-expr";
 import { canvasKit, canvasKitError, canvasKitReady, ensureCanvasKit } from "../canvaskit";
@@ -196,6 +197,23 @@ export function skslNodeSpec(type: string): SkslNodeSpec | undefined {
 
 interface SkslNodeState {
   warned?: string | null;
+  // The last expression sampled an image leaf: fold the asset loader's
+  // generation into the fingerprint so a preview rendered while the file
+  // was loading is not served from cache.
+  hasAssets?: boolean;
+}
+
+// The images every wired shader input samples, by asset id (Wave 3 lane I:
+// SkiaShaderValue.assets) — carried on this node's output so the Skia Fill
+// that fuses the tree can hand them to the scene.
+export function wiredShaderAssets(wired: Record<string, SocketValue | undefined>): Record<string, AssetIR> | undefined {
+  let out: Record<string, AssetIR> | undefined;
+  for (const v of Object.values(wired)) {
+    if (v?.kind !== "skia_shader") continue;
+    const a = (v as SkiaShaderValue).assets;
+    if (a) out = { ...(out ?? {}), ...a };
+  }
+  return out;
 }
 
 export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
@@ -256,7 +274,13 @@ export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
     return out;
   };
 
-  const renderPreview = (ctx: RenderContext, nodeId: string, expr: ShaderExpr, problems: string[]) => {
+  const renderPreview = (
+    ctx: RenderContext,
+    nodeId: string,
+    expr: ShaderExpr,
+    problems: string[],
+    assets: Record<string, AssetIR> | undefined
+  ) => {
     const kit = canvasKit();
     if (!kit) {
       const err = canvasKitError();
@@ -275,7 +299,7 @@ export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
       problems.push(...fused.problems);
       return transparent(ctx);
     }
-    const r = renderShaderPreview(ctx, kit, fused.shader, ctx.width, ctx.height);
+    const r = renderShaderPreview(ctx, kit, fused.shader, ctx.width, ctx.height, 0, assets);
     problems.push(...r.problems);
     return r.image ?? transparent(ctx);
   };
@@ -312,16 +336,21 @@ export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
     // CanvasKit readiness, so the transparent placeholder rendered before the
     // WASM landed is not served from cache afterwards; the clock when the
     // function reads iTime.
-    fingerprintExtras(_params, ctx) {
+    fingerprintExtras(_params, ctx, nodeId) {
       const ck = canvasKitReady() ? "ck1" : "ck0";
-      return fn.usesTime ? `${ck}|t:${ctx.time}` : ck;
+      const s = nodeId ? (ctx.state[stateKey(nodeId)] as SkslNodeState | undefined) : undefined;
+      const a = s?.hasAssets ? `|a:${sceneAssetGeneration()}` : "";
+      return fn.usesTime ? `${ck}|t:${ctx.time}${a}` : `${ck}${a}`;
     },
     compute({ inputs: wired, params, ctx, nodeId, consumedOutputs }) {
       const { expr, problems } = buildExpr(params, wired, nodeId, ctx);
+      const assets = wiredShaderAssets(wired);
+      ((ctx.state[stateKey(nodeId)] ??= {}) as SkslNodeState).hasAssets = !!assets;
       const primary: SkiaShaderValue = {
         kind: "skia_shader",
         expr,
         ...(problems.length ? { problems: [...problems] } : {}),
+        ...(assets ? { assets } : {}),
       };
       // Data-only evaluations (the exporter, Node gates) run on a context
       // with no GL: the shader value is all they need, never a preview.
@@ -330,7 +359,7 @@ export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
         warnOnce(ctx, nodeId, problems);
         return { primary };
       }
-      const preview = renderPreview(ctx, nodeId, expr, problems);
+      const preview = renderPreview(ctx, nodeId, expr, problems, assets);
       warnOnce(ctx, nodeId, problems);
       return { primary, aux: { [SKSL_PREVIEW_OUTPUT]: preview } };
     },

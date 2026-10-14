@@ -17,6 +17,7 @@ import {
   type ExrDecodeResult,
 } from "@/engine/exr";
 import { pushMediaSettle } from "@/engine/offline-settle";
+import { skiaImageSourceOf } from "@/lib/skia-export/image-asset";
 import {
   TRANSFORM_TRS_PARAMS,
   bindTrsUniforms,
@@ -397,6 +398,15 @@ export const imageSourceNode: NodeDefinition = {
         uvConst[1]
       );
     });
+
+    // The file itself, for an SkSL Shader that samples this output: it
+    // reads the picture through Skia exactly as its React Native export's
+    // ImageShader does (lib/skia-export/image-asset.ts). Only a plain
+    // fitted bitmap qualifies (no uv_in warp, no fade; never re-encodes).
+    if (uvInMode === 0 && fileVal instanceof ImageBitmap && !((params.opacity as number) < 1)) {
+      const tag = skiaImageSourceOf(`image-${nodeId}`, params, false);
+      if ("source" in tag) output.skiaSource = tag.source;
+    }
 
     // Auto Layout element: natural size is the source's own pixels.
     // Render samples the uploaded texture directly — the negative-

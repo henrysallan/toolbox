@@ -367,12 +367,12 @@ const EXPECT_SEGMENTS = `export const SEGMENTS = {\n  "intro": [0, 2], // frames
   const ENV = { canvas: { width: 512, height: 512 }, fps: 60, frames: 300, markers: MARKERS };
   const onTime = ed.prepareSkiaExport(nodes, edges, layer.id, ENV);
   check("editor: the request carries the composition's markers", same(onTime.request?.timeline.markers, MARKERS));
-  const viaEditor = ed.exportSkiaFromEditor(nodes, edges, layer.id, ENV).result;
+  const viaEditor = (await ed.exportSkiaFromEditor(nodes, edges, layer.id, ENV)).result;
   check("editor: the bundle's clock matches the direct export", viaEditor.files?.["toolbox-clock.ts"] === effect.files?.["toolbox-clock.ts"]);
-  const plan = ed.planSkiaExportForEditor(nodes, edges, layer.id, ENV);
+  const plan = await ed.planSkiaExportForEditor(nodes, edges, layer.id, ENV);
   check("plan_skia_export summary lists the segments", same(plan.segments?.map((s) => [s.name, s.start, s.end]), [["intro", 0, 2], ["loop", 2, 5], ["flash", 2.5, 3]]), JSON.stringify(plan.segments));
   layer.data.clips = [{ inTick: 30_000, outTick: 300_000, sourceInTick: 0, enabled: true }];
-  const late = ed.exportSkiaFromEditor(nodes, edges, layer.id, ENV).result;
+  const late = (await ed.exportSkiaFromEditor(nodes, edges, layer.id, ENV)).result;
   const lateClock = late.files?.["toolbox-clock.ts"] ?? "";
   check(
     "editor: a layer starting at frame 30 shifts markers onto its own clock (−30 frames) and says so",

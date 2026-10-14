@@ -853,7 +853,8 @@ export const BRIDGED_TOOLS = [
       "over). For an SkSL Shader, `uniforms[]` lists every uniform with " +
       "`animated`, `from` (which node drives it: a static channel row, an " +
       "Animated Value track, a Color track, a Constant), the static `value` " +
-      "or the key count and first/last keyframe frames. Other targets list " +
+      "or the key count and first/last keyframe frames. " +
+      "`children[]` lists its child shaders in order (iImage images — a static Image Source / Image (Skia) only — and ramp / curve lookup tables) with whether each image's bytes resolved. Other targets list " +
       "the `files` export_skia would write plus the bundle's `manifest`. " +
       "`animation` picks the timeline shape (see export_skia); the plan " +
       "reports that mode's own refusals and warnings. " +
@@ -880,7 +881,8 @@ export const BRIDGED_TOOLS = [
       "SEGMENTS / MARKERS), manifest.json, index.ts), `folder` (a suggested folder " +
       "name), `warnings`, and a `note`. Write every file verbatim into one " +
       "folder of the app; `assets/*.b64` entries are base64 — decode to " +
-      "binary and drop the suffix. Fails with the plan's problems when the " +
+      "binary and drop the suffix. " +
+      "Images and fonts ship under assets/ (manifest.json `assets` lists each with its size and `bundled`; a warning names any whose bytes didn't resolve). Fails with the plan's problems when the " +
       "target can't export. `animation` (default \"worklet\"): \"worklet\" " +
       "replays every track on one master clock (frame-exact, scrubbable; " +
       "useToolboxClock); \"baked\" compiles the keyframes into the SkSL as " +

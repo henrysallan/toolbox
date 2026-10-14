@@ -19,6 +19,7 @@ import { evaluateGraph, type EvalCache, type GraphEdge, type GraphNode } from "@
 import { pickInspectSocket } from "@/engine/socket-inspect";
 import type { ImageValue } from "@/engine/types";
 import { canvasKitBase, setCanvasKit } from "@/engine/skia/canvaskit";
+import { sceneAssetGeneration, sceneAssetsSettled } from "@/engine/skia/scene-assets";
 import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import type { SkiaGraphFixture } from "./fixture";
 
@@ -99,7 +100,10 @@ export async function init(width: number, height: number) {
   return { canvasKitBase: canvasKitBase() };
 }
 
-export function prepare(key: string, spec: SideSpec) {
+export async function prepare(key: string, spec: SideSpec) {
+  // A fixture that needs something asynchronous (a decoded bitmap) started
+  // it on its first build (info); wait for it before building the sides.
+  await fixtureOf(spec.fixture).ready?.();
   const { fx, nodes, edges } = build(spec.fixture);
   const node = nodes.find((n) => n.id === spec.node);
   if (!node) {
@@ -179,19 +183,29 @@ export function stats(pa: Uint8Array | Uint8ClampedArray, pb: Uint8Array | Uint8
   return { maxSteps, identical: identical / (w * h) };
 }
 
+// Render a side; when the frame asked the asset loader for an image or
+// font that was not decoded yet (scene-assets.ts), wait for it and render
+// again — the editor does the same through pipeline-bump.
+async function renderSettled(key: string, f: number, aw: number, ah: number): Promise<Uint8ClampedArray> {
+  const g0 = sceneAssetGeneration();
+  const px = renderSide(key, f, aw, ah);
+  await sceneAssetsSettled();
+  return sceneAssetGeneration() === g0 ? px : renderSide(key, f, aw, ah);
+}
+
 // One frame: render A and B at analysis size, score them, hand back the
 // three images (A, B, |A−B| heat) as base64 RGBA for the main process.
-export function frame(f: number, aw: number, ah: number, threshold?: number) {
-  const pa = renderSide("A", f, aw, ah);
-  const pb = renderSide("B", f, aw, ah);
+export async function frame(f: number, aw: number, ah: number, threshold?: number) {
+  const pa = await renderSettled("A", f, aw, ah);
+  const pb = await renderSettled("B", f, aw, ah);
   const metrics = { ...compareRgba(pa, pb, aw, ah, threshold ? { threshold } : {}), ...stats(pa, pb, aw, ah) };
   return { metrics, a: toB64(pa), b: toB64(pb), heat: toB64(diffHeatRgba(pa, pb, aw, ah)) };
 }
 
 // How much side `key` changed between two frames (meanAbs) — tells a
 // static picture from a fixture whose drivers never moved.
-export function motion(key: string, f0: number, f1: number, aw: number, ah: number) {
-  return compareRgba(renderSide(key, f0, aw, ah), renderSide(key, f1, aw, ah), aw, ah).meanAbs;
+export async function motion(key: string, f0: number, f1: number, aw: number, ah: number) {
+  return compareRgba(await renderSettled(key, f0, aw, ah), await renderSettled(key, f1, aw, ah), aw, ah).meanAbs;
 }
 
 export function destroy() {

@@ -13,14 +13,23 @@
 //                       (segments.ts)
 //   manifest.json       uniforms, provenance, timing, segments, versions
 //   index.ts            barrel
+// and, when the program samples child shaders (iImage1..4, ramp / curve
+// channels — effectChildrenCode below):
+//   images.ts           each image's canvas mapping + imageMatrix()
+//   luts.ts             the ramp / curve lookup-table images
+//   assets.ts           ASSET_SOURCES: require() of each bundled image
+//   assets/*.b64        the image files (base64; the zip / CLI decode them)
 //
 // The runtime source is passed in (the CLI reads it from disk) so this
 // module stays importable from the editor bundle and the Node gates alike.
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
 import { isColorManagedSksl } from "@/engine/skia/library/color-management";
+import { bytesToBase64 } from "@/engine/skia/asset-bytes";
+import { assetSourcesModule, manifestAsset, writeAssetFiles } from "./asset-bundle";
+import { IMAGE_MATRIX_SOURCE, mappingOf } from "./image-asset";
 import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
-import type { SkiaExportPlan } from "./plan";
+import type { SkiaEffectChild, SkiaExportPlan } from "./plan";
 import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 
 // 3: useToolboxClock() returns { time, …controls } (was the bare shared
@@ -35,6 +44,136 @@ const HEADER = (what: string) =>
 
 function ident(name: string): string {
   return `T_${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
+}
+
+// ---- child shaders (Wave 3 lane I) --------------------------------------------------
+//
+// The program's `uniform shader` children, as the <Shader> element's
+// children in declaration order (React Native binds them by position):
+//   image  useImage(ASSET_SOURCES.<name>) (assets.ts → assets/<name>.<ext>)
+//          in an <ImageShader matrix={…}>: images.ts's imageMatrix maps the
+//          file onto the canvas as Image Source does (fit, then its TRS in
+//          uv space), recomputed for the component's width × height. A
+//          transparent <ColorShader> stands in until the image has loaded
+//          (and for an asset with no bytes), so the child count never
+//          changes.
+//   lut    a 256×1 image built once from its bytes (luts.ts, Skia.Image.
+//          MakeImage: RGBA8 unpremultiplied — the preview's exact bytes) in
+//          an <ImageShader> with identity coordinates.
+//   empty  a transparent <ColorShader>, as the preview reads an unwired child.
+
+export interface EffectChildrenCode {
+  // react-native-skia names the component needs.
+  rn: string[];
+  // Lines inside the component body (hooks), before `return`.
+  hooks: string[];
+  // The <Shader>'s children, one element per line.
+  elements: string[];
+  // Extra bundle files (assets.ts, images.ts, assets/*.b64).
+  files: Record<string, string>;
+  // The component imports for those files.
+  imports: string[];
+  // React hooks used ("useMemo").
+  react: string[];
+  // manifest.json rows.
+  manifest: { children: unknown[]; assets: unknown[] };
+}
+
+export function effectChildrenCode(plan: SkiaExportPlan, header: (what: string) => string): EffectChildrenCode | null {
+  const children = plan.children ?? [];
+  if (!children.length) return null;
+  const rn = new Set<string>(["ImageShader"]);
+  const hooks: string[] = [];
+  const elements: string[] = [];
+  const files: Record<string, string> = {};
+  const imports: string[] = [];
+  const react = new Set<string>();
+  const images = children.filter((c): c is Extract<SkiaEffectChild, { kind: "image" }> => c.kind === "image");
+  const luts = children.filter((c): c is Extract<SkiaEffectChild, { kind: "lut" }> => c.kind === "lut");
+  const v = (name: string) => name.replace(/[^A-Za-z0-9_]/g, "_");
+
+  const assetRows = images.length ? writeAssetFiles(plan.assetUses ?? images.map((c) => ({ asset: c.asset, owners: [] })), plan.assetBytes, files) : [];
+  const bundled = new Map(assetRows.map((r) => [r.id, r.bundled]));
+  if (images.length) {
+    files["assets.ts"] = assetSourcesModule(header("the shader's images"), "the shader samples", assetRows);
+    imports.push(`import { ASSET_SOURCES } from "./assets";`);
+  }
+  if (images.length) {
+    imports.push(`import { ${["imageMatrix", ...images.map((c) => `IMAGE_${v(c.name)}`)].join(", ")} } from "./images";`);
+    // Plain data + arithmetic (no react-native-skia import), so it also runs
+    // in Node (check-skia-assets holds imageMatrix to the preview's).
+    files["images.ts"] =
+      header("where the shader's images land on the canvas") +
+      `\nexport interface ExportImage {\n  // The bundled file's size in px.\n  width: number;\n  height: number;\n  fit: "cover" | "contain" | "fill";\n  // Image Source's TRS: per-axis canvas fractions (Y-down), degrees.\n  translateX: number;\n  translateY: number;\n  scaleX: number;\n  scaleY: number;\n  rotate: number;\n  pivotX: number;\n  pivotY: number;\n}\n\n` +
+      IMAGE_MATRIX_SOURCE +
+      images.map((c) => `\n// ${c.name}: ${c.from}\nexport const IMAGE_${v(c.name)}: ExportImage = ${JSON.stringify(mappingOf(c.source))};\n`).join("");
+  }
+  if (luts.length) {
+    imports.push(`import { ${luts.map((c) => `LUT_${v(c.lut.channel)}`).join(", ")} } from "./luts";`);
+    files["luts.ts"] =
+      header("the shader's ramp / curve lookup tables") +
+      `\nimport { AlphaType, ColorType, Skia } from "react-native-skia";\n` +
+      `\n// A 256×1 lookup table (RGBA8, unpremultiplied sRGB): exactly the bytes\n// toolbox sampled in the preview.\nfunction makeLut(base64: string) {\n  const image = Skia.Image.MakeImage(\n    { width: 256, height: 1, alphaType: AlphaType.Unpremul, colorType: ColorType.RGBA_8888 },\n    Skia.Data.fromBase64(base64),\n    256 * 4\n  );\n  if (!image) throw new Error("toolbox export: could not build a lookup-table image");\n  return image;\n}\n` +
+      luts.map((c) => `\n// ${c.from}\nexport const LUT_${v(c.lut.channel)} = makeLut(${JSON.stringify(bytesToBase64(Uint8Array.from(c.lut.rgba)))});\n`).join("");
+  }
+
+  for (const c of children) {
+    if (c.kind === "image") {
+      const n = v(c.name);
+      if (bundled.get(c.asset.id)) {
+        rn.add("useImage");
+        react.add("useMemo");
+        rn.add("Skia");
+        hooks.push(`const IMG_${n} = useImage(ASSET_SOURCES.${n});`);
+        hooks.push(`const M_${n} = useMemo(() => Skia.Matrix(imageMatrix(IMAGE_${n}, width, height)), [width, height]);`);
+        rn.add("ColorShader");
+        elements.push(`{IMG_${n} ? <ImageShader image={IMG_${n}} tx="${c.source.tile}" ty="${c.source.tile}" matrix={M_${n}} /> : <ColorShader color="transparent" />}`);
+      } else {
+        rn.add("ColorShader");
+        elements.push(`<ColorShader color="transparent" />{/* ${c.name}: its image was not bundled (manifest.json) */}`);
+      }
+    } else if (c.kind === "lut") {
+      elements.push(`<ImageShader image={LUT_${v(c.lut.channel)}} tx="clamp" ty="clamp" />`);
+    } else {
+      rn.add("ColorShader");
+      elements.push(`<ColorShader color="transparent" />{/* ${c.name}: ${c.from} */}`);
+    }
+  }
+  if (!luts.length && !images.length) rn.delete("ImageShader");
+  return {
+    rn: [...rn],
+    hooks,
+    elements,
+    files,
+    imports,
+    react: [...react],
+    manifest: {
+      children: children.map((c) =>
+        c.kind === "image"
+          ? { name: c.name, kind: "image", asset: c.asset.id, fit: c.source.fit, tile: c.source.tile, from: c.from }
+          : c.kind === "lut"
+            ? { name: c.name, kind: "lut", channel: c.lut.channel, channelKind: c.lut.kind, size: [256, 1], from: c.from }
+            : { name: c.name, kind: "empty", from: c.from }
+      ),
+      assets: assetRows.map(manifestAsset),
+    },
+  };
+}
+
+// The component's react + react-native-skia imports (unchanged for a
+// program with no children).
+export function effectComponentImports(children: EffectChildrenCode | null): string {
+  const rn = [...new Set(["Canvas", "Fill", "Shader", "Skia", ...(children?.rn ?? [])])].sort((a, b) => a.localeCompare(b));
+  return (
+    `\nimport React${children?.react.length ? `, { ${children.react.join(", ")} }` : ""} from "react";\n` +
+    `import { ${rn.join(", ")}, type CanvasRef } from "react-native-skia";\n`
+  );
+}
+
+// The <ToolboxEffect> JSX body: <Fill><Shader …>children</Shader></Fill>.
+export function effectFillJsx(children: EffectChildrenCode | null): string {
+  if (!children) return `      <Fill>\n        <Shader source={effect!} uniforms={uniforms} />\n      </Fill>`;
+  return `      <Fill>\n        <Shader source={effect!} uniforms={uniforms}>\n${children.elements.map((e) => `          ${e}`).join("\n")}\n        </Shader>\n      </Fill>`;
 }
 
 // `segments`: the composition's markers on this timeline (exportSegments);
@@ -80,19 +219,22 @@ export function emitSkiaBundle(
 
   files["toolbox-timeline.ts"] = runtimeSource;
 
+  const kids = effectChildrenCode(plan, HEADER);
+  if (kids) Object.assign(files, kids.files);
   files["ToolboxEffect.tsx"] =
     HEADER("the React Native Skia component") +
-    `\nimport React from "react";\n` +
-    `import { Canvas, Fill, Shader, Skia, type CanvasRef } from "react-native-skia";\n` +
+    effectComponentImports(kids) +
     `import { useDerivedValue, type SharedValue } from "react-native-reanimated";\n` +
     `import { SKSL } from "./effect";\n` +
     `import { sampleUniforms } from "./timeline";\n` +
+    (kids ? `${kids.imports.join("\n")}\n` : "") +
     `\nconst effect = Skia.RuntimeEffect.Make(SKSL);\n` +
     `if (!effect) throw new Error("toolbox export: the SkSL program did not compile on this Skia build");\n` +
     `\nexport interface ToolboxEffectProps {\n  // Seconds on the toolbox timeline (see useToolboxClock).\n  time: SharedValue<number>;\n  width: number;\n  height: number;\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +
     `\nexport function ToolboxEffect({ time, width, height, canvasRef }: ToolboxEffectProps) {\n` +
     `  const uniforms = useDerivedValue(() => sampleUniforms(time.value, width, height));\n` +
-    `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n      <Fill>\n        <Shader source={effect!} uniforms={uniforms} />\n      </Fill>\n    </Canvas>\n  );\n}\n` +
+    (kids?.hooks.length ? kids.hooks.map((h) => `  ${h}\n`).join("") : "") +
+    `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n${effectFillJsx(kids)}\n    </Canvas>\n  );\n}\n` +
     toolboxClockSource();
 
   files["toolbox-clock.ts"] = clockModuleSource(plan.timeline, segments, HEADER("the playback clock and its segments"));
@@ -120,6 +262,8 @@ export function emitSkiaBundle(
           keys: u.track?.keys.length ?? 0,
           from: u.from,
         })),
+        // Child shaders in declaration order, and the bundled image files.
+        ...(kids ? { children: kids.manifest.children, assets: kids.manifest.assets } : {}),
         warnings: plan.warnings,
       },
       null,

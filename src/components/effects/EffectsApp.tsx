@@ -11805,7 +11805,7 @@ function EffectsShell({
       const mode = m.isSkiaAnimationMode(animation) ? animation : "worklet";
       const fps = fpsRef.current;
       const lf = loopFramesRef.current;
-      const { prepared, result } = m.exportSkiaFromEditor(
+      const { prepared, result } = await m.exportSkiaFromEditor(
         nodesRef.current,
         edgesRef.current,
         nodeId,

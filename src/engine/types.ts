@@ -174,7 +174,30 @@ export type ImageValue = {
   texture: WebGLTexture;
   width: number;
   height: number;
+  // Set when the pixels are ONE static image file fitted onto the canvas
+  // (Image Source, Image (Skia)'s preview): the SkSL Shader then samples
+  // the file itself through Skia — exactly the ImageShader its React Native
+  // export ships — instead of these 8-bit pixels. Any post-pass that
+  // replaces the image (opacity, mask) drops it. Additive (2026-10-14,
+  // Wave 3 lane I; lib/skia-export/image-asset.ts).
+  skiaSource?: SkiaImageSource;
 };
+
+// A static image file and how Image Source maps it onto the canvas.
+export interface SkiaImageSource {
+  asset: AssetIR;
+  fit: "cover" | "contain" | "fill";
+  // Image Source's TRS: per-axis canvas fractions (Y-down), degrees.
+  translateX: number;
+  translateY: number;
+  scaleX: number;
+  scaleY: number;
+  rotate: number;
+  pivotX: number;
+  pivotY: number;
+  // Outside the image: the edge texel (clamp) or transparent (decal).
+  tile: "clamp" | "decal";
+}
 
 export type MaskValue = {
   kind: "mask";
@@ -931,6 +954,10 @@ export interface SkiaShaderValue {
   // unported mode, a refused option) — consumers surface it instead of
   // silently drawing the fallback. Additive (2026-10-13).
   problems?: string[];
+  // Images the expression's `image` leaves sample, by asset id — carried
+  // like SkiaDrawValue.assets so the consumer that fuses the tree (Skia
+  // Fill) can hand them to the scene. Additive (2026-10-14, Wave 3 lane I).
+  assets?: Record<string, AssetIR>;
 }
 
 // SDF AST. Every SDF node's compute() returns one of these — a small

@@ -365,6 +365,7 @@ import { skiaRoundCornersNode } from "./skia/round-corners";
 import { skiaDashNode } from "./skia/dash";
 import { skiaGradientFillNode } from "./skia/gradient-fill";
 import { skiaTextNode } from "./skia/text";
+import { skiaImageNode } from "./skia/image";
 
 let registered = false;
 
@@ -772,5 +773,6 @@ export function registerAllNodes() {
   registerNode(skiaDashNode);
   registerNode(skiaGradientFillNode);
   registerNode(skiaTextNode);
+  registerNode(skiaImageNode);
   registered = true;
 }

@@ -2,9 +2,40 @@
 // (specdocs/101326_skia-target.md §3.7). Resolves what was clicked (an SkSL
 // Shader, a Skia Canvas, or a Skia layer) to the export target, flattens the
 // editor graph the way the evaluator does, builds the frozen
-// SkiaExportRequest, and maps the result onto zip entries. Pure — no DOM, no
-// GL — so check-skia-layer covers it; EffectsApp adds the download and
-// mcp-handlers.ts the replies.
+// SkiaExportRequest, resolves its assets, and maps the result onto zip
+// entries. No DOM, no GL — so check-skia-layer covers it; EffectsApp adds
+// the download and mcp-handlers.ts the replies.
+//
+// ---- Assets: the URL → bytes seam (Wave 3 lane I) --------------------------
+//
+// exportSkia (api.ts) is synchronous and pure, so asset bytes are resolved
+// BEFORE it runs, by exportSkiaFromEditor / planSkiaExportForEditor (both
+// async since then):
+//
+//   collectSkiaExportAssets(request)  every AssetIR the bundle will draw
+//                                     (lib/skia-export/assets.ts)
+//   env.resolveAsset(asset)           its bytes — ONE function for every
+//                                     URL kind; default
+//                                     resolveSkiaAssetBytes
+//                                     (engine/skia/asset-bytes.ts)
+//   exportSkia({ …request, assets })  bundles them at assets/<file>
+//                                     (base64 `.b64` in `files`; the zip
+//                                     writer below decodes them), lists
+//                                     every asset in manifest.json with its
+//                                     size and `bundled`, and warns — naming
+//                                     the node — for any it has no bytes for
+//
+//   type SkiaAssetResolver = (asset: AssetIR) => Promise<Uint8Array | null>
+//
+// The default understands registered schemes first, then data:, then fetch
+// (project media https: URLs, `/fonts/…`, `blob:`). To add a URL kind, either
+// register a scheme — `registerSkiaAssetScheme("bake", (a) => …)` makes
+// every `bake:<nodeId>` URL resolve through it, in the preview's asset
+// loader (engine/skia/scene-assets.ts) and in every export alike — or pass
+// `resolveAsset` here to override resolution for one export (it receives
+// every AssetIR, licence texts included as `{ url: asset.license }`).
+// Fonts are AssetIRs too (nodes/skia/fonts.ts): their files and licence
+// texts (`AssetIR.license`) ship through the same path.
 
 import type { Edge } from "@xyflow/react";
 import type { GraphEdge, GraphNode as EngineNode } from "@/engine/evaluator";
@@ -18,7 +49,10 @@ import {
 } from "@/engine/skia/layer-target";
 import type { GraphNode } from "@/state/graph-ops";
 import type { TimelineMarker } from "@/lib/timeline-markers";
+import { base64ToBytes, resolveSkiaAssetBytes, type SkiaAssetResolver } from "@/engine/skia/asset-bytes";
 import { exportSkia, type SkiaExportRequest, type SkiaExportResult } from "./api";
+import { assetBytesOf } from "./asset-bundle";
+import { collectSkiaExportAssets, resolveSkiaExportAssets } from "./assets";
 import { planSkiaExport } from "./plan";
 import { TOOLBOX_TIMELINE_SOURCE } from "./runtime.generated";
 import { exportSegments, type ExportSegment } from "./segments";
@@ -40,6 +74,9 @@ export interface SkiaExportEnv {
   runtimeSource?: string;
   // Default "worklet".
   animation?: SkiaAnimationMode;
+  // URL → bytes for every asset the bundle ships (see the header). Default
+  // resolveSkiaAssetBytes: registered schemes, data:, fetch.
+  resolveAsset?: SkiaAssetResolver;
 }
 
 export interface SkiaExportNodeRef {
@@ -246,14 +283,28 @@ function safeExport(req: SkiaExportRequest): SkiaExportResult {
   }
 }
 
-// prepare + exportSkia. The prepare step's warnings ride ahead of the
-// exporter's own.
-export function exportSkiaFromEditor(
+// The request with every asset's bytes resolved (the async pre-pass in
+// front of the synchronous exportSkia — see the header).
+export async function withSkiaAssets(req: SkiaExportRequest, resolve?: SkiaAssetResolver): Promise<SkiaExportRequest> {
+  let uses;
+  try {
+    uses = collectSkiaExportAssets(req);
+  } catch {
+    // The exporter itself will report what broke.
+    return req;
+  }
+  if (!uses.length) return req;
+  return { ...req, assets: await resolveSkiaExportAssets(uses, resolve ?? resolveSkiaAssetBytes) };
+}
+
+// prepare + asset pre-pass + exportSkia. The prepare step's warnings ride
+// ahead of the exporter's own.
+export async function exportSkiaFromEditor(
   nodes: GraphNode[],
   edges: Edge[],
   clickedId: string,
   env: SkiaExportEnv
-): EditorSkiaExport {
+): Promise<EditorSkiaExport> {
   const prepared = prepareSkiaExport(nodes, edges, clickedId, env);
   if (!prepared.request) {
     return {
@@ -261,7 +312,7 @@ export function exportSkiaFromEditor(
       result: { files: null, problems: prepared.problems, warnings: prepared.warnings },
     };
   }
-  const r = safeExport(prepared.request);
+  const r = safeExport(await withSkiaAssets(prepared.request, env.resolveAsset));
   return {
     prepared,
     result: {
@@ -299,6 +350,9 @@ export interface SkiaPlanSummary {
     // First / last keyframe, in frames.
     frames?: [number, number];
   }[];
+  // SkSL Shader targets: the child shaders (iImage images, ramp / curve
+  // LUTs) in declaration order, and whether each image's bytes resolved.
+  children?: { name: string; kind: string; from: string; asset?: string; bundled?: boolean }[];
   // Any other target: what exportSkia would write, plus its manifest.
   files?: string[];
   manifest?: unknown;
@@ -308,12 +362,12 @@ export interface SkiaPlanSummary {
 // SkSL Shader targets go through planSkiaExport directly (uniforms,
 // provenance, keys); every other target through exportSkia, so the scene
 // exporter's branch (Skia Canvas) reports here as soon as it lands.
-export function planSkiaExportForEditor(
+export async function planSkiaExportForEditor(
   nodes: GraphNode[],
   edges: Edge[],
   clickedId: string,
   env: SkiaExportEnv
-): SkiaPlanSummary {
+): Promise<SkiaPlanSummary> {
   const prepared = prepareSkiaExport(nodes, edges, clickedId, env);
   const animation: SkiaAnimationMode = env.animation ?? "worklet";
   const base = {
@@ -322,10 +376,12 @@ export function planSkiaExportForEditor(
     layer: prepared.layer,
     animation,
   };
-  const req = prepared.request;
-  if (!req) {
+  if (!prepared.request) {
     return { ok: false, ...base, problems: prepared.problems, warnings: prepared.warnings };
   }
+  // The export's own asset pre-pass, so the plan's warnings name every asset
+  // that would ship without bytes.
+  const req = await withSkiaAssets(prepared.request, env.resolveAsset);
   const tpf = req.timeline.ticksPerFrame;
   const timeline = {
     fps: req.timeline.fps,
@@ -341,6 +397,7 @@ export function planSkiaExportForEditor(
       name: req.name,
       canvas: req.canvas,
       timeline: req.timeline,
+      ...(req.assets ? { assets: req.assets } : {}),
     });
     const warnings = [...prepared.warnings, ...(plan?.warnings ?? []), ...(plan ? segs.warnings : [])];
     if (!plan) return { ok: false, ...base, problems, warnings, canvas: req.canvas, timeline };
@@ -376,6 +433,16 @@ export function planSkiaExportForEditor(
             : {}),
         };
       }),
+      ...(plan.children?.length
+        ? {
+            children: plan.children.map((c) => ({
+              name: c.name,
+              kind: c.kind,
+              from: c.from,
+              ...(c.kind === "image" ? { asset: c.asset.id, bundled: !!assetBytesOf(c.asset.url, req.assets) } : {}),
+            })),
+          }
+        : {}),
     };
   }
   const r = safeExport(req);
@@ -421,13 +488,6 @@ export interface SkiaZipEntry {
   bytes?: Uint8Array;
 }
 
-function decodeBase64(s: string): Uint8Array {
-  const bin = atob(s.replace(/\s+/g, ""));
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 // The bundle's files as zip entries under `folder/`. Binary assets ride
 // through SkiaExportResult as base64 text at `assets/<name>.b64` (api.ts);
 // they land decoded at `assets/<name>`.
@@ -437,7 +497,7 @@ export function skiaZipEntries(files: Record<string, string>, folder: string): S
     .sort()
     .map((path) => {
       if (path.startsWith("assets/") && path.endsWith(".b64")) {
-        return { path: prefix + path.slice(0, -".b64".length), bytes: decodeBase64(files[path]) };
+        return { path: prefix + path.slice(0, -".b64".length), bytes: base64ToBytes(files[path]) };
       }
       return { path: prefix + path, text: files[path] };
     });
