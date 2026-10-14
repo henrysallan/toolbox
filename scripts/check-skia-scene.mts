@@ -765,8 +765,8 @@ const alphaOf = (r: Rendered, x: number, y: number) => at(r, x, y)[3];
   check("skia-group: child assets are carried up", !!g.assets?.a);
   check("skia-group: translate/scale/origin/opacity are refs to their params", gn?.transform?.translate?.[0].ref?.param === "translateX" && gn.transform.scale?.[1].ref?.param === "scaleY" && gn.transform.origin?.[0].ref?.param === "originX" && gn.opacity?.ref?.param === "opacity" && gn.opacity.v === 0.5);
   check(
-    "skia-group: rotate is radians, DERIVED from the degrees param (no straight ref)",
-    !!gn?.transform?.rotate && Math.abs(gn.transform.rotate.v - Math.PI / 2) < 1e-12 && !gn.transform.rotate.ref && gn.transform.rotate.deps?.[0]?.param === "rotate" && gn.transform.rotate.deps[0].node === "g1"
+    "skia-group: rotate is radians, a ref to the degrees param scaled by π/180",
+    !!gn?.transform?.rotate && Math.abs(gn.transform.rotate.v - Math.PI / 2) < 1e-12 && gn.transform.rotate.ref?.param === "rotate" && gn.transform.rotate.ref.node === "g1" && gn.transform.rotate.ref.scale === Math.PI / 180
   );
   check("skia-group: blendMode passes through; srcOver is left to inherit", gn?.blendMode === "multiply" && (run("skia-group", {}).node as any).blendMode === undefined);
   const gr = render(run("skia-group", { child1: { kind: "skia_draw", node: rect(0, 0, 8, 8) } }, { translateX: 20 }).node);

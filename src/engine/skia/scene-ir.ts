@@ -33,6 +33,9 @@ export interface BindRef {
   param: string;
   // When the bind is one component of a vector / color param.
   component?: number;
+  // The IR value is the param value × scale (degrees param → radians IR:
+  // Math.PI / 180). Tracks export scaled. Additive (2026-10-13, lane L1).
+  scale?: number;
 }
 
 export interface Bind<T> {

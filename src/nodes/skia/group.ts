@@ -1,6 +1,6 @@
 import type { NodeDefinition, SkiaDrawValue } from "@/engine/types";
 import type { AssetIR, SkiaNode } from "@/engine/skia/scene-ir";
-import { bindDerived, bindParam } from "@/engine/skia/scene-ir";
+import { bindParam } from "@/engine/skia/scene-ir";
 import { SKIA_BLEND_PARAM, skiaBlendMode } from "./blend-modes";
 
 // Skia Group — React Native Skia <Group>: up to four child drawings under
@@ -9,9 +9,9 @@ import { SKIA_BLEND_PARAM, skiaBlendMode } from "./blend-modes";
 // the origin, then translate (engine/skia/scene-render.ts transformMatrix).
 //
 // Units are the Skia scene's: canvas pixels, Y-down. `rotate` is degrees in
-// the panel and radians in the IR, so its bind is DERIVED from the param
-// (deps), not a straight ref — a keyframed rotate exports by sampling, never
-// as a degrees track mislabeled radians.
+// the panel and radians in the IR, so its ref carries `scale: π/180` — a
+// keyframed rotate exports as a scaled track, never as a degrees track
+// mislabeled radians.
 
 const CHILDREN = ["child1", "child2", "child3", "child4"] as const;
 
@@ -77,7 +77,7 @@ export const skiaGroupNode: NodeDefinition = {
           bindParam(num(params.translateX, 0), nodeId, "translateX"),
           bindParam(num(params.translateY, 0), nodeId, "translateY"),
         ],
-        rotate: bindDerived((deg * Math.PI) / 180, [{ node: nodeId, param: "rotate" }]),
+        rotate: { v: (deg * Math.PI) / 180, ref: { node: nodeId, param: "rotate", scale: Math.PI / 180 } },
         scale: [
           bindParam(num(params.scaleX, 1), nodeId, "scaleX"),
           bindParam(num(params.scaleY, 1), nodeId, "scaleY"),

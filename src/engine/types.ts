@@ -919,6 +919,9 @@ export interface SkiaDrawValue {
   node: SkiaNode;
   // Images / fonts the tree references by id.
   assets?: Record<string, AssetIR>;
+  // Producer failures (a Skia Fill whose shader didn't fuse, an unported
+  // option) for the Skia Canvas's problem list. Additive (2026-10-13).
+  problems?: string[];
 }
 
 export interface SkiaShaderValue {
