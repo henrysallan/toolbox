@@ -318,8 +318,15 @@ export function defineSkslNode(spec: SkslNodeSpec): NodeDefinition {
     },
     compute({ inputs: wired, params, ctx, nodeId, consumedOutputs }) {
       const { expr, problems } = buildExpr(params, wired, nodeId, ctx);
-      const primary: SkiaShaderValue = { kind: "skia_shader", expr };
-      if (consumedOutputs && !consumedOutputs.has(`aux:${SKSL_PREVIEW_OUTPUT}`)) {
+      const primary: SkiaShaderValue = {
+        kind: "skia_shader",
+        expr,
+        ...(problems.length ? { problems: [...problems] } : {}),
+      };
+      // Data-only evaluations (the exporter, Node gates) run on a context
+      // with no GL: the shader value is all they need, never a preview.
+      const canRender = typeof ctx.allocImage === "function";
+      if (!canRender || (consumedOutputs && !consumedOutputs.has(`aux:${SKSL_PREVIEW_OUTPUT}`))) {
         warnOnce(ctx, nodeId, problems);
         return { primary };
       }
