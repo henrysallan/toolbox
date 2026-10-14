@@ -42,6 +42,7 @@ export const svgSourceNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "native" },
   supportsTransformGizmo: true,
   // Optional `fill` image input — fills the shape with that image when wired.
   inputs: [SPLINE_FILL_INPUT],

@@ -351,6 +351,9 @@ import { skiaThresholdNode } from "./skia/threshold";
 import { skiaColorSpaceTransformNode } from "./skia/color-space-transform";
 import { skiaKeyerNode } from "./skia/keyer";
 import { skiaDitherNode } from "./skia/dither";
+import { skiaCircleNode } from "./skia/circle";
+import { skiaRectNode } from "./skia/rect";
+import { skiaLineNode } from "./skia/line";
 
 let registered = false;
 
@@ -740,5 +743,8 @@ export function registerAllNodes() {
   registerNode(skiaColorSpaceTransformNode);
   registerNode(skiaKeyerNode);
   registerNode(skiaDitherNode);
+  registerNode(skiaCircleNode);
+  registerNode(skiaRectNode);
+  registerNode(skiaLineNode);
   registered = true;
 }

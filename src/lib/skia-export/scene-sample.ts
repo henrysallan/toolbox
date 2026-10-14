@@ -119,6 +119,10 @@ export function makeSceneSampler(
       }
       last = null;
       for (const p of (v as SkiaDrawValue).problems ?? []) seen.add(p);
+      // An upstream compute that threw left its consumers without input
+      // (a Skia Shape with no spline exports an empty path): refuse, don't
+      // ship a scene the editor never drew.
+      for (const [id, msg] of Object.entries(r.errors)) seen.add(`Node "${id}" failed while sampling the scene: ${msg}`);
       return {
         version: SKIA_IR_VERSION,
         width: canvas.width,

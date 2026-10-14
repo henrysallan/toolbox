@@ -47,6 +47,7 @@ export const crossNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "native" },
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [
     { name: "centerX", label: "Center X", type: "scalar", min: 0, max: 1, step: 0.001, default: 0.5 },

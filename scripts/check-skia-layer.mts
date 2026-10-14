@@ -212,7 +212,9 @@ function layerOf(name: string, target?: "skia" | "default") {
     ["sksl-shader", "animated-value", "constant", "color-literal"].every(offered)
   );
   check("a newly registered skia def lights up with no other change", offered(GATE_TYPE));
-  check("ordinary defs are not offered", !["noise", "blur", "circle", "merge", "glsl-expression"].some(offered));
+  // (The spline generators — circle, star, … — are native Skia since Wave 2
+  // family 7: they feed Skia Shape.)
+  check("ordinary defs are not offered", !["noise", "blur", "rasterize-spline", "merge", "glsl-expression"].some(offered));
   check(
     "structural utilities stay: group structure, reroute, frame-zone",
     ["node-group", "group-input", "group-output", "reroute", "frame-zone"].every(lt.isSkiaLayerType)
@@ -263,7 +265,7 @@ function layerOf(name: string, target?: "skia" | "default") {
   );
   let catErr = "";
   try {
-    buildCatalogDsl({ target: "skia", category: "spline" });
+    buildCatalogDsl({ target: "skia", category: "audio" });
   } catch (e) {
     catErr = (e as Error).message;
   }
