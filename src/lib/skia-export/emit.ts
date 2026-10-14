@@ -15,6 +15,7 @@
 // module stays importable from the editor bundle and the Node gates alike.
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
+import { durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { SkiaExportPlan } from "./plan";
 
 export const SKIA_EXPORT_FORMAT = 1;
@@ -30,7 +31,7 @@ function ident(name: string): string {
 
 export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Record<string, string> {
   const files: Record<string, string> = {};
-  const durationSec = plan.timeline.durationTicks / (plan.timeline.fps * plan.timeline.ticksPerFrame);
+  const durationSec = durationSecOf(plan.timeline);
 
   files["effect.ts"] =
     HEADER("the SkSL program") +
@@ -53,7 +54,7 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
   files["timeline.ts"] =
     HEADER("the animation timeline") +
     `\nimport { evaluateTrack, ticksAt, type TimelineTrack } from "./toolbox-timeline";\n` +
-    `\nexport const TIMELINE = {\n  fps: ${plan.timeline.fps},\n  ticksPerFrame: ${plan.timeline.ticksPerFrame},\n  durationTicks: ${plan.timeline.durationTicks},\n  durationSec: ${JSON.stringify(durationSec)},\n} as const;\n` +
+    timelineConstSource(plan.timeline) +
     `\nexport const CANVAS = { width: ${plan.canvas.width}, height: ${plan.canvas.height} } as const;\n` +
     (trackDecls ? `\n${trackDecls}\n` : "") +
     `\n// Every uniform the shader declares, at \`seconds\` on the toolbox timeline.\n` +
@@ -78,17 +79,7 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
     `\nexport function ToolboxEffect({ time, width, height, canvasRef }: ToolboxEffectProps) {\n` +
     `  const uniforms = useDerivedValue(() => sampleUniforms(time.value, width, height));\n` +
     `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n      <Fill>\n        <Shader source={effect!} uniforms={uniforms} />\n      </Fill>\n    </Canvas>\n  );\n}\n` +
-    `\n// One master clock in seconds, advanced on the UI thread. \`loop\` wraps at\n// the toolbox scene length; pass playing=false to hold (and drive time.value\n// yourself — a gesture, a scroll position, withTiming to a marker).\n` +
-    `export function useToolboxClock(opts: { playing?: boolean; loop?: boolean; start?: number } = {}) {\n` +
-    `  const { playing = true, loop = true, start = 0 } = opts;\n` +
-    `  const time = useSharedValue(start);\n` +
-    `  useFrameCallback((frame) => {\n` +
-    `    "worklet";\n` +
-    `    const dt = (frame.timeSincePreviousFrame ?? 0) / 1000;\n` +
-    `    const next = time.value + dt;\n` +
-    `    time.value = loop ? next % TIMELINE.durationSec : Math.min(next, TIMELINE.durationSec);\n` +
-    `  }, playing);\n` +
-    `  return time;\n}\n`;
+    toolboxClockSource();
 
   files["manifest.json"] =
     JSON.stringify(

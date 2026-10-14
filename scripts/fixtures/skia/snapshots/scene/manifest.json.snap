@@ -1,0 +1,260 @@
+{
+  "format": 2,
+  "kind": "scene",
+  "name": "Scene fixture",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 30,
+    "ticksPerFrame": 1000,
+    "durationTicks": 60000,
+    "durationSec": 2,
+    "frames": 61
+  },
+  "sampledFrames": 61,
+  "bindCounts": {
+    "static": 130,
+    "clock": 1,
+    "track": 15,
+    "sampled": 6
+  },
+  "binds": [
+    {
+      "id": "b1",
+      "path": "root.children.0.paint.shader.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b1",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b3",
+      "path": "root.children.0.paint.shader.program.uniforms.tint",
+      "kind": "track",
+      "sample": "b3",
+      "from": "keyframes scene.tint (2 keys), oklab",
+      "keys": 2
+    },
+    {
+      "id": "b9",
+      "path": "root.children.0.paint.shader.program.children.0.shader.stops.0.color",
+      "kind": "track",
+      "sample": "b9",
+      "from": "Color col.color (2 keys, rgb)",
+      "keys": 2
+    },
+    {
+      "id": "b12",
+      "path": "root.children.1.transform.translate.0",
+      "kind": "track",
+      "sample": "b12",
+      "from": "keyframes scene.center (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b13",
+      "path": "root.children.1.transform.translate.1",
+      "kind": "track",
+      "sample": "b13",
+      "from": "keyframes scene.center (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b14",
+      "path": "root.children.1.transform.rotate",
+      "kind": "track",
+      "sample": "b14",
+      "from": "keyframes scene.spin (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b25",
+      "path": "root.children.1.layer.imageFilters.0.sx",
+      "kind": "track",
+      "sample": "b25",
+      "from": "Animated Value av (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b26",
+      "path": "root.children.1.layer.imageFilters.0.sy",
+      "kind": "track",
+      "sample": "b25",
+      "from": "Animated Value av (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b39",
+      "path": "root.children.1.children.0.geom.r",
+      "kind": "track",
+      "sample": "b39",
+      "from": "keyframes scene.radius (4 keys)",
+      "keys": 4
+    },
+    {
+      "id": "b40",
+      "path": "root.children.1.children.0.paint.color",
+      "kind": "track",
+      "sample": "b3",
+      "from": "keyframes scene.tint (2 keys), oklab",
+      "keys": 2
+    },
+    {
+      "id": "b41",
+      "path": "root.children.1.children.0.paint.strokeWidth",
+      "kind": "track",
+      "sample": "b25",
+      "from": "Animated Value av (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b53",
+      "path": "root.children.1.children.1.paint.shader.r",
+      "kind": "track",
+      "sample": "b39",
+      "from": "keyframes scene.radius (4 keys)",
+      "keys": 4
+    },
+    {
+      "id": "b73",
+      "path": "root.children.1.children.3.paint.shader.stops.0.color",
+      "kind": "track",
+      "sample": "b3",
+      "from": "keyframes scene.tint (2 keys), oklab",
+      "keys": 2
+    },
+    {
+      "id": "b78",
+      "path": "root.children.1.children.4.geom.p2.0",
+      "kind": "track",
+      "sample": "b39",
+      "from": "keyframes scene.radius (4 keys)",
+      "keys": 4
+    },
+    {
+      "id": "b84",
+      "path": "root.children.1.children.4.paint.pathEffects.0.phase",
+      "kind": "track",
+      "sample": "b14",
+      "from": "keyframes scene.spin (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b90",
+      "path": "root.children.2.children.0.geom.d",
+      "kind": "sampled",
+      "sample": "b90",
+      "role": "path",
+      "from": "derived from scene.spin, scene.arms (animated: scene.spin); sampled 61 frames",
+      "distinct": 61
+    },
+    {
+      "id": "b104",
+      "path": "root.children.2.children.1.geom.d",
+      "kind": "sampled",
+      "sample": "b104",
+      "role": "path",
+      "from": "derived from scene.steps (animated: scene.steps); sampled 61 frames",
+      "distinct": 2
+    },
+    {
+      "id": "b111",
+      "path": "root.children.2.children.3.geom.pts",
+      "kind": "sampled",
+      "sample": "b111",
+      "role": "array",
+      "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
+      "distinct": 61
+    },
+    {
+      "id": "b123",
+      "path": "root.children.4.text",
+      "kind": "sampled",
+      "sample": "b123",
+      "role": "string",
+      "from": "static (untagged animation); sampled 61 frames",
+      "distinct": 61
+    },
+    {
+      "id": "b130",
+      "path": "root.children.5.font.size",
+      "kind": "track",
+      "sample": "b130",
+      "from": "keyframes scene.size (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b135",
+      "path": "root.children.6.xforms",
+      "kind": "sampled",
+      "sample": "b135",
+      "role": "array",
+      "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
+      "distinct": 61
+    },
+    {
+      "id": "b146",
+      "path": "root.children.8.geom.r",
+      "kind": "sampled",
+      "sample": "b146",
+      "role": "number",
+      "from": "keyframes scene.radius (4 keys); sampled 61 frames",
+      "distinct": 47
+    }
+  ],
+  "programs": [
+    {
+      "id": "SKSL_0",
+      "usedBy": [
+        "root.children.0 (scene)"
+      ],
+      "fused": [
+        "tbx.test.mix@1"
+      ]
+    },
+    {
+      "id": "SKSL_1",
+      "usedBy": [
+        "root.children.1 (scene)"
+      ],
+      "fused": []
+    }
+  ],
+  "assets": [
+    {
+      "id": "logo",
+      "kind": "image",
+      "mime": "image/png",
+      "file": "assets/logo.png",
+      "bundled": true,
+      "width": 1,
+      "height": 1
+    },
+    {
+      "id": "inter",
+      "kind": "font",
+      "mime": "font/ttf",
+      "file": "assets/inter.ttf",
+      "bundled": true
+    },
+    {
+      "id": "sprites",
+      "kind": "image",
+      "mime": "image/png",
+      "file": "assets/sprites.png",
+      "bundled": false,
+      "url": "https://media.example.com/project/sprites.png",
+      "width": 64,
+      "height": 32
+    }
+  ],
+  "warnings": [
+    "root.children.4.text changes over time but its tags (static) say static — sampled per frame; tag it with ref/deps in the producer.",
+    "root.children.8.geom.r: keyframes scene.radius (4 keys) does not reproduce the producer's value at frame 0 (a transformed param tagged as a plain ref?) — sampled instead."
+  ]
+}
