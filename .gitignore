@@ -97,3 +97,6 @@ next-env.d.ts
 # compare:skia output (PNGs + report.json)
 /scripts/.skia-compare-out/
 /skia-harness/src/__family_check__/
+
+# agent / tool worktrees (Claude Code isolation)
+/.claude/worktrees/
