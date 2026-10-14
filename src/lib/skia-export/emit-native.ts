@@ -57,6 +57,7 @@
 
 import { effectChildrenCode, effectComponentImports, effectFillJsx, emitSkiaBundle } from "./emit";
 import { timelineConstSource } from "./emit-shared";
+import { proceduralFnName } from "./procedural/emit-js";
 import type { SkiaExportPlan } from "./plan";
 import { emitSceneBundle, sampleKeys, type SceneDriver } from "./scene-emit";
 import { NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
@@ -1174,7 +1175,10 @@ export function emitNativeEffect(plan: SkiaExportPlan, runtimeSource: string, se
   if (!planned) return { files: null, problems: planner.problems, warnings };
   const { values, segs } = planned;
   const taken = new Set(values.map((v) => v.key));
-  const clock = plan.usesTime ? (taken.has("clock") ? "clock_" : "clock") : null;
+  // Procedural drivers (spec §3.5e) are worklets of the tick: they read the
+  // linear clock, like iTime.
+  const procedural = plan.uniforms.flatMap((u) => (u.expr ? [{ key: u.name, program: u.expr, from: u.from }] : []));
+  const clock = plan.usesTime || procedural.length ? (taken.has("clock") ? "clock_" : "clock") : null;
   const edit = "the SkSL Shader node";
   const mod = emitNativeModule(planner, values, {
     name: plan.name,
@@ -1189,7 +1193,10 @@ export function emitNativeEffect(plan: SkiaExportPlan, runtimeSource: string, se
   const base = emitSkiaBundle(plan, runtimeSource, segments);
   const animatedNames = new Set(values.map((v) => v.key));
   const fields = plan.uniforms
-    .map((u) => `    ${objKey(u.name)}: ${animatedNames.has(u.name) ? `A${member(u.name)}.value` : JSON.stringify(u.value)}, // ${u.from}`)
+    .map(
+      (u) =>
+        `    ${objKey(u.name)}: ${animatedNames.has(u.name) ? `A${member(u.name)}.value` : u.expr ? `${proceduralFnName(u.name)}(tick)` : JSON.stringify(u.value)}, // ${u.from}`
+    )
     .join("\n");
   const files: Record<string, string> = {};
   files["effect.ts"] = base["effect.ts"];
@@ -1200,6 +1207,10 @@ export function emitNativeEffect(plan: SkiaExportPlan, runtimeSource: string, se
   // Child shaders (images, LUTs): emit.ts's, with their files.
   const kids = effectChildrenCode(plan, (what) => HEADER(what, edit));
   if (kids) Object.assign(files, kids.files);
+  if (procedural.length) files["procedural.ts"] = base["procedural.ts"];
+  const uniformsHook = procedural.length
+    ? `  const uniforms = useDerivedValue(() => {\n    // The procedural drivers' tick, from the linear clock (seconds).\n    const tick = ticksAt(A.${clock}.value, ${plan.timeline.fps}, ${plan.timeline.ticksPerFrame});\n    return {\n      iResolution: [width, height, 1],\n      iTime: ${plan.usesTime ? `A.${clock}.value, // the scene clock (seconds)` : "0, // the program never reads iTime"}\n${fields.replace(/^ {4}/gm, "      ")}\n    };\n  });\n`
+    : `  const uniforms = useDerivedValue(() => ({\n    iResolution: [width, height, 1],\n    iTime: ${clock ? `A.${clock}.value, // the scene clock (seconds)` : "0, // the program never reads iTime"}\n${fields}\n  }));\n`;
   files["ToolboxEffect.tsx"] =
     HEADER("the React Native Skia component (Reanimated-native animations)", edit) +
     effectComponentImports(kids) +
@@ -1207,12 +1218,15 @@ export function emitNativeEffect(plan: SkiaExportPlan, runtimeSource: string, se
     `import type { ToolboxAnimations } from "./animations";\n` +
     `import { SKSL } from "./effect";\n` +
     (kids ? `${kids.imports.join("\n")}\n` : "") +
+    (procedural.length
+      ? `import { ${procedural.map((p) => proceduralFnName(p.key)).join(", ")} } from "./procedural";\nimport { ticksAt } from "./toolbox-timeline";\n`
+      : "") +
     `\nconst effect = Skia.RuntimeEffect.Make(SKSL);\n` +
     `if (!effect) throw new Error("toolbox export: the SkSL program did not compile on this Skia build");\n` +
     `\nexport interface ToolboxEffectProps {\n  // useToolboxAnimations() — the uniforms read its shared values.\n  animations: ToolboxAnimations;\n  width: number;\n  height: number;\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +
     `\nexport function ToolboxEffect({ animations, width, height, canvasRef }: ToolboxEffectProps) {\n` +
     `  const A = animations.values;\n` +
-    `  const uniforms = useDerivedValue(() => ({\n    iResolution: [width, height, 1],\n    iTime: ${clock ? `A.${clock}.value, // the scene clock (seconds)` : "0, // the program never reads iTime"}\n${fields}\n  }));\n` +
+    uniformsHook +
     (kids?.hooks.length ? kids.hooks.map((h) => `  ${h}\n`).join("") : "") +
     `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n${effectFillJsx(kids)}\n    </Canvas>\n  );\n}\n`;
   files["manifest.json"] = withManifest(base["manifest.json"], nativeManifest(planner, values, clock, segs));
@@ -1238,7 +1252,9 @@ export function emitNativeScene(plan: ScenePlan, runtimeSource: string, segments
   for (const b of plan.binds) {
     if (keyOf.get(b.id) !== b.id) continue; // reads another bind's key
     const p = b.plan;
-    if (p.kind === "clock" || p.kind === "sampled") {
+    // (A procedural driver — spec §3.5e — is a worklet of the tick: it stays
+    // in sampleBinds and reads the linear clock too.)
+    if (p.kind === "clock" || p.kind === "sampled" || p.kind === "expr") {
       needsClock = true;
       continue;
     }

@@ -882,7 +882,8 @@ export const BRIDGED_TOOLS = [
       "name), `warnings`, and a `note`. Write every file verbatim into one " +
       "folder of the app; `assets/*.b64` entries are base64 — decode to " +
       "binary and drop the suffix. " +
-      "Images and fonts ship under assets/ (manifest.json `assets` lists each with its size and `bundled`; a warning names any whose bytes didn't resolve). Fails with the plan's problems when the " +
+      "Images and fonts ship under assets/ (manifest.json `assets` lists each with its size and `bundled`; a warning names any whose bytes didn't resolve). " +
+      "Procedural drivers (LFO, Expression, Math, Scene Time, Random) compile into procedural.ts worklets (SkSL in baked mode); manifest `procedural` lists them. Fails with the plan's problems when the " +
       "target can't export. `animation` (default \"worklet\"): \"worklet\" " +
       "replays every track on one master clock (frame-exact, scrubbable; " +
       "useToolboxClock); \"baked\" compiles the keyframes into the SkSL as " +

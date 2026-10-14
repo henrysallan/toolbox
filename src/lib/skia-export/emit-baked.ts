@@ -2,7 +2,8 @@
 // (specdocs/101326_skia-target.md §3.5b, M3 lane A).
 //
 // Every runtime-program uniform the planner resolved to a TRACK (or a
-// per-frame SAMPLED series) becomes SkSL evaluated from `iTime`, so the
+// per-frame SAMPLED series, or a compiled procedural driver) becomes SkSL
+// evaluated from `iTime`, so the
 // program needs no per-frame uniforms: the component only drives iTime from
 // the master clock. Static uniforms stay uniforms. What can't live in a
 // shader (a scene's transforms, path data, paint colors, gradient stops —
@@ -23,6 +24,11 @@
 //                                      spring (spring.ts springSksl, as
 //                                      tbk_spring), hold, OKLab / RGB lerp,
 //                                      quantize8 / quantizeAlpha, BindRef scale
+//     float tbk_p0(float tk) { … }     one per procedural driver (an
+//                                      Expression / LFO / Math / Scene Time
+//                                      subgraph, procedural/emit-sksl.ts —
+//                                      lane P, spec §3.5e), its keyframed
+//                                      params as tbk_v tracks
 //     void tbk_s0(float fr) { … }      one per sampled series: an unrolled
 //                                      binary search over its kept frames
 //                                      (ES2 has no const-array initialisers),
@@ -71,6 +77,8 @@ import { evaluateTrack, type TimelineSpring, type TimelineTrack } from "./runtim
 import { compress, emitSceneBundle } from "./scene-emit";
 import { collectBinds, isBind, type BindValue, type PlannedBind, type ScenePlan } from "./scene-plan";
 import { springSksl, springSkslArgs } from "./spring";
+import { bakeProcedural } from "./procedural/emit-sksl";
+import type { ProcProgram } from "./procedural/ir";
 
 // ---- limits ------------------------------------------------------------------------
 
@@ -87,7 +95,8 @@ export const BAKED_LIMITS = {
   seriesLiterals: 16_384,
 } as const;
 
-export type BakedKind = "track" | "sampled";
+// "procedural": a compiled driver subgraph (procedural/emit-sksl.ts, spec §3.5e).
+export type BakedKind = "track" | "sampled" | "procedural";
 
 export interface BakedUniformInfo {
   name: string;
@@ -789,6 +798,18 @@ function trackAssign(gen: BakeGen, tracks: TimelineTrack[], pick: number | undef
   return `${target.name} = ${target.type === "int" ? `int(${expr})` : expr};`;
 }
 
+// The statement assigning a procedural driver (a scalar program of the tick,
+// procedural/emit-sksl.ts) into a target; null + a problem when it can't bake.
+function procAssign(gen: BakeGen, prog: ProcProgram, target: BakeTarget, label: string): string | null {
+  if (target.count !== undefined || target.width !== 1) {
+    gen.problems.push(`${label}: a procedural driver yields one value but uniform ${target.name} is a ${target.type}${target.count !== undefined ? `[${target.count}]` : ""}.`);
+    return null;
+  }
+  const r = bakeProcedural(gen, prog, label);
+  if (!r) return null;
+  return `${target.name} = ${target.type === "int" ? `int(${r.fn}(tk))` : `${r.fn}(tk)`};`;
+}
+
 // ---- the SkSL Shader node export (M0 bundle) ----------------------------------------------------
 
 export interface BakeEffectResult {
@@ -800,8 +821,8 @@ export interface BakeEffectResult {
 
 export function bakeSkiaPlan(plan: SkiaExportPlan): BakeEffectResult {
   const gen = new BakeGen(plan.timeline);
-  const animated = plan.uniforms.filter((u) => u.track);
-  const program: BakedProgramInfo = { where: "effect", baked: [], uniforms: plan.uniforms.filter((u) => !u.track).map((u) => u.name) };
+  const animated = plan.uniforms.filter((u) => u.track || u.expr);
+  const program: BakedProgramInfo = { where: "effect", baked: [], uniforms: plan.uniforms.filter((u) => !u.track && !u.expr).map((u) => u.name) };
   if (!animated.length) return { plan, program, problems: [], warnings: [] };
   const dur = durationProblem(plan.timeline.durationTicks);
   if (dur) return { plan: null, program: null, problems: [dur], warnings: [] };
@@ -818,6 +839,13 @@ export function bakeSkiaPlan(plan: SkiaExportPlan): BakeEffectResult {
       gen.problems.push(`${label}: ${target}`);
       continue;
     }
+    if (u.expr) {
+      const stmt = procAssign(gen, u.expr, target, label);
+      if (!stmt) continue;
+      bake.push(stmt);
+      program.baked.push({ name: u.name, kind: "procedural", from: u.from, type: target.type, points: u.expr.tracks.reduce((n, t) => n + t.keys.length, 0), color: false });
+      continue;
+    }
     const stmt = trackAssign(gen, [u.track!], undefined, target, label);
     if (!stmt) continue;
     bake.push(stmt);
@@ -828,7 +856,7 @@ export function bakeSkiaPlan(plan: SkiaExportPlan): BakeEffectResult {
   if (!r) return { plan: null, program: null, problems: gen.problems, warnings: gen.warnings };
   const warnings = [...gen.warnings];
   return {
-    plan: { ...plan, sksl: r.sksl, usesTime: true, uniforms: plan.uniforms.filter((u) => !u.track), warnings: [...plan.warnings, ...warnings] },
+    plan: { ...plan, sksl: r.sksl, usesTime: true, uniforms: plan.uniforms.filter((u) => !u.track && !u.expr), warnings: [...plan.warnings, ...warnings] },
     program,
     problems: [],
     warnings,
@@ -883,9 +911,10 @@ export function emitBakedSkiaBundle(
   m.uniforms = plan.uniforms.map((u) => ({
     name: u.name,
     kind: u.kind,
-    animated: !!u.track,
+    animated: !!u.track || !!u.expr,
     keys: u.track?.keys.length ?? 0,
     from: u.from,
+    ...(u.expr ? { procedural: { nodes: u.expr.nodes.map((n) => `${n.type} ${n.id}`) } } : {}),
     ...(bakedNames.has(u.name) ? { baked: true } : {}),
   }));
   m.baked = {
@@ -944,11 +973,11 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
     for (const [name, b] of Object.entries(p.uniforms)) {
       const pb = plan.bindFor.get(b as Bind<unknown>);
       const kind = pb?.plan.kind;
-      if (!pb || (kind !== "track" && kind !== "sampled")) {
+      if (!pb || (kind !== "track" && kind !== "sampled" && kind !== "expr")) {
         kept[name] = b;
         continue;
       }
-      const label = `${pb.path} (${pb.plan.kind === "track" || pb.plan.kind === "sampled" ? pb.plan.from : ""})`;
+      const label = `${pb.path} (${pb.plan.kind === "track" || pb.plan.kind === "sampled" || pb.plan.kind === "expr" ? pb.plan.from : ""})`;
       if (name === "iTime") {
         gen.problems.push(`${label}: iTime is ${kind} here, not the scene clock — a baked program needs iTime to be the master clock; export with animation "worklet".`);
         continue;
@@ -963,7 +992,15 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
         gen.problems.push(`${label}: ${target}`);
         continue;
       }
-      if (pb.plan.kind === "track") {
+      if (pb.plan.kind === "expr") {
+        // A compiled driver; a BindRef scale multiplies after it, as
+        // evaluateTrack's does.
+        const stmt = procAssign(gen, pb.plan.program, target, label);
+        if (!stmt) continue;
+        const scale = pb.plan.scale;
+        bake.push(scale === undefined ? stmt : stmt.replace(/;$/, ` * ${lit(scale)};`));
+        info.baked.push({ name, kind: "procedural", from: pb.plan.from, type: target.type, points: pb.plan.program.tracks.reduce((n, t) => n + t.keys.length, 0), color: false, bind: pb.id, path: pb.path });
+      } else if (pb.plan.kind === "track") {
         const stmt = trackAssign(gen, pb.plan.tracks, pb.plan.pick, target, label);
         if (!stmt) continue;
         bake.push(stmt);
@@ -1037,7 +1074,7 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
     const dur = durationProblem(plan.timeline.durationTicks);
     if (dur) problems.unshift(dur);
   }
-  const worklet = (binds: PlannedBind[]) => binds.filter((b) => b.plan.kind === "track" || b.plan.kind === "sampled" || b.plan.kind === "clock");
+  const worklet = (binds: PlannedBind[]) => binds.filter((b) => b.plan.kind === "track" || b.plan.kind === "sampled" || b.plan.kind === "clock" || b.plan.kind === "expr");
   if (problems.length) return { plan: null, programs, worklet: [], problems, warnings };
   if (!anyBaked) return { plan, programs: [], worklet: worklet(plan.binds), problems: [], warnings };
 

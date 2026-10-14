@@ -1,12 +1,17 @@
 // planSceneExport — resolve every Bind in a Skia scene (scene-ir.ts) into
 // something React Native Skia can replay exactly (specdocs/101326_skia-target.md
-// §3.4, §3.5a): a static value, a timeline track, a per-frame sampled
-// series, the master clock, or a refusal with a reason.
+// §3.4, §3.5a): a static value, a timeline track, a compiled procedural
+// driver (§3.5e), a per-frame sampled series, the master clock, or a
+// refusal with a reason.
 //
 //   ref → keyframed param   track (the M0 keyframe → TimelineKey conversion)
 //   ref → wired param       follow the wire to a driver exactly as
 //                           planSkiaExport does (Animated Value / Constant /
-//                           Color); any other driver refuses
+//                           Color → track / static; a procedural driver —
+//                           Expression, LFO, Math, Scene Time, Random — →
+//                           expr, a compiled program of the tick, or sampled
+//                           when only the compiler can't express it); any
+//                           other driver refuses
 //   ref → plain param       static (the producer's evaluated `v`)
 //   deps (derived value)    sampled per frame when any dep animates, else
 //                           static
@@ -59,6 +64,8 @@ import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/t
 import type { SkiaExportAssets } from "./api";
 import { assetWarnings, type AssetUse } from "./asset-bundle";
 import { lowerSceneGradients } from "@/engine/skia/library/gradient-program";
+import { compileDriver, PROCEDURAL_DRIVER_TYPES } from "./procedural/compile";
+import { evaluateProgram, type ProcProgram } from "./procedural/ir";
 import { timelineSpringOf } from "./spring";
 
 export type BindValue = number | number[] | string;
@@ -80,6 +87,12 @@ export type BindPlan =
   // The producer's value at every frame 0..frames-1 (dense; scene-emit
   // compresses). Exact at frame ticks.
   | { kind: "sampled"; values: BindValue[]; from: string }
+  // A procedural driver subgraph (Expression / LFO / Math / Scene Time /
+  // Random / Constant / Animated Value) compiled to a scalar program of the
+  // tick (procedural/, spec §3.5e) — a worklet in sampleBinds, SkSL when
+  // baked; `scale` is a BindRef scale applied after it. Additive
+  // (2026-10-14, Wave 3 lane P).
+  | { kind: "expr"; program: ProcProgram; scale?: number; from: string }
   | { kind: "refused"; reason: string };
 
 export interface PlannedBind {
@@ -402,6 +415,8 @@ interface Ctx {
   edges: GraphEdge[];
   // Notes the resolution leaves for the export (wire-over-keyframes…).
   warnings: string[];
+  // The export clock procedural drivers compile against.
+  timeline: { fps: number; ticksPerFrame: number };
 }
 
 function refLabel(r: BindRef): string {
@@ -537,7 +552,7 @@ function componentTrack(keys: Keyframe[], c: number): TimelineTrack | null {
   return { kind: "scalar", keys: out };
 }
 
-function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
+function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain | NeedsSample {
   const node = c.byId.get(r.node);
   const label = refLabel(r);
   if (!node) return { kind: "refused", reason: `${path} reads ${label}, but node "${r.node}" is not in the graph.` };
@@ -570,8 +585,25 @@ function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
     const res = resolveDriver(src, edge, c.edges, driverKind, r.param, {
       colorAlpha: isChannel ? "node" : pk.alpha ? "hex-alpha" : "hex",
       subject: `${path} (${label})`,
-      tail: "only Animated Value (scalar), Constant (scalar) and Color (color) drive an exported Skia value.",
+      tail: "only Animated Value (scalar), Constant (scalar), Color (color) and the procedural drivers (Expression, LFO, Math, Scene Time, Random) drive an exported Skia value.",
     });
+    if (!res.binding && driverKind === "scalar" && PROCEDURAL_DRIVER_TYPES.has(src.type)) {
+      // A procedural driver (spec §3.5e): compiled to a program of the tick.
+      // When only the compiler can't express it (unsupported syntax, an
+      // option it doesn't lower) and every node upstream is a deterministic
+      // driver, the scene falls back to sampling the producer per frame.
+      const socket = isVec ? pk.kind : "scalar";
+      const cr = compileDriver(edge, c.byId, c.edges, c.timeline, isVec ? { socket: socket as "vec2" | "vec3" | "vec4", component: comp } : { socket: "scalar" });
+      if (cr.ok) {
+        c.warnings.push(...cr.warnings.map((w) => `${path}: ${w}`));
+        return { kind: "expr", program: cr.program, from: `${label} ← ${cr.from}` };
+      }
+      if (cr.sampleable) {
+        c.warnings.push(`${path} (${label}) is driven by ${src.type} "${src.id}", which doesn't compile to a worklet: ${cr.reason} — sampled per frame instead.`);
+        return { kind: "needs-sample", from: `${label} ← ${src.type} ${src.id} (not compiled: ${cr.reason})` };
+      }
+      return { kind: "refused", reason: `${path} (${label}) is driven by ${src.type} "${src.id}", which doesn't export: ${cr.reason}.` };
+    }
     if (res.problems.length || !res.binding) return { kind: "refused", reason: res.problems.join(" ") };
     return bindingToPlan(res.binding, pk.kind === "color" ? comp : undefined);
   }
@@ -683,6 +715,7 @@ function resolveBind(c: Ctx, fb: FoundBind, sampler: boolean): BindPlan | NeedsS
       }
       return { ...r, tracks: r.tracks.map((t) => ({ ...t, scale })), from: `${r.from} × ${scale}` };
     }
+    if (scale !== undefined && r.kind === "expr") return { ...r, scale, from: `${r.from} × ${scale}` };
     return r;
   }
   if (/\.program\.uniforms\.iTime$/.test(fb.path)) return { kind: "clock", from: "master clock (seconds)" };
@@ -691,6 +724,13 @@ function resolveBind(c: Ctx, fb: FoundBind, sampler: boolean): BindPlan | NeedsS
 
 // What a track plan evaluates to at `tick` (the emitted sampler's math;
 // the runtime applies a track's scale and quantizeAlpha).
+// …and what an expr plan evaluates to (the interpreter performs the emitted
+// worklet's JS operations in its order; a BindRef scale multiplies after).
+export function evaluateExprPlan(p: { program: ProcProgram; scale?: number }, tick: number): number {
+  const v = evaluateProgram(p.program, tick);
+  return p.scale === undefined ? v : v * p.scale;
+}
+
 export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number }, tick: number): number | number[] {
   if (p.tracks.length === 1) {
     const v = evaluateTrack(p.tracks[0], tick);
@@ -738,7 +778,7 @@ export function planSceneExport(
     : rawOpts;
   const problems: string[] = [];
   const warnings: string[] = [];
-  const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges, warnings };
+  const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges, warnings, timeline: { fps: opts.timeline.fps, ticksPerFrame: opts.timeline.ticksPerFrame } };
   const assetsUsed = new Map<string, AssetIR>();
   const assetOwners = new Map<string, Set<string>>();
   validateScene(scene, problems, warnings, assetsUsed, assetOwners);
@@ -759,8 +799,8 @@ export function planSceneExport(
   // A resolved track whose value shape disagrees with the producer's `v`
   // can't be what the producer draws: let the sampler decide.
   resolutions.forEach((r, i) => {
-    if (r.kind !== "track") return;
-    const want = evaluateTrackPlan(r, 0);
+    if (r.kind !== "track" && r.kind !== "expr") return;
+    const want = r.kind === "track" ? evaluateTrackPlan(r, 0) : evaluateExprPlan(r, 0);
     if (shapeOf(want) !== shapeOf(found[i].bind.v)) {
       warnings.push(`${found[i].path}: ${r.from} yields a ${shapeOf(want)} but the producer bound a ${shapeOf(found[i].bind.v)} — sampled instead.`);
       resolutions[i] = { kind: "needs-sample", from: r.from };
@@ -833,6 +873,16 @@ export function planSceneExport(
       if (bad < 0) plan = r;
       else {
         warnings.push(`${fb.path}: ${r.from} does not reproduce the producer's value at frame ${bad} (a transformed param tagged as a plain ref?) — sampled instead.`);
+        plan = sampled(r.from);
+      }
+    } else if (r.kind === "expr") {
+      // The compiled driver must reproduce the producer at every frame — bit
+      // for bit (within float rounding when a BindRef scale multiplies).
+      const eq = r.scale !== undefined ? closeValue : sameValue;
+      const bad = vals.findIndex((v, f) => !eq(evaluateExprPlan(r, f * tl.ticksPerFrame), v));
+      if (bad < 0) plan = r;
+      else {
+        warnings.push(`${fb.path}: ${r.from} does not reproduce the producer's value at frame ${bad} — sampled instead.`);
         plan = sampled(r.from);
       }
     } else if (r.kind === "clock") {

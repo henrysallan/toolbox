@@ -1,0 +1,179 @@
+{
+  "format": 3,
+  "name": "Aurora (procedural)",
+  "exportedBy": "toolbox SkSL Shader",
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "usesTime": false,
+  "uniforms": [
+    {
+      "name": "scale",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: Expression scale_expr ← LFO wob",
+      "procedural": {
+        "nodes": [
+          "expression scale_expr",
+          "lfo wob"
+        ],
+        "tracks": 0,
+        "random": false
+      }
+    },
+    {
+      "name": "octaves",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "persistence",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "lacunarity",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "drift_x",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: LFO lfo",
+      "procedural": {
+        "nodes": [
+          "lfo lfo"
+        ],
+        "tracks": 0,
+        "random": false
+      }
+    },
+    {
+      "name": "drift_y",
+      "kind": "float",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "contrast",
+      "kind": "float",
+      "animated": true,
+      "keys": 0,
+      "from": "procedural: Expression contrast_expr ← Scene Time st",
+      "procedural": {
+        "nodes": [
+          "expression contrast_expr",
+          "scene-time st"
+        ],
+        "tracks": 0,
+        "random": false
+      }
+    },
+    {
+      "name": "c0",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c1",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    },
+    {
+      "name": "c2",
+      "kind": "color",
+      "animated": true,
+      "keys": 3,
+      "from": "Color glow.color (3 keys, oklab)"
+    },
+    {
+      "name": "c3",
+      "kind": "color",
+      "animated": false,
+      "keys": 0,
+      "from": "static (channel row)"
+    }
+  ],
+  "procedural": {
+    "values": [
+      "scale",
+      "drift_x",
+      "contrast"
+    ],
+    "note": "These uniforms come from procedural driver nodes (Expression / LFO / Math / Scene Time / Random / Constant / Animated Value) compiled to worklets of the toolbox tick (procedural.ts) — the editor's evaluation, bit for bit."
+  },
+  "warnings": []
+}

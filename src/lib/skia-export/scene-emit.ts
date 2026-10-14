@@ -10,6 +10,8 @@
 //   timeline.ts         track + sampled data, sampleBinds(seconds) — one
 //                       worklet that evaluates every animated bind
 //   toolbox-timeline.ts the keyframe evaluator (src/lib/skia-export/runtime)
+//   procedural.ts       only with procedural drivers (spec §3.5e): one
+//                       worklet P_<bind>(tick) per expr bind sampleBinds reads
 //   effects.ts          the SkSL of every runtime program, deduped
 //   assets.ts           require() of every asset the scene draws, by IR id
 //   assets/*.b64        bytes the exporter had (SkiaExportRequest.assets,
@@ -57,6 +59,8 @@ import { RN_SKIA_VERSION } from "./emit";
 import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { BindValue, PlannedBind, ScenePlan } from "./scene-plan";
 import { assetBytesOf, assetSourcesModule, manifestAsset, writeAssetFiles } from "./asset-bundle";
+import { programKey, proceduralManifest } from "./procedural";
+import { emitProceduralModule, proceduralFnName, type ProceduralValue } from "./procedural/emit-js";
 import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 
 // 3: useToolboxClock() returns { time, …controls } and lives in
@@ -226,6 +230,7 @@ export function sampleKeys(plan: ScenePlan): Map<string, string> {
     if (p.kind === "track") key = JSON.stringify(["t", b.role, p.pick ?? null, p.tracks]);
     else if (p.kind === "clock") key = "clock";
     else if (p.kind === "sampled") key = JSON.stringify(["s", b.role, p.values]);
+    else if (p.kind === "expr") key = JSON.stringify(["e", b.role, p.scale ?? null, programKey(p.program)]);
     else continue;
     const first = byKey.get(key);
     if (first) out.set(b.id, first);
@@ -1018,10 +1023,12 @@ const SERIES_SOURCE = {
     `export function seriesLerpN(s: Series<number[]>, frame: number): number[] {\n  "worklet";\n  const i = seriesIndex(s.f, frame);\n  const a = s.v[i];\n  if (i >= s.f.length - 1 || frame <= s.f[i]) return a;\n  const b = s.v[i + 1];\n  const u = (frame - s.f[i]) / (s.f[i + 1] - s.f[i]);\n  return a.map((x, k) => (x === b[k] ? x : x + (b[k] - x) * u));\n}\n`,
 };
 
-function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, string>): { text: string; fields: number } {
+function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, string>): { text: string; fields: number; procedural: ProceduralValue[] } {
   const decls: string[] = [];
   const fields: string[] = [];
+  const procedural: ProceduralValue[] = [];
   let usesTick = false;
+  let usesTrack = false;
   let usesFrame = false;
   const series = new Set<keyof typeof SERIES_SOURCE>();
   const shared = new Map<string, number>();
@@ -1032,8 +1039,14 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, 
     const p = b.plan;
     const more = shared.get(b.id);
     const note = `// ${b.path}${more ? ` (+${more} more)` : ""}: ${p.kind === "refused" ? p.reason : p.from}`;
-    if (p.kind === "track") {
+    if (p.kind === "expr") {
+      // A compiled procedural driver (procedural.ts, spec §3.5e).
       usesTick = true;
+      procedural.push({ key: b.id, program: p.program, from: p.from });
+      fields.push(`    ${b.id}: ${proceduralFnName(b.id)}(tick)${p.scale === undefined ? "" : ` * ${lit(p.scale)}`}, // ${p.from}`);
+    } else if (p.kind === "track") {
+      usesTick = true;
+      usesTrack = true;
       const ts = b.role === "array" && p.pick === undefined && p.tracks.length === 1 ? "number[]" : "number";
       // (A BindRef.scale rides on the track: the runtime multiplies.)
       if (p.tracks.length === 1) {
@@ -1062,10 +1075,11 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, 
     series.add("step");
   }
   const helperOrder: (keyof typeof SERIES_SOURCE)[] = ["index", "step", "lerp", "lerpN"];
-  const rtImports = usesTick ? "evaluateTrack, ticksAt, type TimelineTrack" : "ticksAt";
+  const rtImports = usesTrack || (usesTick && !procedural.length) ? "evaluateTrack, ticksAt, type TimelineTrack" : "ticksAt";
   const text =
     HEADER("the animation timeline") +
     `\nimport { ${rtImports} } from "./toolbox-timeline";\n` +
+    (procedural.length ? `import { ${procedural.map((v) => proceduralFnName(v.key)).join(", ")} } from "./procedural";\n` : "") +
     `\nexport const NAME = ${JSON.stringify(plan.name)};\n` +
     timelineConstSource(plan.timeline) +
     `\n// Toolbox canvas px — the scene's own coordinate space.\nexport const CANVAS = { width: ${plan.canvas.width}, height: ${plan.canvas.height} } as const;\n` +
@@ -1082,7 +1096,7 @@ function emitTimeline(plan: ScenePlan, em: SceneEmitter, supplied?: Map<string, 
     (usesTick || usesFrame ? `  const tick = ticksAt(seconds, TIMELINE.fps, TIMELINE.ticksPerFrame);\n` : "") +
     (usesFrame ? `  const frame = tick / TIMELINE.ticksPerFrame;\n` : "") +
     (fields.length ? `  return {\n${fields.join("\n")}\n  };\n}\n` : `  return {};\n}\n`);
-  return { text, fields: fields.length };
+  return { text, fields: fields.length, procedural };
 }
 
 // ---- the bundle ------------------------------------------------------------------------------
@@ -1131,6 +1145,7 @@ export function emitSceneBundle(
   const timeline = emitTimeline(plan, em, driver?.supplied);
   files["timeline.ts"] = timeline.text;
   files["toolbox-timeline.ts"] = runtimeSource;
+  if (timeline.procedural.length) files["procedural.ts"] = emitProceduralModule(timeline.procedural);
 
   // ---- ToolboxScene.tsx
   const hooks = [...em.hooks];
@@ -1237,6 +1252,9 @@ export function emitSceneBundle(
               return [{ ...base, from: p.from }];
             case "sampled":
               return [{ ...base, role: b.role, from: p.from, distinct: new Set(p.values.map((v) => JSON.stringify(v))).size }];
+            case "expr":
+              // Compiled from a driver subgraph: procedural.ts P_<sample>.
+              return [{ ...base, from: p.from, procedural: proceduralManifest(p.program), ...(p.scale === undefined ? {} : { scale: p.scale }) }];
             default:
               return [];
           }

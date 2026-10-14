@@ -298,6 +298,9 @@ export const expressionNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // Skia layers: a procedural driver — the export parses the source (a math
+  // subset) and compiles it to a worklet of the tick (spec §3.5e).
+  skia: { class: "driver" },
   // Pure CPU eval with no GL work. fingerprintExtras folds in ctx.time only
   // when the source is time-dependent, so static expressions cache as
   // constants and animated ones recompute each frame.

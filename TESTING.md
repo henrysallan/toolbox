@@ -728,6 +728,47 @@ that pair). Offline node tests should push each input through
   mask alone doesn't fill a layer, disabled layers take no slot, and the
   grown stack resolves its new sockets. The node header's "+", the row eyes
   and the effect itself running on a wire change are live-app questions.
+- `check-skia-procedural` — procedural drivers compiled for the React
+  Native Skia export (101326_skia-target.md §3.5e,
+  `src/lib/skia-export/procedural/`): Expression (a parsed JS math subset),
+  LFO, Math (scalar), Scene Time, Random (seeded), a keyframed / wired
+  Constant and an Animated Value on a wired clock become a program of the
+  tick — a worklet in worklet / native bundles (`procedural.ts`), SkSL in
+  baked programs. The parser accepts the subset and refuses the rest with
+  the reason — including the places the EDITOR fails to compile and
+  outputs 0 (a bare `x;`, a bare expression ending in a `//` comment,
+  `-x ** 2`, `return` + a line break) — and never evaluates a source.
+  Every case of `scripts/fixtures/skia/procedural-graph.ts` (every LFO
+  shape and clock, every Math op, every Scene Time mode × easing incl. a
+  custom curve, Random, Constant, Animated Value clocks, an Expression
+  battery with `random()`) equals the REAL evaluator bit for bit at every
+  frame and three sub-frame ticks — as the IR interpreter, as the emitted
+  TypeScript, and as the worklets Babel plugin's output rebuilt on an
+  emulated UI runtime; the easing / curve helpers equal engine/easing.ts on
+  a dense grid; no emitted worklet reads a declaration below it. Baked:
+  each bakeable case runs on a CanvasKit F32 surface at the same ticks and
+  must stay within 4× a first-order fp32 error bound of the worklet (or
+  sit on a jump's other side, proven per sample); the parity fixture's
+  drivers within 1e-6. Then the plan kinds (SkSL Shader uniforms take
+  `expr`, scene binds plan as `expr` and match the producer every frame,
+  baked program uniforms, native on the linear clock, manifests flag
+  `procedural`), the fallbacks (unsupported syntax in a scene → sampled
+  with a warning; Math.random, Random frame mode, clips, bypass, unknown or
+  stateful upstream nodes, vec → scalar wires refuse), one skia-harness
+  type-check over all six emitted bundles, and that
+  `skia-harness/src/bundle-procedural*` are today's export. Traps it
+  guards or hit: Random caches its value per FRAME (lastFrame / lastSeed),
+  so the program reads its params at the frame's tick, not the sub-frame
+  one; a baked value is NOT held to a flat 1e-6 — fp32 conditioning (an
+  LFO's phase × a product's gain, asin near ±1, √ at the end of
+  ease-in-circ) exceeds it on ~3 % of samples, so the gate holds the SkSL
+  to the bound fp32 permits and reports where 1e-6 holds; the LFO phase on
+  the playhead is reduced by its period in whole ticks before the fp32
+  multiply (raw t · f would round at ulp(t · f)); the worklets plugin
+  re-reads the SOURCE FILE for each worklet's code string, so the gate
+  writes it to disk before `transformSync`. NaN / Infinity is not a fp32
+  promise: samples whose engine evaluation passes through one (a domain
+  error toNum maps to 0) are counted, not held.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -769,7 +810,13 @@ that pair). Offline node tests should push each input through
     the bundle is re-exported: the device lane refuses stale goldens.
     `--bundle image` plays `src/bundle-image` (an SkSL Shader sampling a
     bundled image through ramp / curve LUTs, `export-skia.mts --fixture
-    image`). `--bundle native | native-easings | native-scene` plays the
+    image`). `--bundle procedural | procedural-baked` plays Aurora on
+    procedural drivers (`export-skia.mts --fixture procedural [--animation
+    baked]`; a fresh worktree needs `skia-harness/public/canvaskit.wasm`
+    first — see check-skia-assets' traps: without it the page 404s the wasm,
+    "expected magic word 00 61 73 6d, found 3c 21 64 6f", and the run times
+    out waiting for `__toolboxHarnessReady`). `--bundle native |
+    native-easings | native-scene` plays the
     Reanimated-native slots instead (`export-skia.mts --animation
     native`): the page runs on a fake animation clock (`?clock=fake`,
     `skia-harness/fake-clock.ts`) that steps Reanimated's real frame loop

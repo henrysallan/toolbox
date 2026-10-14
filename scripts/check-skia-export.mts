@@ -497,20 +497,31 @@ const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
     check("an image wired but never sampled is a warning, not a refusal", !!r.plan && r.plan.warnings.some((w) => w.includes("never samples iImage1")), JSON.stringify(r.problems));
   }
   check(
-    "refuses a channel driven by a non-keyframe node",
+    "refuses a channel driven by a node that is neither a keyframe source nor a procedural driver (Smooth)",
     plan2((n, e) => {
-      n.push({ id: "lfo", type: "lfo", params: {} });
+      n.push({ id: "sm", type: "smooth", params: {} });
       const ed = e.find((x) => x.source === "drift")!;
-      ed.source = "lfo";
-    }).some((p) => p.includes("driven by a lfo"))
+      ed.source = "sm";
+    }).some((p) => p.includes("driven by a smooth"))
   );
-  check(
-    "refuses a keyframed Constant",
-    plan2((n, e) => {
-      n.push({ id: "k", type: "constant", params: { value: 1 }, animation: { value: blockOf([{ tick: 0, value: 1, easingOut: "linear" }, { tick: 5, value: 2, easingOut: "linear" }]) } });
-      e.find((x) => x.source === "drift")!.source = "k";
-    }).some((p) => p.includes("Constant"))
-  );
+  {
+    // Since Wave 3 lane P (spec §3.5e) an LFO or a keyframed Constant compiles
+    // to a procedural driver instead of refusing (check:skia-procedural has
+    // the numbers).
+    const opts = { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE };
+    const viaLfo = fx.auroraGraph();
+    viaLfo.nodes.push({ id: "lfo", type: "lfo", params: {} });
+    viaLfo.edges.find((x) => x.source === "drift")!.source = "lfo";
+    const pl = planSkiaExport(viaLfo.nodes, viaLfo.edges, viaLfo.targetId, opts).plan;
+    const viaK = fx.auroraGraph();
+    viaK.nodes.push({ id: "k", type: "constant", params: { value: 1 }, animation: { value: blockOf([{ tick: 0, value: 1, easingOut: "linear" }, { tick: 5, value: 2, easingOut: "linear" }]) } });
+    viaK.edges.find((x) => x.source === "drift")!.source = "k";
+    const pk = planSkiaExport(viaK.nodes, viaK.edges, viaK.targetId, opts).plan;
+    check(
+      "a channel driven by an LFO / a keyframed Constant plans as a procedural driver (expr)",
+      !!pl?.uniforms.find((u) => u.name === "drift_x")?.expr && !!pk?.uniforms.find((u) => u.name === "drift_x")?.expr
+    );
+  }
   {
     // Wave 3 lane I: ramp / curve channels export as 256×1 LUT children
     // (check-skia-assets holds the bytes and the pixels).
