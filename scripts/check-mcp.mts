@@ -849,7 +849,7 @@ check(
   const cat = await client.callTool({ name: "get_catalog", arguments: { target: "skia" } });
   check(
     "get_catalog target skia lists only Skia types",
-    !isError(cat) && textOf(cat).startsWith("# Skia layer catalog") && textOf(cat).includes("sksl-shader (SkSL Shader)") && !textOf(cat).includes("noise ("),
+    !isError(cat) && textOf(cat).startsWith("# Skia layer catalog") && textOf(cat).includes("sksl-shader (SkSL Shader)") && !/^noise \(/m.test(textOf(cat)),
     textOf(cat).slice(0, 200)
   );
   const catBad = await client.callTool({ name: "get_catalog", arguments: { target: "metal" } });

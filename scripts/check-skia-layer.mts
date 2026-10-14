@@ -247,13 +247,14 @@ function layerOf(name: string, target?: "skia" | "default") {
       index.includes("sksl-shader (SkSL Shader)") &&
       index.includes("animated-value (Animated Value)") &&
       index.includes(`${GATE_TYPE} (Skia Gate Fill)`) &&
-      !index.includes("noise (") &&
-      !index.includes("repeat (Repeat)") &&
-      !index.includes("foreach (For Each Element)"),
+      // Line-anchored: `skia-noise (Noise (Skia))` contains "noise (".
+      !/^noise \(/m.test(index) &&
+      !/^repeat \(Repeat\)/m.test(index) &&
+      !/^foreach \(For Each Element\)/m.test(index),
     index.slice(0, 600)
   );
   const full = buildCatalogDsl({ mode: "list" });
-  check("the unfiltered catalog is unchanged", full.includes("noise (") && full.includes("repeat (Repeat)") && !full.startsWith("# Skia"));
+  check("the unfiltered catalog is unchanged", /^noise \(/m.test(full) && full.includes("repeat (Repeat)") && !full.startsWith("# Skia"));
   const typed = buildCatalogDsl({ target: "skia", types: ["sksl-shader", "noise"] });
   check(
     "types= under target skia: Skia types in full, others reported unknown",
