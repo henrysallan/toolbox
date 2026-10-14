@@ -96,3 +96,4 @@ next-env.d.ts
 /skia-harness/device-out
 # compare:skia output (PNGs + report.json)
 /scripts/.skia-compare-out/
+/skia-harness/src/__family_check__/
