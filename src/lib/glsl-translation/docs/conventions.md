@@ -132,10 +132,15 @@ Rules that matter for translation:
   sockets: declare the channel, then `add_edge` from the same producer to
   `<glslId>:in:<channelName>` (the plan's `skeleton.channelEdges`). The
   producer keeps driving it at eval time.
-- Keyframed params: a channel cannot hold keyframes. Either leave the
-  keyframes on the original node and drive the channel from a wired
-  scalar (a `constant` or `animated-value` node carrying the same track),
-  or state that the animation was not carried over.
+- Keyframed params: channels hold keyframes. Copy the track 1:1 —
+  `get_keyframes(origId, param)` then `set_keyframes(glslId, "<channel>",
+  keys)` — for scalar → `ch()`, boolean → `toggle()`, enum → `pick()` and
+  color → `color()` (hex keys; colors interpolate in OKLab like the
+  original unless the track says rgb). A vec2/vec3 track would need one
+  scalar track per component channel; ramp / curve channels can't hold
+  keyframes — drive those from a wired source, or state that the
+  animation was not carried over. A wired channel socket still wins over
+  its keyframes.
 - Cap: 12 ramp/curve channels per node (units 4+ on a 16-unit device).
 - Sync is add-only. To change a channel's value use `set_param` with the
   channel NAME; rewriting the expression never resets tuned rows.

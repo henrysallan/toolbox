@@ -45,6 +45,11 @@ export interface TimelineTrack {
   // takes the node's own alpha.
   quantize8?: boolean;
   alpha?: number;
+  // Expression-channel color tracks (`ch:<name>` keyframes on the SkSL node
+  // itself) reach the shader through the channel row's hex, alpha byte
+  // included: with quantize8, alpha interpolates with the color and snaps
+  // to 8 bits too, and `alpha` is ignored.
+  quantizeAlpha?: boolean;
   keys: TimelineKey[];
 }
 
@@ -285,7 +290,7 @@ export function evaluateTrackRaw(track: TimelineTrack, tick: number): number | n
 }
 
 // What the shader uniform receives: scalars as-is; colors through the
-// Color node's hex round trip when the track says so.
+// Color node's (or the channel row's) hex round trip when the track says so.
 export function evaluateTrack(track: TimelineTrack, tick: number): number | number[] {
   "worklet";
   const v = evaluateTrackRaw(track, tick);
@@ -295,5 +300,5 @@ export function evaluateTrack(track: TimelineTrack, tick: number): number | numb
     "worklet";
     return Math.max(0, Math.min(255, Math.round(x * 255))) / 255;
   };
-  return [q(c[0]), q(c[1]), q(c[2]), track.alpha ?? 1];
+  return [q(c[0]), q(c[1]), q(c[2]), track.quantizeAlpha ? q(c[3]) : (track.alpha ?? 1)];
 }

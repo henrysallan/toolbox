@@ -7,6 +7,11 @@
 //      matches the Color node's hex round trip bit for bit;
 //   2. the Aurora fixture exports, and the emitted timeline.ts reproduces
 //      what the real evaluator feeds the SkSL node at every frame;
+//   2b. channels keyframed ON the node (`ch:<name>` tracks — scalar, toggle,
+//      pick, color with keyed alpha, both color spaces) export as tracks
+//      whose emitted values are bit-identical to the uniforms the evaluator
+//      delivers to the node at every frame; a wire still wins (and warns);
+//      unreplayable keys are refused;
 //   3. the emitted program compiles in CanvasKit (Node) and declares exactly
 //      the uniforms sampleUniforms() supplies — no missing, no extra;
 //   4. the planner refuses what M0 cannot ship (wired images, foreign
@@ -31,8 +36,8 @@ const { getNodeDef } = await import("@/engine/registry");
 const { evaluateGraph } = await import("@/engine/evaluator");
 const { evaluateKeyframesAt, EASING_PRESET_ORDER } = await import("@/engine/keyframes");
 const { colorValueToHex } = await import("@/engine/conventions");
-const { syncChannelInputs } = await import("@/engine/expr-channels");
-const { buildSkslProgram, compileSksl, lintSksl, userLineError } = await import("@/engine/skia/sksl-program");
+const { syncChannelInputs, readChannelValues } = await import("@/engine/expr-channels");
+const { buildSkslProgram, channelUniformValues, compileSksl, lintSksl, userLineError } = await import("@/engine/skia/sksl-program");
 const { planSkiaExport, emitSkiaBundle } = await import("@/lib/skia-export");
 const rt = await import("@/lib/skia-export/runtime/toolbox-timeline");
 const { buildRecipe } = await import("@/state/recipe-builder");
@@ -195,6 +200,183 @@ const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
     }
   }
   check("emitted sampleUniforms == evaluator output for every driver, frames 0..300", !mismatch, mismatch);
+}
+
+// ---- 2b. channel keyframes on the node itself --------------------------------
+// The SkSL node's own `ch:<name>` tracks (engine/channel-keyframes.ts). The
+// evaluator side is the real evaluateGraph with the node's compute wrapped to
+// capture the uniform values it would pack — channelUniformValues over
+// readChannelValues, exactly the real compute's expression (the CanvasKit
+// render itself needs a GPU and is not what's under test).
+{
+  const src = [
+    `// ch("gain", 0.5, 0, 4)`,
+    `// toggle("flip", false)`,
+    `// pick("mode", "soft", "hard", "wild")`,
+    `// color("tint", "#3d7bff")`,
+    `// color("wash", "#ffffff")`,
+    `// ch("still", 0.3)`,
+    `// ch("wired", 1.0)`,
+    `half4 main(float2 p) {`,
+    `  float2 uv = p / iResolution.xy;`,
+    `  float k = gain * (flip != 0 ? 1.0 - uv.x : uv.x) + still * wired + float(mode) * 0.1;`,
+    `  float4 c = mix(tint, wash, clamp(k, 0.0, 1.0));`,
+    `  return half4(float4(c.rgb * c.a, c.a));`,
+    `}`,
+  ].join("\n");
+  const inputs = syncChannelInputs([], src);
+  const id = (n: string) => inputs.find((r) => r.name === n)!.id;
+  const blk = (keys: Keyframe[], colorSpace?: "oklab" | "rgb"): KeyframeAnimationBlock => blockOf(keys, colorSpace);
+  const F = (f: number) => f * 1000;
+  const chanGraph = () => {
+    const nodes: GraphNode[] = [
+      {
+        id: "drv",
+        type: "animated-value",
+        params: { value: 0, unit: "frames" },
+        animation: { value: blk([{ tick: 0, value: 0.5, easingOut: "easeInOutSine" }, { tick: F(300), value: 2, easingOut: "linear" }]) },
+      },
+      {
+        id: "chk",
+        type: "sksl-shader",
+        params: { inputs, expression: src, on_error: "transparent" },
+        animation: {
+          "ch:gain": blk([
+            { tick: 0, value: 0, easingOut: "easeOutBack" },
+            { tick: F(60), value: 3, easingOut: "cubicBezier", bezier: { x1: 0.2, y1: 1.4, x2: 0.4, y2: -0.3 } },
+            { tick: F(130), value: 1, easingOut: "customBezier", bezierHandles: { rightHandle: { dx: 20_000, dy: 2 }, leftHandle: { dx: -5_000, dy: 0 } } },
+            { tick: F(200), value: 2.5, easingOut: "hold" },
+            { tick: F(250), value: 0.75, easingOut: "easeOutElastic" },
+            { tick: F(290), value: 1.25, easingOut: "linear" },
+          ]),
+          "ch:flip": blk([
+            { tick: F(10), value: false, easingOut: "hold" },
+            { tick: F(100), value: true, easingOut: "hold" },
+            { tick: F(220), value: false, easingOut: "hold" },
+          ]),
+          "ch:mode": blk([
+            { tick: 0, value: "soft", easingOut: "hold" },
+            { tick: F(75), value: "wild", easingOut: "linear" },
+            { tick: F(180), value: "hard", easingOut: "hold" },
+          ]),
+          "ch:tint": blk([
+            { tick: 0, value: "#3d7bff", easingOut: "easeInOutCubic" },
+            { tick: F(150), value: "#ff7a4580", easingOut: "easeOutBack" },
+            { tick: F(300), value: [0.1, 0.9, 0.3, 1], easingOut: "linear" },
+          ]),
+          "ch:wash": blk(
+            [
+              { tick: F(20), value: "#00000000", easingOut: "easeInQuad" },
+              { tick: F(280), value: "#ffffff", easingOut: "linear" },
+            ],
+            "rgb"
+          ),
+          // Shadowed by the wire below — the export must follow the wire.
+          "ch:wired": blk([{ tick: 0, value: 9, easingOut: "linear" }, { tick: F(300), value: 7, easingOut: "linear" }]),
+        },
+      },
+    ];
+    const edges: GraphEdge[] = [{ id: "w", source: "drv", sourceHandle: "out:primary", target: "chk", targetHandle: `in:in:${id("wired")}` }];
+    return { nodes, edges };
+  };
+  const g = chanGraph();
+  const r = planSkiaExport(g.nodes, g.edges, "chk", { name: "Channels", canvas: { width: 64, height: 64 }, timeline: fx.AURORA_TIMELINE });
+  check("channel-keyframe fixture plans without problems", !!r.plan && r.problems.length === 0, r.problems.join(" | "));
+  if (r.plan) {
+    const u = (n: string) => r.plan!.uniforms.find((x) => x.name === n)!;
+    check(
+      "own ch: tracks export as tracks; the static row stays static; the wire wins",
+      ["gain", "flip", "mode", "tint", "wash"].every((n) => u(n).track && u(n).from.startsWith("channel keyframes")) &&
+        u("still").value === 0.3 && !u("still").track && u("wired").from.startsWith("Animated Value drv")
+    );
+    check("a wired channel's own keyframes are reported as ignored", r.plan.warnings.some((w) => w.includes(`"wired"`) && w.includes("ignored")));
+    check(
+      "track shapes: scalar keys verbatim, toggle / pick as hold ints, colors 8-bit with keyed alpha",
+      u("gain").track!.kind === "scalar" && u("gain").track!.keys.length === 6 &&
+        u("flip").track!.keys.map((k) => `${k.value}/${k.easing}`).join() === "0/hold,1/hold,0/hold" &&
+        u("mode").track!.keys.map((k) => `${k.value}/${k.easing}`).join() === "0/hold,2/hold,1/hold" &&
+        u("tint").track!.quantize8 === true && u("tint").track!.quantizeAlpha === true && u("wash").track!.colorSpace === "rgb"
+    );
+
+    const dir = path.join(tmp, "channels");
+    fs.mkdirSync(dir, { recursive: true });
+    const chFiles = emitSkiaBundle(r.plan, runtimeSrc);
+    for (const [f, text] of Object.entries(chFiles)) fs.writeFileSync(path.join(dir, f), text);
+    const chEmitted = await import(pathToFileURL(path.join(dir, "timeline.ts")).href);
+
+    const skDef = getNodeDef("sksl-shader")!;
+    const realCompute = skDef.compute;
+    let delivered: Record<string, number | number[]> = {};
+    skDef.compute = ((args: any) => {
+      const prog = buildSkslProgram(args.params);
+      delivered = channelUniformValues(prog.channels, readChannelValues(prog.channels, args.inputs)) as Record<string, number | number[]>;
+      return {};
+    }) as any;
+    const ctx: any = {
+      gl: {}, width: 8, height: 8, time: 0, frame: 0, tick: 0, ticksPerFrame: 1000, fps: 60,
+      playing: false, offline: false, cursor: { x: 0, y: 0, active: false }, state: {},
+    };
+    let mismatch = "";
+    let alphaSeen = false;
+    try {
+      const cache: EvalCache = new Map();
+      for (let f = 0; f <= 300 && !mismatch; f++) {
+        ctx.tick = f * 1000;
+        ctx.frame = f;
+        ctx.time = f / 60;
+        evaluateGraph(g.nodes, g.edges, ctx, cache, null, undefined, null, { extraTargets: ["chk"] });
+        const got = chEmitted.sampleUniforms(f / 60, 64, 64);
+        for (const name of ["gain", "flip", "mode", "tint", "wash", "still", "wired"]) {
+          const want = ([] as number[]).concat(delivered[name] as number | number[]);
+          const have = ([] as number[]).concat(got[name]);
+          if (want.length === 0 || want.length !== have.length || want.some((x, i) => !Object.is(x, have[i]))) {
+            mismatch = `frame ${f} ${name}: evaluator ${JSON.stringify(want)} export ${JSON.stringify(have)}`;
+            break;
+          }
+          if (name === "tint" && want[3] > 0 && want[3] < 1) alphaSeen = true;
+        }
+      }
+    } finally {
+      skDef.compute = realCompute;
+    }
+    check("emitted channel tracks == the uniforms the evaluator delivers, every channel, frames 0..300 (bit-identical)", !mismatch, mismatch);
+    check("…including a translucent keyed alpha on the color channel", alphaSeen);
+
+    const require = createRequire(path.join(ROOT, "package.json"));
+    const CKit = await require("canvaskit-wasm")();
+    const c = compileSksl(CKit, r.plan.sksl);
+    check("channel fixture compiles in CanvasKit", !!c.effect, c.error ? userLineError(c.error, r.plan.preludeLines) : "");
+    if (c.effect) {
+      const declared = new Set<string>();
+      for (let i = 0; i < c.effect.getUniformCount(); i++) declared.add(c.effect.getUniformName(i));
+      const supplied = Object.keys(chEmitted.sampleUniforms(0, 64, 64));
+      check("channel fixture: sampleUniforms supplies exactly the declared uniforms", supplied.length === declared.size && supplied.every((n) => declared.has(n)));
+    }
+  }
+  const refuse = (mut: (n: GraphNode) => void) => {
+    const g2 = chanGraph();
+    mut(g2.nodes.find((n) => n.id === "chk")!);
+    return planSkiaExport(g2.nodes, g2.edges, "chk", { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE }).problems;
+  };
+  check(
+    "refuses a scalar channel track with a non-numeric key",
+    refuse((n) => (n.animation!["ch:gain"] = blk([{ tick: 0, value: "lots", easingOut: "linear" }]))).some((p) => p.includes(`"gain"`))
+  );
+  check(
+    "refuses a color channel track with a key that isn't a color",
+    refuse((n) => (n.animation!["ch:tint"] = blk([{ tick: 0, value: "teal", easingOut: "linear" }]))).some((p) => p.includes(`"tint"`))
+  );
+  check(
+    "a disabled channel track exports the row (static)",
+    (() => {
+      const g3 = chanGraph();
+      const n = g3.nodes.find((x) => x.id === "chk")!;
+      n.animation!["ch:gain"] = { ...n.animation!["ch:gain"], animated: false };
+      const p = planSkiaExport(g3.nodes, g3.edges, "chk", { name: "x", canvas: { width: 8, height: 8 }, timeline: fx.AURORA_TIMELINE }).plan;
+      const gu = p?.uniforms.find((x) => x.name === "gain");
+      return !!gu && !gu.track && gu.value === 0.5;
+    })()
+  );
 }
 
 // ---- 3. CanvasKit compile + uniform set ---------------------------------------

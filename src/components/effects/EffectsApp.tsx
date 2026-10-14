@@ -542,6 +542,7 @@ import {
   type ProjectTimeline,
   type SavedEasing,
 } from "@/engine/keyframes";
+import { applyChannelListEdit } from "@/engine/channel-keyframes";
 import { resolveClipAt, type ClipBlock } from "@/engine/clips";
 import type {
   ModelFileParamValue,
@@ -7433,6 +7434,25 @@ function EffectsShell({
                   }
                 }
               }
+            }
+          }
+          // Expression channel tracks (ch:<name> — engine/channel-keyframes):
+          // an edit to a channelSync list renames a row's track with it,
+          // drops a removed row's track, and auto-keys a changed value whose
+          // track is animated (the constant below still writes, as for
+          // params). Same setNodes pass, so one undo restores both.
+          if (Array.isArray(value)) {
+            const chanDef = getNodeDef(n.data.defType)?.params.find(
+              (p) => p.name === paramName
+            );
+            if (chanDef?.type === "expr_inputs" && chanDef.channelSync) {
+              const before = n.data.params[paramName];
+              nextAnimation = applyChannelListEdit(
+                Array.isArray(before) ? (before as ExprInput[]) : [],
+                value as ExprInput[],
+                nextAnimation,
+                tickAtEdit
+              );
             }
           }
           let nextParams: Record<string, unknown> = {

@@ -67,6 +67,12 @@ import {
   findExprChannel,
   setExprChannelValue,
 } from "@/engine/expr-channels";
+import {
+  keyframableChannelNames,
+  resolveChannelKeyframeTarget,
+  vetChannelKeyframeValue,
+} from "@/engine/channel-keyframes";
+import { parseChannelKey } from "@/engine/conventions";
 import type { EngineBackend } from "@/engine/gl";
 import type { EvalCache } from "@/engine/evaluator";
 import type { ImageValue, NodeOutput } from "@/engine/types";
@@ -1195,11 +1201,22 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const anim = (node.data.animation ?? {}) as Record<string, KeyframeAnimationBlock>;
       const def = getNodeDef(node.data.defType);
       if (param != null) {
-        const block = anim[String(param)];
+        // A channel NAME on Point / GLSL Expression / SkSL Shader reads its
+        // `ch:<name>` track (engine/channel-keyframes.ts). A param wins a
+        // name collision; `ch:<name>` addresses the channel explicitly.
+        const chan =
+          def && !def.params.some((p) => p.name === param)
+            ? resolveChannelKeyframeTarget(def, node.data.params, String(param))
+            : null;
+        if (chan && !chan.ok)
+          throw new Error(`Can't read keyframes for "${param}": ${chan.reason}.`);
+        const chanInfo = chan ? { channel: chan.name, kind: channelKind(chan.row) } : {};
+        const block = anim[chan ? chan.key : String(param)];
         if (!block)
-          return { param, animated: false, keys: [] };
+          return { param, ...chanInfo, animated: false, keys: [] };
         return {
           param,
+          ...chanInfo,
           animated: block.animated,
           ...(block.colorSpace ? { colorSpace: block.colorSpace } : {}),
           keys: block.keyframes.map((k) => ({
@@ -1216,16 +1233,24 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         };
       }
       // No param → an overview: every keyed track + what could be keyed.
+      // Channel tracks list under their channel NAME (what set_keyframes
+      // takes), flagged `channel: true`.
+      const channels = def ? keyframableChannelNames(def, node.data.params) : [];
       return {
-        tracks: Object.entries(anim).map(([name, block]) => ({
-          param: name,
-          animated: block.animated,
-          keyCount: block.keyframes.length,
-          frames: block.keyframes.map((k) => frameOf(k.tick)),
-        })),
+        tracks: Object.entries(anim).map(([name, block]) => {
+          const chanName = parseChannelKey(name);
+          return {
+            param: chanName ?? name,
+            ...(chanName !== null ? { channel: true } : {}),
+            animated: block.animated,
+            keyCount: block.keyframes.length,
+            frames: block.keyframes.map((k) => frameOf(k.tick)),
+          };
+        }),
         keyframable: (def?.params ?? [])
           .filter((p) => isKeyframable(p.type) && SETTABLE_PARAM_TYPES.has(p.type))
           .map((p) => p.name),
+        ...(channels.length ? { keyframableChannels: channels } : {}),
       };
     },
 
@@ -1234,36 +1259,55 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const def = getNodeDef(node.data.defType);
       if (!def) throw new Error(`Node "${nodeId}" has an unknown type.`);
       const pdef = def.params.find((p) => p.name === param);
-      if (!pdef)
+      // A channel NAME on a channelSync node keys its `ch:<name>` track
+      // (engine/channel-keyframes.ts), values vetted like set_param on that
+      // channel. A param wins a name collision; `ch:<name>` is explicit.
+      const chan = pdef
+        ? null
+        : resolveChannelKeyframeTarget(def, node.data.params, String(param));
+      if (chan && !chan.ok) throw new Error(`Can't keyframe "${param}": ${chan.reason}.`);
+      if (!pdef && !chan) {
+        const channelNames = keyframableChannelNames(def, node.data.params);
         throw new Error(
           `${node.data.defType} has no param "${param}". Params: ${def.params
             .map((p) => p.name)
-            .join(", ")}.`
+            .join(", ")}.${
+            channelNames.length
+              ? ` Keyframable channels (by name): ${channelNames.join(", ")}.`
+              : ""
+          }`
         );
-      if (!isKeyframable(pdef.type) || !SETTABLE_PARAM_TYPES.has(pdef.type))
+      }
+      if (pdef && (!isKeyframable(pdef.type) || !SETTABLE_PARAM_TYPES.has(pdef.type)))
         throw new Error(`"${param}" (${pdef.type}) can't be keyframed remotely.`);
       if (!Array.isArray(keys))
         throw new Error("Pass `keys` as an array of {frame, value, easing?} (empty clears the track).");
+      // The animation-map key + value rules: the param itself, or the
+      // channel's virtual track.
+      const trackKey = chan ? chan.key : String(param);
+      const label = chan ? `${chan.name} (channel)` : String(param);
+      const vetValue = (v: unknown) =>
+        chan ? vetChannelKeyframeValue(chan.row, v) : vetParamValue(pdef!, v);
 
       const anim = (node.data.animation ?? {}) as Record<string, KeyframeAnimationBlock>;
-      const existing = anim[String(param)];
+      const existing = anim[trackKey];
 
       if (keys.length === 0 && animated === undefined) {
         // Clear the whole track.
-        deps.onAnimationChange(String(nodeId), String(param), undefined);
-        deps.flashToast(`Claude: cleared ${param} keyframes`);
+        deps.onAnimationChange(String(nodeId), trackKey, undefined);
+        deps.flashToast(`Claude: cleared ${label} keyframes`);
         bumpGraphRev();
-        logMutation({ cmd: "set_keyframes", summary: `${node.id}.${param} cleared`, status: "ok" });
+        logMutation({ cmd: "set_keyframes", summary: `${node.id}.${label} cleared`, status: "ok" });
         return { ok: true, cleared: true, rev: graphRev };
       }
 
-      const stepOnly = isStepOnly(pdef.type);
+      const stepOnly = isStepOnly(chan ? chan.type : pdef!.type);
       const byTick = new Map<number, Keyframe>();
       for (const raw of keys as { frame?: unknown; value?: unknown; easing?: unknown }[]) {
         const frame = Number(raw?.frame);
         if (!Number.isFinite(frame) || frame < 0)
           throw new Error(`Every key needs a frame ≥ 0 (got ${raw?.frame}).`);
-        const vet = vetParamValue(pdef, raw?.value);
+        const vet = vetValue(raw?.value);
         if (!vet.ok)
           throw new Error(`Bad value at frame ${frame}: ${vet.reason}.`);
         let easing = (raw?.easing ?? "easeInOutQuad") as string;
@@ -1299,20 +1343,21 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         ...(existing?.colorSpace ? { colorSpace: existing.colorSpace } : {}),
         keyframes: sorted.length > 0 ? sorted : (existing?.keyframes ?? []),
       };
-      deps.onAnimationChange(String(nodeId), String(param), block);
+      deps.onAnimationChange(String(nodeId), trackKey, block);
       deps.flashToast(
-        `Claude: keyed ${param} (${block.keyframes.length} keys) on ${node.data.name ?? node.data.defType}`
+        `Claude: keyed ${label} (${block.keyframes.length} keys) on ${node.data.name ?? node.data.defType}`
       );
       bumpGraphRev();
       logMutation({
         cmd: "set_keyframes",
-        summary: `${node.id}.${param} (${block.keyframes.length} keys)`,
+        summary: `${node.id}.${label} (${block.keyframes.length} keys)`,
         status: "ok",
       });
       return {
         ok: true,
         rev: graphRev,
         param,
+        ...(chan ? { channel: chan.name, kind: channelKind(chan.row) } : {}),
         animated: block.animated,
         frames: block.keyframes.map((k) => frameOf(k.tick)),
       };
