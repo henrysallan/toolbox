@@ -1689,7 +1689,9 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                   layerAnim={
                     (p.type === "merge_layers" ||
                       p.type === "gradient_points" ||
-                      p.type === "color_ramp") &&
+                      p.type === "color_ramp" ||
+                      // Expression channels — ch:<name> tracks.
+                      (p.type === "expr_inputs" && !!p.channelSync)) &&
                     getAnimation &&
                     onAnimationChange
                       ? {

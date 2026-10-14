@@ -43,7 +43,12 @@ import {
   syncChannelInputs,
 } from "@/engine/expr-channels";
 import {
+  channelDisplayValue,
+  channelKeyframeType,
+} from "@/engine/channel-keyframes";
+import {
   animatedValueAt,
+  channelKey,
   gpointCKey,
   gpointXKey,
   gpointYKey,
@@ -2739,13 +2744,7 @@ export function ParamControl({
       ? (value as ExprInput[])
       : ((param.default as ExprInput[]) ?? []);
     const update = (next: ExprInput[]) => onChange(next);
-    // Keep names identifier-safe so they can be used verbatim as the
-    // expression's variable names (the node also validates at compile time).
-    const sanitizeName = (raw: string) => {
-      let s = raw.replace(/[^A-Za-z0-9_$]/g, "");
-      if (/^[0-9]/.test(s)) s = "_" + s;
-      return s;
-    };
+    const sanitizeName = sanitizeExprName;
     const removeBtn: React.CSSProperties = {
       background: "transparent",
       border: "1px solid var(--tb-n-9)",
@@ -2779,7 +2778,28 @@ export function ParamControl({
         )}
         {list.map((e) => {
           const isChannel = !!param.channelSync;
-          const nameField = (
+          const nameStyle: React.CSSProperties = {
+            ...(isChannel
+              ? { width: 76, flexShrink: 0 }
+              : { flex: 1, minWidth: 0 }),
+            background: "var(--tb-n-1)",
+            border: "1px solid var(--tb-n-7)",
+            color: "var(--tb-n-16)",
+            borderRadius: 3,
+            padding: "3px 6px",
+            fontFamily: "inherit",
+            fontSize: 11,
+          };
+          const nameField = isChannel ? (
+            <ChannelNameField
+              name={e.name}
+              taken={(n) => list.some((x) => x.id !== e.id && x.name === n)}
+              onCommit={(n) =>
+                update(list.map((x) => (x.id === e.id ? { ...x, name: n } : x)))
+              }
+              style={nameStyle}
+            />
+          ) : (
             <input
               value={e.name}
               spellCheck={false}
@@ -2793,23 +2813,8 @@ export function ParamControl({
                   )
                 )
               }
-              style={{
-                ...(isChannel
-                  ? { width: 76, flexShrink: 0 }
-                  : { flex: 1, minWidth: 0 }),
-                background: "var(--tb-n-1)",
-                border: "1px solid var(--tb-n-7)",
-                color: "var(--tb-n-16)",
-                borderRadius: 3,
-                padding: "3px 6px",
-                fontFamily: "inherit",
-                fontSize: 11,
-              }}
-              title={
-                isChannel
-                  ? 'Channel name — matches ch("…") / pick("…") in the expression'
-                  : "Variable name used in the expression"
-              }
+              style={nameStyle}
+              title="Variable name used in the expression"
             />
           );
           const removeButton = (
@@ -2822,10 +2827,43 @@ export function ParamControl({
             </button>
           );
           if (isChannel) {
+            // Keyframable rows (ch / toggle / pick / color) carry a diamond
+            // against their `ch:<name>` track and read out the track's value
+            // at the playhead; an edit patches the row and EffectsApp
+            // auto-keys it when the track is animated — the param-row
+            // contract (engine/channel-keyframes.ts). Ramp / curve rows
+            // don't keyframe. Editor-only: no layerAnim, no diamond.
+            const kfType = layerAnim ? channelKeyframeType(e) : null;
+            const trackKey = channelKey(e.name);
+            const block = kfType ? layerAnim?.get(trackKey) : undefined;
+            const tick = layerAnim?.currentTick ?? 0;
+            const shown = kfType ? channelDisplayValue(e, block, tick) : e.default;
+            const diamond =
+              kfType && layerAnim ? (
+                <KeyframeDiamond
+                  state={diamondStateFor(block, tick)}
+                  title={`Keyframe channel "${e.name}"`}
+                  onClick={() => {
+                    if (!block || !block.animated) {
+                      layerAnim.set(trackKey, {
+                        animated: true,
+                        trackVisible: true,
+                        keyframes: [{ tick, value: shown, easingOut: "easeInOut" }],
+                      });
+                    } else if (findKeyframeAt(block, tick)) {
+                      layerAnim.set(trackKey, removeKeyframeAt(block, tick));
+                    } else {
+                      // Pin the evaluated value, not the stored row (the
+                      // param-row diamond's mid-segment contract).
+                      layerAnim.set(trackKey, upsertKeyframe(block, tick, shown, "easeInOut"));
+                    }
+                  }}
+                />
+              ) : null;
             const control = (
               <ParamControl
                 param={channelDef(e)}
-                value={e.default}
+                value={shown}
                 rangeOverride={channelRange(e)}
                 onChange={(v) =>
                   update(
@@ -2876,6 +2914,7 @@ export function ParamControl({
               >
                 {nameField}
                 <div style={{ flex: 1, minWidth: 0 }}>{control}</div>
+                {diamond}
                 {removeButton}
               </div>
             );
@@ -3412,6 +3451,74 @@ function MaskInvertIcon({ active }: { active: boolean }) {
         <line x1="7" y1="1.75" x2="7" y2="12.25" />
       )}
     </svg>
+  );
+}
+
+// Keep Expression / channel names identifier-safe so they can be used
+// verbatim as the expression's variable names (the node also validates at
+// compile time).
+function sanitizeExprName(raw: string): string {
+  let s = raw.replace(/[^A-Za-z0-9_$]/g, "");
+  if (/^[0-9]/.test(s)) s = "_" + s;
+  return s;
+}
+
+// A channel row's name, committed on blur / Enter instead of per keystroke
+// (Escape reverts). The name is what the code reads AND the key of the row's
+// keyframe track (`ch:<name>` — engine/conventions.ts), so a half-typed name
+// would recompile the shader and could land on another channel's name
+// mid-word, where its track can't follow (engine/channel-keyframes.ts
+// applyChannelListEdit). An empty name, or one another row already uses, is
+// refused: the field snaps back.
+function ChannelNameField({
+  name,
+  taken,
+  onCommit,
+  style,
+}: {
+  name: string;
+  taken: (name: string) => boolean;
+  onCommit: (name: string) => void;
+  style: React.CSSProperties;
+}) {
+  const [draft, setDraft] = useState(name);
+  // External change (undo, MCP) wins over a stale draft.
+  const [lastName, setLastName] = useState(name);
+  if (name !== lastName) {
+    setLastName(name);
+    setDraft(name);
+  }
+  // Escape blurs to leave the field; the blur must not commit the draft.
+  const cancelRef = useRef(false);
+  const commit = () => {
+    const v = sanitizeExprName(draft);
+    if (cancelRef.current || !v || v === name || taken(v)) {
+      cancelRef.current = false;
+      setDraft(name);
+      return;
+    }
+    onCommit(v);
+  };
+  return (
+    <input
+      value={draft}
+      spellCheck={false}
+      placeholder="name"
+      onChange={(ev) => setDraft(sanitizeExprName(ev.target.value))}
+      onBlur={commit}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter") (ev.target as HTMLInputElement).blur();
+        if (ev.key === "Escape") {
+          cancelRef.current = true;
+          (ev.target as HTMLInputElement).blur();
+        }
+      }}
+      style={style}
+      title={
+        'Channel name — matches ch("…") / pick("…") in the expression. ' +
+        "Renames on Enter / blur; its keyframe track follows."
+      }
+    />
   );
 }
 

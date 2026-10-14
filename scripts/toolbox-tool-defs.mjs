@@ -553,10 +553,16 @@ export const BRIDGED_TOOLS = [
       "Read a node's keyframe animation. With `param`: that track's keys " +
       "as {frame, value, easing}. Without: an overview — every keyed track " +
       "(param, animated, key frames) plus which params are keyframable. " +
-      "Frames are fps-relative (see get_status).",
+      "On Point Expression / GLSL Expression / SkSL Shader, `param` may be " +
+      "a channel NAME (its track; `channel` + `kind` in the reply), and the " +
+      "overview lists channel tracks by name (`channel: true`) plus " +
+      "`keyframableChannels`. Frames are fps-relative (see get_status).",
     inputSchema: {
       nodeId: z.string(),
-      param: z.string().optional().describe("Omit for the whole-node overview."),
+      param: z
+        .string()
+        .optional()
+        .describe("A param or channel name. Omit for the whole-node overview."),
     },
   },
   {
@@ -573,11 +579,21 @@ export const BRIDGED_TOOLS = [
       "boolean/enum params force hold). `easing` shapes the segment AFTER " +
       "its key. Empty `keys` clears the track entirely; `animated: false` " +
       "keeps keys but disables them. While a track is animated, its static " +
-      "param value is ignored (wire > keyframes > static). Undo-able; the " +
+      "param value is ignored (wire > keyframes > static). Channels key " +
+      "directly — no Animated Value needed: on Point Expression / GLSL " +
+      "Expression / SkSL Shader pass a channel NAME (get_graph `channels`) " +
+      "as `param` (a real param of the same name wins; `ch:<name>` is " +
+      "explicit). Values are vetted like set_param on that channel: ch → " +
+      "number (clamped to its range), toggle → true/false (hold), pick → " +
+      "an option string (hold), color → \"#rrggbb\" / \"#rrggbbaa\" or " +
+      "[r, g, b, a] 0..1, interpolated in OKLab and delivered as 8-bit hex " +
+      "like the row; ramp and curve channels can't be keyframed. A wired " +
+      "channel socket still wins over its keyframes; the SkSL React Native " +
+      "export ships channel tracks as timeline tracks. Undo-able; the " +
       "user sees a toast.",
     inputSchema: {
       nodeId: z.string(),
-      param: z.string(),
+      param: z.string().describe("A param name, or a channel name on expression / SkSL nodes."),
       keys: z
         .array(
           z.object({

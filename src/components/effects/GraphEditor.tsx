@@ -44,7 +44,8 @@ import {
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
 import { useClock } from "@/state/playback-clock";
-import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
+import { LAYER_OPACITY_PREFIX, parseChannelKey } from "@/engine/conventions";
+import { channelKeyframeType, channelRowForKey } from "@/engine/channel-keyframes";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
 import { EasingTile } from "./timeline/EasingTile";
@@ -479,6 +480,23 @@ export function GraphEditor({
             yMin: 0,
             yMax: 1,
           });
+          continue;
+        }
+        // Expression-channel tracks (ch:<name>): only scalar channels graph
+        // (toggle / pick step, colors stay ungraphed like color params),
+        // labelled by the channel name.
+        const chanName = !pdef ? parseChannelKey(pname) : null;
+        if (chanName !== null) {
+          const row = channelRowForKey(def, n.data.params, pname);
+          if (row && channelKeyframeType(row) === "scalar") {
+            out.push({
+              key: `${n.id}|${pname}`,
+              nodeId: n.id,
+              paramName: pname,
+              label: `${n.data.name} · ${chanName}`,
+              block: b,
+            });
+          }
           continue;
         }
         if (!pdef) {

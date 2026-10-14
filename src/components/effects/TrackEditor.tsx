@@ -43,8 +43,13 @@ import { resolvePromotedParams } from "@/state/graph-ops";
 import {
   anchorTrackId,
   LAYER_OPACITY_PREFIX,
+  parseChannelKey,
   parseRampParamKey,
 } from "@/engine/conventions";
+import {
+  channelKeyframeType,
+  channelRowForKey,
+} from "@/engine/channel-keyframes";
 import {
   getPublishedAnchorSelection,
   requestAnchorSelection,
@@ -637,6 +642,17 @@ export function TrackEditor(props: TrackEditorProps) {
           }${idx >= 0 ? ` ${idx + 1}` : ""}`;
           if (rampKey.field === "color") pType = "color";
         }
+        // Virtual expression-channel keys (ch:<name> — GLSL / Point
+        // Expression, SkSL Shader): the lane is the channel, labelled by its
+        // name and typed by its kind (color swatches; toggle / pick lanes
+        // step). A track whose channel was pruned says so.
+        const chanName = !pdef ? parseChannelKey(pname) : null;
+        if (chanName !== null) {
+          const row = channelRowForKey(def, data.params ?? {}, pname);
+          const t = row ? channelKeyframeType(row) : null;
+          paramLabel = row ? chanName : `${chanName} (no channel)`;
+          if (t) pType = t;
+        }
         out.push({
           kind: "paramLane",
           nodeId: node.id,
@@ -1173,6 +1189,14 @@ export function TrackEditor(props: TrackEditorProps) {
       if (rampKey.field === "alpha")
         return (stop.alpha as number | undefined) ?? 1;
       return stop.position;
+    }
+    const chanRow = channelRowForKey(
+      getNodeDef(node.data.defType),
+      node.data.params,
+      paramName
+    );
+    if (chanRow) {
+      return channelKeyframeType(chanRow) ? chanRow.default : undefined;
     }
     return undefined;
   }

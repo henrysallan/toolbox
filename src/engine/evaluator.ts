@@ -30,6 +30,8 @@ import {
   isKeyframable,
   type AnimationMap,
 } from "./keyframes";
+import { channelListParam } from "./expr-channels";
+import { resolveChannelKeyframes } from "./channel-keyframes";
 import {
   clipLocalTick,
   emptyClipOutput,
@@ -51,6 +53,7 @@ import {
 } from "./spline-preview";
 import type {
   AudioChainNode,
+  ExprInput,
   ImageValue,
   MaskValue,
   NodeDefinition,
@@ -354,6 +357,9 @@ function pickDisplayImage(
   if (result.primary?.kind === "image") return result.primary;
   if (fallbackInput?.kind === "image") return fallbackInput;
   if (result.aux?.image?.kind === "image") return result.aux.image;
+  // Skia shader nodes (defineSkslNode) emit data on their primary and a
+  // rendered `preview` aux — show it when the node is selected.
+  if (result.aux?.preview?.kind === "image") return result.aux.preview;
   const spline = findSplineForPreview(result, handle);
   if (!spline) return undefined;
   const preview = rasterizeSplinePreview(ctx, spline);
@@ -1211,6 +1217,7 @@ export function evaluateGraph(
     if (!id) continue;
     markConsumed(id, "primary");
     markConsumed(id, "aux:image");
+    markConsumed(id, "aux:preview");
   }
   if (opts?.forceHandle && activeNodeId) {
     const h = opts.forceHandle;
@@ -1764,6 +1771,30 @@ export function evaluateGraph(
           }
           anyAnimated = true;
           keyframeOverrides[pdef.name] = stops;
+        }
+      }
+      // Virtual per-channel keys (ch:<name> — engine/channel-keyframes.ts)
+      // on channelSync nodes (GLSL / Point Expression, SkSL Shader): each
+      // scalar / toggle / pick / color row's track resolves into a cloned
+      // row list, in the row's stored form. Same clone-and-override
+      // contract as the blocks above. A channel whose socket carries a
+      // winning wire is skipped — wire > keyframe > row, the order
+      // readChannelValue applies — so it neither overrides nor busts the
+      // cache per tick. Tracks whose channel no longer exists are ignored.
+      const chanParam = channelListParam(def);
+      if (chanParam) {
+        const base = node.params[chanParam.name];
+        if (Array.isArray(base)) {
+          const rows = resolveChannelKeyframes(
+            base as ExprInput[],
+            animation,
+            kfTick,
+            inputs
+          );
+          if (rows) {
+            anyAnimated = true;
+            keyframeOverrides[chanParam.name] = rows;
+          }
         }
       }
       // Virtual per-anchor keys for Spline Draw (anchor_p/in/out:<id> —

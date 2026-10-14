@@ -124,6 +124,37 @@ export function rampFieldSocketType(field: RampStopField): SocketType {
   return field === "color" ? "vec4" : "scalar";
 }
 
+// Virtual animation keys for expression CHANNELS — the rows of a channelSync
+// `expr_inputs` param on GLSL Expression, Point Expression and SkSL Shader
+// (`ch("k", …)`, `toggle(…)`, `pick(…)`, `color(…)`). The list param isn't
+// keyframable itself; each scalar / toggle / pick / color row animates via
+// its own block under `ch:<channelName>` (ramp / curve rows don't keyframe).
+// Same clone-and-override contract as the keys above: the evaluator writes
+// the evaluated value into a cloned row list before compute, and a wired
+// channel socket still wins (wire > keyframe > row).
+//
+// Keyed by NAME, unlike the id-keyed sub-values above: the name is what the
+// shader reads, what designers see in the panel and what MCP addresses, and
+// it is the `ch:<name>` BindRef the Skia scene IR already froze
+// (engine/skia/scene-ir.ts). A rename in the panel moves the track with the
+// row (engine/channel-keyframes.ts `applyChannelListEdit`); removing the row
+// drops it. Editing the source never renames — Sync is add-only, so
+// `ch("a")` → `ch("b")` mints a new row and the old row keeps its track until
+// it is pruned.
+export const CHANNEL_KEY_PREFIX = "ch:";
+
+export function channelKey(name: string): string {
+  return CHANNEL_KEY_PREFIX + name;
+}
+
+// The channel name a key animates, or null for anything else (literal
+// params, other virtual prefixes).
+export function parseChannelKey(key: string): string | null {
+  return key.startsWith(CHANNEL_KEY_PREFIX)
+    ? key.slice(CHANNEL_KEY_PREFIX.length)
+    : null;
+}
+
 // Virtual control keys for one layer of a `merge_layers` param. The live
 // link / exported app used to get the WHOLE layer stack as a single control
 // (the param-level control toggle on "Layers"); since 2026-09-16 each layer
