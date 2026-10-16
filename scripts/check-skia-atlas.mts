@@ -28,7 +28,12 @@
 //      the emitted RSXform worklet, run on the emitted timeline, reproduces
 //      the preview's xforms at every frame bit for bit; worklets call only
 //      functions declared above them; the bundle type-checks in skia-harness;
-//      skia-harness/src/bundle-atlas is today's export.
+//      skia-harness/src/bundle-atlas is today's export;
+//   7. the GL node's image mode, on a GL that records its calls: the taps
+//      premultiplied before filtering, premultiplied source-over into a
+//      scratch texture, one unpremultiply pass into the straight output (the
+//      AA-edge darkening fixed 2026-10-16; its pixels are compare:skia's
+//      `gl_id` vs `inst_skc` and `gl_gridc` vs `ska_gridc_skc`).
 //
 //   npx tsx scripts/check-skia-atlas.mts
 
@@ -41,7 +46,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { CanvasKit, Image } from "canvaskit-wasm";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
-import type { PointsValue, SkiaDrawValue } from "@/engine/types";
+import type { ImageGroupValue, ImageValue, PointsValue, RenderContext, SkiaDrawValue } from "@/engine/types";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -579,6 +584,116 @@ const kinds = (r: ReturnType<typeof exportSkia>) => {
     ce.typecheck.ok,
     ce.typecheck.output
   );
+}
+
+// ---- 7. the GL node's image mode: straight alpha in and out (stub GL) -----------------------------------------
+// Until 2026-10-16 Copy to Points' image mode bilinear-filtered the straight
+// instance texture and blended it (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) straight
+// into its output, which stored rgb·a as straight rgb: every anti-aliased
+// edge came out dark (an identity copy's AA edges at 0.50× the instance's
+// rgb). Now the taps are premultiplied before filtering, the copies
+// accumulate premultiplied in a scratch texture, and one pass divides the
+// alpha back out. The pixels need a GPU — compare:skia `--a atlas:gl_id --b
+// atlas:inst_skc` (an identity copy ≡ its instance, max 0/255) and `--a
+// atlas:gl_gridc --b atlas:ska_gridc_skc` (MATCH without --premul-a). Here a
+// GL that records its calls pins the pipeline.
+{
+  const { COPY_INST_FS, COPY_UNPREMUL_FS } = await import("@/nodes/effect/copy-to-points");
+  const taps = COPY_INST_FS.match(/texelFetch\(u_src\b/g) ?? [];
+  const premuls = [...COPY_INST_FS.matchAll(/(\w+)\.rgb \*= \1\.a;/g)];
+  const firstMix = COPY_INST_FS.indexOf("mix(");
+  const hw = [...COPY_INST_FS.matchAll(/texture\(u_src\b/g)];
+  const fastGuard = COPY_INST_FS.lastIndexOf(">= 1.0", hw[0]?.index ?? -1);
+  check(
+    "instance FS: four texelFetch taps, each premultiplied before the bilinear mix; the hardware sample only where all four are opaque",
+    taps.length === 4 && premuls.length === 4 && premuls.every((m) => m.index! < firstMix) && hw.length === 1 && fastGuard > COPY_INST_FS.lastIndexOf("texelFetch", hw[0].index!),
+    `taps ${taps.length}, premultiplied ${premuls.length}, texture() ${hw.length}`
+  );
+  check("…and emits premultiplied colour (opacity scales all four channels)", /outColor = \w+ \* v_opacity;/.test(COPY_INST_FS) && !/outColor\.a \*=/.test(COPY_INST_FS));
+  check("unpremultiply FS: texel for texel, rgb ÷ a, 0 where nothing landed", /texelFetch\(u_acc, ivec2\(gl_FragCoord\.xy\), 0\)/.test(COPY_UNPREMUL_FS) && /\.rgb \/ \w+\.a/.test(COPY_UNPREMUL_FS));
+
+  type Call = { fn: string; args: unknown[] };
+  const run = (instance: ImageValue | ImageGroupValue, pts: PointsValue) => {
+    const calls: Call[] = [];
+    let id = 0;
+    const handle = (tag: string) => ({ tag, id: id++ });
+    // Enums read as their own names, every method records and returns a handle.
+    const gl = new Proxy({} as WebGL2RenderingContext, {
+      get: (_t, prop) =>
+        typeof prop === "string" && /^[A-Z0-9_]+$/.test(prop)
+          ? prop
+          : (...args: unknown[]) => {
+              calls.push({ fn: String(prop), args });
+              if (String(prop).startsWith("create")) return handle(String(prop).slice(6));
+              if (prop === "getShaderParameter" || prop === "getProgramParameter") return true;
+              if (prop === "getUniformLocation") return handle(`u:${String(args[1])}`);
+              return undefined;
+            },
+    });
+    const sources = new Map<unknown, string>();
+    const ctx = {
+      ...dataOnlyContext({ width: 64, height: 64 }, TL),
+      gl,
+      allocImage: (o?: { width?: number; height?: number }): ImageValue => {
+        const v = { kind: "image", texture: handle("pool") as unknown as WebGLTexture, width: o?.width ?? 64, height: o?.height ?? 64 } as ImageValue;
+        calls.push({ fn: "allocImage", args: [v.texture] });
+        return v;
+      },
+      releaseTexture: (t: unknown) => calls.push({ fn: "releaseTexture", args: [t] }),
+      getShader: (key: string, src: string) => {
+        const p = handle(`prog:${key}`);
+        sources.set(p, src);
+        return p as unknown as WebGLProgram;
+      },
+      clearTarget: (t: unknown) => calls.push({ fn: "clearTarget", args: [t] }),
+      drawFullscreen: (p: unknown, target: unknown, setup?: (g: WebGL2RenderingContext) => void) => {
+        calls.push({ fn: "drawFullscreen", args: [p, target] });
+        setup?.(gl);
+        calls.push({ fn: "drawFullscreen:end", args: [] });
+      },
+      readImagePixels: () => null,
+    } as unknown as RenderContext;
+    const params = { ...defaults("copy-to-points"), mode: "image", pick_mode: "all", anchor: "canvas center" };
+    const out = copyToPointsNode.compute({ inputs: { points: pts, instance }, params, ctx, nodeId: "gl" } as any) as { primary: ImageValue };
+    return { calls, sources, output: out.primary };
+  };
+  const tex = (n: string) => ({ tag: n }) as unknown as WebGLTexture;
+  const pts = pointsOf([{ x: 0.3, y: 0.4, rot: 0.5, sx: 1.2, sy: 1.2 }, { x: 0.6, y: 0.55, rot: 0, sx: 1, sy: 1 }]);
+  const cases: [string, ImageValue | ImageGroupValue, number][] = [
+    ["an image", { kind: "image", texture: tex("inst"), width: 64, height: 64 }, 1],
+    ["an image group (pick all: one draw per item)", { kind: "image_group", items: [{ kind: "image", texture: tex("a"), width: 64, height: 64 }, { kind: "image", texture: tex("b"), width: 32, height: 48 }] } as ImageGroupValue, 2],
+  ];
+  for (const [what, instance, items] of cases) {
+    const { calls, sources, output } = run(instance, pts);
+    const at = (fn: string) => calls.flatMap((c, i) => (c.fn === fn ? [i] : []));
+    const draws = at("drawArraysInstanced");
+    const lastBefore = (i: number, fns: string[], arg0?: unknown) => {
+      for (let j = i - 1; j >= 0; j--) if (fns.includes(calls[j].fn) && (arg0 === undefined || calls[j].args[0] === arg0)) return calls[j];
+      return undefined;
+    };
+    const targets = new Set(draws.map((i) => lastBefore(i, ["framebufferTexture2D"])?.args[3]));
+    const accum = [...targets][0];
+    const allocated = calls.filter((c) => c.fn === "allocImage").map((c) => c.args[0]);
+    const blendOk = draws.every((i) => {
+      const f = lastBefore(i, ["blendFuncSeparate", "blendFunc"]);
+      return same(f?.args, ["ONE", "ONE_MINUS_SRC_ALPHA", "ONE", "ONE_MINUS_SRC_ALPHA"]) && lastBefore(i, ["enable", "disable"], "BLEND")?.fn === "enable";
+    });
+    const passes = at("drawFullscreen");
+    const pass = passes.length === 1 ? calls[passes[0]] : undefined;
+    const end = at("drawFullscreen:end")[0];
+    const bound = calls.slice(passes[0], end).some((c) => c.fn === "bindTexture" && c.args[1] === accum);
+    const released = calls.filter((c) => c.fn === "releaseTexture").map((c) => c.args[0]);
+    check(
+      `GL image mode, ${what}: ${items} instanced draw(s) into one scratch texture (not the output), premultiplied source-over (ONE, ONE_MINUS_SRC_ALPHA)`,
+      draws.length === items && targets.size === 1 && accum !== output.texture && allocated.includes(accum) && blendOk,
+      JSON.stringify({ draws: draws.length, targets: targets.size, blends: draws.map((i) => lastBefore(i, ["blendFuncSeparate", "blendFunc"])?.args) })
+    );
+    check(
+      "…then one unpremultiply pass reads the scratch into the output and the scratch goes back to the pool",
+      !!pass && sources.get(pass.args[0]) === COPY_UNPREMUL_FS && pass.args[1] === output && passes[0] > draws[draws.length - 1] && bound && same(released, [accum]),
+      JSON.stringify({ passes: passes.length, bound, released: released.length })
+    );
+  }
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

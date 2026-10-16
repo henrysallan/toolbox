@@ -16,13 +16,23 @@
 //   grid   a 5×5 Grid, Rotate + keyframed 0 → 90°, Scale × 0.6 → 1.2 (tracks)
 //   vor    Voronoi (scatter) centers: 24 points, per-cell uniform scale
 //   pt     a Point whose x is keyframed (moving points → sampled), 30°, 1.4×
+//   gridc  the grid anchored at the canvas centre (no content-centre texel)
+//   opq    an opaque instance (`inst_o`) on a 3×3 grid
+//   id     one copy at the identity: `gl_id` ≡ its own instance `inst_skc`
 //
 // plus `combo_skc` — the three atlas / groups mixes in one Skia Group, the
 // export the harness's ?bundle=atlas slot plays, and a dense case
 // (`dense`: a 40×40 grid, 1,600 copies) for cost.
 //
-//   npm run compare:skia -- --a atlas:gl_grid --b atlas:ska_grid_skc
-//   npm run compare:skia -- --a atlas:gl_grid --b atlas:skg_grid_skc --expect close
+//   npm run compare:skia -- --a atlas:gl_gridc --b atlas:ska_gridc_skc
+//   npm run compare:skia -- --a atlas:gl_id --b atlas:inst_skc
+//   npm run compare:skia -- --a atlas:gl_opq --b atlas:ska_opq_skc
+//   npm run compare:skia -- --a atlas:gl_gridc --b atlas:skg_gridc_skc --expect close
+//
+// The GL node composites premultiplied since 2026-10-16, so transparent
+// instances compare without `--premul-a`. The content-centre cases (grid,
+// vor, pt) still sit a readback texel apart (§3.4a): compare them with
+// edge-band.cjs, not for MATCH.
 //
 // Pure (no node: imports): compare:skia bundles it for the browser.
 
@@ -90,9 +100,9 @@ export const ATLAS_CASES: AtlasCase[] = [
   // centre): no content-centre quantization in play.
   { id: "gridc", points: ["grid", "out:primary"], params: { anchor: "canvas center", scale_mul_default: 0.8, rotate_add_default: 0.3 } },
   // An OPAQUE instance (the star over a full-canvas Skia Fill): every copy
-  // is a whole-canvas quad and no texel is transparent, so the GL node's
-  // straight-alpha sampling and blending artifacts can't show — the pixels
-  // compare the copy transform + resampling alone.
+  // is a whole-canvas quad and no texel is transparent, so the pixels
+  // compare the copy transform + resampling alone — and the GL node's
+  // premultiplied path (2026-10-16) must leave it exactly as it was.
   {
     id: "opq",
     points: ["grid3", "out:primary"],
@@ -104,6 +114,11 @@ export const ATLAS_CASES: AtlasCase[] = [
     },
   },
   { id: "pt", points: ["pt", "out:primary"], params: {} },
+  // One copy at the identity (canvas centre, 0°, 1×, canvas-centre anchor):
+  // every fragment samples a texel centre, so `gl_id` must reproduce its own
+  // instance raster `inst_skc`, anti-aliased edges included. Before
+  // 2026-10-16 the GL node stored rgb·a there (edges dark by a factor of a).
+  { id: "id", points: ["pt_id", "out:primary"], params: { anchor: "canvas center" } },
 ];
 
 const CANVAS = { background_on: false, background: "#000000" };
@@ -146,6 +161,7 @@ export function atlasGraph(o: { dense?: boolean } = {}): { nodes: GraphNode[]; e
     params: { ...defaultsOf(pointNode), x: 0.3, y: 0.62, rotation_deg: 30, scale: 1.4 },
     animation: { x: kf([[0, 0.3], [60, 0.7]]) },
   });
+  nodes.push({ id: "pt_id", type: pointNode.type, params: { ...defaultsOf(pointNode), x: 0.5, y: 0.5, rotation_deg: 0, scale: 1 } });
 
   const glDefaults = defaultsOf(copyToPointsNode);
   const skDefaults = defaultsOf(skiaCopyToPointsNode);

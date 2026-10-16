@@ -60,7 +60,10 @@ import { renderStyledTextToImage } from "@/engine/text-raster";
 // draw call regardless of point count. The vertex shader fetches
 // each instance's transform (position, rotation, scale) from a
 // 2-row data texture, so we're not bottlenecked by CPU-side
-// drawImage loops or uniform-array size limits.
+// drawImage loops or uniform-array size limits. The copies composite
+// premultiplied into a scratch texture and one fullscreen pass divides
+// the alpha back out (see COPY_INST_FS), so anti-aliased edges keep
+// their colour. Text mode rasterizes its strings and shares this path.
 //
 // Spline and point modes are pure CPU math.
 
@@ -192,22 +195,68 @@ void main() {
               1.0 - (u_uvRect.y + a_pos.y * u_uvRect.w));
 }`;
 
-const COPY_INST_FS = `#version 300 es
+// Fragment shader: emits PREMULTIPLIED colour. The instances accumulate in a
+// scratch texture under premultiplied source-over (ONE, ONE_MINUS_SRC_ALPHA)
+// and COPY_UNPREMUL_FS divides the alpha back out into the straight-alpha
+// output (engine invariant). Before 2026-10-16 this shader returned the
+// straight sample under (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) straight into the
+// output, which stored rgb·a as straight rgb, and it bilinear-filtered the
+// straight texels, mixing a transparent neighbour's black into every
+// anti-aliased edge: each AA edge came out dark by a factor of a, up to a²
+// where a tap was transparent (an identity copy's edges at 0.50× the
+// instance's rgb, a rotated grid's at 0.44×).
+//
+// The instance texture is straight alpha, so the four bilinear taps are
+// premultiplied BEFORE they're interpolated: the pipeline sampler (LINEAR +
+// CLAMP_TO_EDGE, gl.ts) by hand. Where all four taps are opaque,
+// premultiplied ≡ straight and the hardware sample is used, so opaque
+// instances and opaque interiors render bit-identically to the old path.
+// v_uv already carries the Y-down→Y-up conversion (see the VS). Tint
+// multiplies rgb; opacity multiplies alpha, which premultiplied is all four
+// channels. Both are 1.0 when no channel is chosen.
+export const COPY_INST_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 in vec3 v_tint;
 in float v_opacity;
 uniform sampler2D u_src;
 out vec4 outColor;
+vec4 samplePremultiplied(vec2 uv) {
+  ivec2 size = textureSize(u_src, 0);
+  vec2 st = uv * vec2(size) - 0.5;
+  vec2 cell = floor(st);
+  vec2 f = st - cell;
+  ivec2 hi = size - 1;
+  ivec2 p0 = clamp(ivec2(cell), ivec2(0), hi);
+  ivec2 p1 = clamp(ivec2(cell) + 1, ivec2(0), hi);
+  vec4 c00 = texelFetch(u_src, p0, 0);
+  vec4 c10 = texelFetch(u_src, ivec2(p1.x, p0.y), 0);
+  vec4 c01 = texelFetch(u_src, ivec2(p0.x, p1.y), 0);
+  vec4 c11 = texelFetch(u_src, p1, 0);
+  if (min(min(c00.a, c10.a), min(c01.a, c11.a)) >= 1.0) {
+    return texture(u_src, uv);
+  }
+  c00.rgb *= c00.a;
+  c10.rgb *= c10.a;
+  c01.rgb *= c01.a;
+  c11.rgb *= c11.a;
+  return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
 void main() {
-  // v_uv already carries the Y-down→Y-up conversion (see the VS), so we
-  // sample the upstream pipeline texture directly here. The per-instance
-  // tint multiplies rgb only, opacity multiplies alpha only — straight
-  // alpha throughout (engine invariant); both are 1.0 when no channel is
-  // chosen.
-  outColor = texture(u_src, v_uv);
-  outColor.rgb *= v_tint;
-  outColor.a *= v_opacity;
+  vec4 c = samplePremultiplied(v_uv);
+  c.rgb *= v_tint;
+  outColor = c * v_opacity;
+}`;
+
+// The accumulated premultiplied copies → the straight-alpha output, texel for
+// texel (same size, no filtering). Where nothing landed the rgb is 0.
+export const COPY_UNPREMUL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_acc;
+out vec4 outColor;
+void main() {
+  vec4 p = texelFetch(u_acc, ivec2(gl_FragCoord.xy), 0);
+  outColor = p.a > 0.0 ? vec4(p.rgb / p.a, p.a) : vec4(0.0);
 }`;
 
 // CPU-side luminance samplers built from image inputs (pick / scale
@@ -1585,24 +1634,26 @@ export const copyToPointsNode: NodeDefinition = {
       state.lastOrderKey = orderKey;
     }
 
-    // Bind output texture as the framebuffer's color attachment.
+    // The copies accumulate PREMULTIPLIED in a scratch texture (see
+    // COPY_INST_FS); the unpremultiply pass below writes the output.
+    const accum = ctx.allocImage({ width: output.width, height: output.height });
     gl.bindFramebuffer(gl.FRAMEBUFFER, state.instFbo!);
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER,
       gl.COLOR_ATTACHMENT0,
       gl.TEXTURE_2D,
-      output.texture,
+      accum.texture,
       0
     );
-    gl.viewport(0, 0, output.width, output.height);
+    gl.viewport(0, 0, accum.width, accum.height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // Standard alpha-over blending so stacked instances composite
-    // like the old drawImage path did.
+    // Premultiplied source-over, so stacked instances composite like the
+    // old drawImage path did and translucent edges keep their colour.
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(
-      gl.SRC_ALPHA,
+      gl.ONE,
       gl.ONE_MINUS_SRC_ALPHA,
       gl.ONE,
       gl.ONE_MINUS_SRC_ALPHA
@@ -1683,6 +1734,16 @@ export const copyToPointsNode: NodeDefinition = {
       0
     );
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Premultiplied accumulation → the straight-alpha output.
+    const unpremul = ctx.getShader("copy-to-points/unpremul", COPY_UNPREMUL_FS);
+    ctx.drawFullscreen(unpremul, output, (g) => {
+      g.activeTexture(g.TEXTURE0);
+      g.bindTexture(g.TEXTURE_2D, accum.texture);
+      g.uniform1i(g.getUniformLocation(unpremul, "u_acc"), 0);
+    });
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    ctx.releaseTexture(accum.texture);
 
     releaseOwned();
     return { primary: output };

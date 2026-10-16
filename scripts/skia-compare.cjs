@@ -24,9 +24,10 @@
 //                       match (default) | close | off (never fails on pixels)
 //   --out DIR           output dir (default scripts/.skia-compare-out/<a>-vs-<b>)
 //   --premul-a          side A writes PREMULTIPLIED rgb into its straight image
-//                       (the GL Copy to Points' image mode blends that way — a
-//                       native bug, spec §3.4 built and measured): divide its
-//                       alpha out before scoring, and in f<N>-a.png
+//                       (the GL Copy to Points' image mode did until
+//                       2026-10-16, spec §3.4a; no fixture pair needs it
+//                       since): divide its alpha out before scoring, and in
+//                       f<N>-a.png
 //   --timeout MS        per-frame render timeout (default 60000)
 //   --verbose           echo every page console line
 //

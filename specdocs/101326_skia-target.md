@@ -443,7 +443,7 @@ At ebf3489 there are **14 parity slots**, and all match toolbox on every frame:
 
 | lane | what shipped | headline numbers | details |
 |---|---|---|---|
-| A, Copy to Points (Skia) | `skia-copy-to-points`: vector copy groups below 16 copies, one sprite-sheet `<Atlas>` (useTexture + useRSXformBuffer) from 16; Point / Grid / Space Fill / Voronoi allowed in Skia layers | atlas vs GL Copy to Points MATCH max 1/255 (opaque instance); web cost 0.3 ms/frame at 4,096 copies vs 213 ms for groups | §3.4a |
+| A, Copy to Points (Skia) | `skia-copy-to-points`: vector copy groups below 16 copies, one sprite-sheet `<Atlas>` (useTexture + useRSXformBuffer) from 16; Point / Grid / Space Fill / Voronoi allowed in Skia layers | atlas vs GL Copy to Points MATCH max 1/255 (opaque instance), and on transparency since the 2026-10-16 GL fix (edge band ≤ 2/255); web cost 0.3 ms/frame at 4,096 copies vs 213 ms for groups | §3.4a |
 | I, images + assets | the one URL → bytes seam (`engine/skia/asset-bytes.ts`, `registerSkiaAssetScheme`), async editor / MCP export with bytes under `assets/`, Image (Skia), image leaves, SkSL Shader `iImage1..4` export, ramp / curve channels as 256×1 LUT children | `--bundle image` pixel-identical; LUTs 0/255 at texel centres (≤ 1/255 on P3) | §3.8.2–3.8.3 |
 | C, carried polish | gradients lowered to colour-managed programs; token-based SkSL sample rewrite; Merge (Skia) grow-on-wire; native `from: "current"` colours; segment parity | gradients P3 vs sRGB 24/255 → ≤ 1/255 at 2.1–3.2× the GPU cost; 11 native segments MATCH | below |
 | P, procedural drivers | Expression (a real parser, no eval) / LFO / Math / Scene Time / Random / Constant / Animated Value chains compile into `procedural.ts` worklets, SkSL for baked mode, and the native linear clock; an `expr` bind plan | 162,540 values bit-identical to `evaluateGraph` (V8); baked: 97.1% within 1e-6, all within 4× an fp32 error bound | §3.5e |
@@ -475,7 +475,7 @@ At ebf3489 there are **14 parity slots**, and all match toolbox on every frame:
 - **Liquid Glass:** refused; a Frost-only subset is possible.
 - **Kuwahara r > 24 and Bevel outer / inner / pillow** stay refused. They need dedicated ports, not splitting.
 - **Bloom draws its content levels + 1 times.** An image-filter Blend graph would draw it once.
-- **GL bugs found** (outside this work): Copy to Points image mode darkens AA edges; Lens Flare's "transparent background" description is wrong (it writes alpha 1).
+- **GL bugs found** (outside this work): Copy to Points image mode darkened AA edges (fixed 2026-10-16, §3.4a); Lens Flare's "transparent background" description is wrong (it writes alpha 1).
 
 ### Lane C: carried polish (2026-10-14)
 
@@ -1008,14 +1008,28 @@ static points ship as two tracks.
 | case | atlas vs GL Copy to Points | groups vs GL Copy to Points |
 |---|---|---|
 | opaque instance (`gl_opq`: star over a full-canvas fill, 3×3 grid) | **MATCH**, max 1/255, 99.96–99.97 % identical; edge band max 1/255 | MATCH by meanAbs (0.0007), but edge band p95 88/255, max 177/255 (vector edges vs a resampled raster) |
-| star on transparency, canvas-centre anchor (`gridc`, `--premul-a`) | alpha meanAbs 0.0000, interior identical, band p95 25/255, max 64/255 | alpha 0.0029, interior identical, band p95 49/255, max 122/255 |
-| content-centre anchor (grid / Voronoi / Point) | band p95 ≈ 214–226/255: the star's tips put the GL anchor one readback texel away (above) | same |
+| star on transparency, canvas-centre anchor (`gridc`, no flag, after the 2026-10-16 GL fix) | **MATCH**, meanAbs 0.0007, interior identical; edge band p95 1/255, max 2/255 | CLOSE, meanAbs 0.011, interior identical; edge band p95 44/255, max 100/255 (vector edges, as atlas vs groups) |
+| …the same before the fix (`--premul-a`) | alpha meanAbs 0.0000, interior identical, band p95 25/255, max 64/255 (no flag: OFF, band p95 62/255, max 99/255) | alpha 0.0029, interior identical, band p95 49/255, max 122/255 |
+| one copy at the identity (`gl_id` / `ska_id_skc` vs the instance `inst_skc`) | atlas 0/255; GL 0/255 after the fix (before: band p95 48/255, max 64/255) | 0/255 |
+| content-centre anchor (grid / Voronoi / Point) | band p95 ≈ 207–214/255 (before the fix 220–228): the star's tips put the GL anchor one readback texel away (above) | same |
 
-Pixel equality against the GL node needs an opaque instance. The GL image
-mode's anti-aliased edges are wrong on transparency: it writes premultiplied
-colour into its straight output, and it bilinear-samples a straight texture.
-Coverage (alpha) still matches; colour on edges doesn't. This is a native bug,
-filed as a task, and is what `compare:skia --premul-a` partly undoes.
+Until 2026-10-16 the GL image mode's anti-aliased edges were wrong on
+transparency, so pixel equality needed an opaque instance. It blended the
+straight sample with (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) straight into its
+output, which stored rgb·a as straight rgb, and it bilinear-filtered the
+straight texels, mixing a transparent tap's black into the edge. Coverage
+(alpha) matched; colour on edges was dark by a factor of a, up to a² (AA-edge
+rgb at 0.50× the instance's on an identity copy, 0.44× on `gridc`). The fix
+(`src/nodes/effect/copy-to-points.ts`): the fragment shader premultiplies its
+four bilinear taps before interpolating (the hardware sample where all four
+are opaque, so opaque instances and interiors are bit-identical to before),
+the copies accumulate under premultiplied source-over (ONE,
+ONE_MINUS_SRC_ALPHA) in a scratch texture, and one fullscreen pass divides
+the alpha back out into the straight output. After it, AA-edge rgb is 1.000×
+on the identity copy and on text mode (which shares the path), and the
+`gl_opq` frames are byte-identical to before. `compare:skia --premul-a` stays
+for any other side that stores premultiplied colour; no fixture pair needs
+it. check:skia-atlas §7 pins the pipeline on a recording GL.
 
 Atlas vs groups within Skia (`gridc`): CLOSE (meanAbs 0.011), interior
 identical, band p95 44/255. CPU (check:skia-atlas): ≤ 2/255 at integer

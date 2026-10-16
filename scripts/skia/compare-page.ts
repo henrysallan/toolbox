@@ -190,8 +190,9 @@ export function stats(pa: Uint8Array | Uint8ClampedArray, pb: Uint8Array | Uint8
   return { maxSteps, identical: identical / (w * h) };
 }
 
-// A side that wrote premultiplied rgb into its straight image (`--premul-a`:
-// the GL Copy to Points' image-mode blending), made straight again.
+// A side that wrote premultiplied rgb into its straight image (`--premul-a`;
+// the GL Copy to Points' image mode did until 2026-10-16 — no fixture pair
+// needs it since), made straight again.
 function unpremultiply(px: Uint8ClampedArray): Uint8ClampedArray {
   for (let i = 0; i < px.length; i += 4) {
     const a = px[i + 3];
