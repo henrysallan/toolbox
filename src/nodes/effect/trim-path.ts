@@ -79,7 +79,7 @@ export const trimPathNode: NodeDefinition = {
       "In per subpath mode, start/end/offset each independently pull from the slider (value), a named subpath attribute, or the shared driver keys index/random/group/position/driver.",
       "trim_start/trim_end/trim_offset are fractions (0-1) of the measured path length, not canvas or pixel units.",
       "measure=arc length cuts at the exact distance along the path, as React Native Skia does; measure=segment maps length onto each segment's curve parameter, so cuts drift up to ~10% of a segment.",
-      "A Trim Path saved before measure existed has no measure key and trims as segment (the panel still shows arc length); set measure explicitly to change it.",
+      "A Trim Path saved before measure existed loads with measure=segment (pinned on load), so old projects keep their exact cuts; switch it to arc length to fix their drift.",
       "offset is unbounded and taken mod 1, sliding the window cyclically; a window that straddles the wrap seam on a closed subpath is stitched into one continuous piece.",
     ],
   },

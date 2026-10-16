@@ -619,8 +619,8 @@ const EDGE = { id: "e1", source: "src", sourceHandle: "out:primary", target: "tr
   // An old project: Trim Paths saved before `measure` existed.
   const picks = ["L polyline 0.1..0.85", "closed rectangle seam stitched", "per subpath random offset", "two subpaths combined 0..0.5"];
   const bad: string[] = [];
-  let loadedAbsent = true;
-  let resavedAbsent = true;
+  let loadedSegment = true;
+  let resavedSegment = true;
   for (const name of picks) {
     const c = legacy.cases.find((x) => x.name === name)!;
     const saved = {
@@ -633,15 +633,15 @@ const EDGE = { id: "e1", source: "src", sourceHandle: "out:primary", target: "tr
     } as any;
     const res = await deserializeGraph(saved);
     const trim = res.nodes.find((n) => n.id === "trim")!;
-    if ("measure" in trim.data.params) loadedAbsent = false;
+    if (trim.data.params.measure !== "segment") loadedSegment = false;
     const out = evaluateTrim(res.nodes, res.edges, "trim");
     if (!out || JSON.stringify(out) !== JSON.stringify(c.out)) bad.push(name);
     const resaved = await serializeGraph(res.nodes, res.edges);
-    if ("measure" in (resaved.nodes.find((n: any) => n.id === "trim")!.params as object)) resavedAbsent = false;
+    if ((resaved.nodes.find((n: any) => n.id === "trim")!.params as Record<string, unknown>).measure !== "segment") resavedSegment = false;
   }
-  check("loader: an old save's Trim Path loads with no `measure` key (no load step fills defaults)", loadedAbsent);
+  check("loader: an old save's Trim Path loads pinned to measure = segment (migrateLoadedParams), so the panel shows the mode it renders", loadedSegment);
   check(`loader + evaluator: those old saves render byte-identical to the pre-fix output (${picks.length} cases)`, bad.length === 0, bad.join(" | "));
-  check("re-saving an old project keeps `measure` absent (it stays on segment)", resavedAbsent);
+  check("re-saving an old project writes measure = segment (it stays on segment)", resavedSegment);
 }
 {
   // A new node: makeInstanceNode writes every def default.

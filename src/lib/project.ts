@@ -1113,6 +1113,13 @@ function migrateLoadedParams(
     // pixel-identical, a Seed wired to Scene Time included.
     migrateGrainParams(params);
   }
+  if (defType === "trim-path" && params.measure === undefined) {
+    // Trim Path gained an arc-length `measure` (new nodes default to it).
+    // Saves from before it cut by segment parameter: pin them to "segment"
+    // so they keep their look AND the panel / MCP show the mode they render
+    // with (trimPathMeasure already reads a missing value as "segment").
+    params.measure = "segment";
+  }
   if (defType === "gaussian-blur" && params.linearize === undefined) {
     // Gaussian Blur merged into the unified Blur node (spec
     // 080226_blur-convolution.md), which filters in linear light by
