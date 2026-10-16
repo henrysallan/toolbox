@@ -11,6 +11,25 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.6.1",
+    date: "2026-10-16",
+    added: [
+      "Skia layers — set a layer's Target to Skia and its add-node menu offers only nodes that run in React Native Skia: about 70 of them, from noise, colour, warps, gathers and SDFs to shapes, strokes, text, filters (Blur, Bloom, Grain, Lens Flare, Drop Shadow, Morphology, Color Matrix, SkSL Filter), Copy to Points and Image. The layer fuses into as few shaders as it can, splits effects too heavy for a phone into stages on its own, and takes any other effect in as pixels through Skia Bake.",
+      "Export for React Native Skia — on SkSL Shader / Skia Canvas nodes and Skia layers, downloads a bundle an iOS developer drops into their app: the SkSL, a ready component, the animation and every image and font it uses. Choose how the timeline ships: a frame-exact worklet clock (the default), baked into the shader, or Reanimated withTiming / withSpring values. LFO, Expression, Math and Scene Time drivers compile into the bundle, and colours are managed so a Display P3 iPhone shows what toolbox does.",
+      "SkSL Shader node — write a Skia shader by hand (shaders.skia.org-compatible) with keyframable channels, up to four image inputs and ramp / curve channels; the preview is the exact program the export ships.",
+      "Timeline markers name segments of the timeline: add, drag, rename and range them on the Tracks and Layers rulers, seek to one by name, and play or loop them from app code in an exported bundle. Spring is a new keyframe easing whose curve is Reanimated's own withSpring.",
+      "Paint selections and transform — pipe an image into Paint and edit it like Photoshop: rectangle, ellipse, lasso, polygonal lasso and magic-wand selections (feather, expand, contract), the Move tool, ⌘C / ⌘X / ⌘V (through the system clipboard too) and transform handles around the selection. The eraser cuts into the input; Flatten bakes it.",
+      "Layer transforms and parenting — every layer gets animatable position, rotation, scale and anchor with transform sockets, property lanes behind After Effects' A / P / S / R / T / U keys, a canvas gizmo, a resizable label pane, a Blend column and a Parent column. Parent a layer to another (an Empty layer works as a null) and it stays where it was.",
+      "Project asset library — the Assets panel switches between a library saved with the project (the default) and your account's Server library, with Add to Assets ▸ Project / Server, Copy to Project / Server, Layer From Asset and a list view.",
+    ],
+    changed: [
+      "Transform's image mode, Image / Video Source and Text rotate rigidly on non-square comps; a 45° turn on 16:9 used to shear the picture. Projects saved before this keep rendering exactly as they did.",
+      "A parent's transform now applies after its child's own, so rotating or scaling a parent Gizmo composes the way it reads. Existing setups with a rotating or scaling parent render differently.",
+      "Fixes: Displace's mirror wrap no longer flips the whole image; Copy to Points' image and text modes keep anti-aliased edges their true colour; Text at fractional positions renders crisp instead of blurred; Noise's value output matches its image for every type, seed and W; Trim Path gains an arc-length measure — new Trim Paths cut at the true distance along the path, older ones keep their exact look.",
+      "Inter draws at its default optical size at every font size, as iOS does, so Inter text above 14 px sets about 9% wider than before.",
+    ],
+  },
+  {
     version: "0.6.0",
     date: "2026-10-02",
     added: [
