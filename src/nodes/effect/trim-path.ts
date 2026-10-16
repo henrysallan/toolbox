@@ -1,9 +1,11 @@
 import type { NodeDefinition, ParamDef, SplineValue } from "@/engine/types";
 import { SPLINE_TRIM_PARAMS, applyTrimParams } from "../source/spline-raster-aux";
 import {
+  TRIM_MEASURES,
   TRIM_SOURCES,
   makeTrimSourceFn,
   trimSubpathsEach,
+  type TrimMeasure,
   type TrimSource,
 } from "@/engine/spline-trim";
 
@@ -15,8 +17,26 @@ import {
 // the shared driver keys (index / random / group / position / driver). Offset
 // slides the window along the path with wraparound (unbounded mod 1). Output
 // is a spline — view it with Stroke or Rasterize Spline.
+//
+// `measure` (2026-10-16) places the window's fractions on the path: arc
+// length cuts at the exact arc-length point (React Native Skia's
+// <Path start end>, AE); segment is the original mapping, which drifts
+// inside each segment (spline-trim.ts header). New nodes get arc length from
+// the def default (makeInstanceNode writes every default; so do the recipe
+// builder and MCP inserts). A node saved before the param existed has no
+// `measure` key — the loader (lib/project.ts deserializeParams) copies only
+// the saved keys and no load step fills defaults — so an ABSENT measure
+// reads as segment and every old project keeps its timing, with no schema
+// bump. Copy to Points' `anchor` uses the same rule.
 
 const perSubpath = (p: Record<string, unknown>) => p.mode === "per subpath";
+
+// The measure a node's params select: absent (a pre-2026-10-16 save) or any
+// unknown value is the original segment measure; only an explicit
+// "arc length" opts in.
+export function trimPathMeasure(params: Record<string, unknown>): TrimMeasure {
+  return params.measure === "arc length" ? "arc length" : "segment";
+}
 
 function sourceParams(
   prefix: "start" | "end" | "offset",
@@ -51,13 +71,15 @@ export const trimPathNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Reveal only a portion of a path by arc length. Combined mode measures start/end across all subpaths (draw-on of a whole compound path); Per subpath trims each path in its own 0–1 domain. In Per subpath, start / end / offset can each come from the slider, a named subpath attribute, or index / random / group / position / driver. Offset slides the window along the path, wrapping past the ends (unbounded — keyframe it to orbit a loop). Outputs a spline — view it with Stroke or Rasterize Spline.",
+    "Reveal only a portion of a path by arc length. Combined mode measures start/end across all subpaths (draw-on of a whole compound path); Per subpath trims each path in its own 0–1 domain. In Per subpath, start / end / offset can each come from the slider, a named subpath attribute, or index / random / group / position / driver. Offset slides the window along the path, wrapping past the ends (unbounded — keyframe it to orbit a loop). Measure: arc length cuts at the exact distance along the path (like React Native Skia and After Effects); segment is the original, uneven mapping that older saves keep. Outputs a spline — view it with Stroke or Rasterize Spline.",
   searchAliases: ["trim paths", "individually"],
   facts: {
     gotchas: [
       "mode=combined (default) treats all subpaths as one concatenated length domain; mode=per subpath gives each subpath its own 0-1 domain instead.",
       "In per subpath mode, start/end/offset each independently pull from the slider (value), a named subpath attribute, or the shared driver keys index/random/group/position/driver.",
-      "trim_start/trim_end/trim_offset are arc-length fractions (0-1) of the measured path, not canvas or pixel units.",
+      "trim_start/trim_end/trim_offset are fractions (0-1) of the measured path length, not canvas or pixel units.",
+      "measure=arc length cuts at the exact distance along the path, as React Native Skia does; measure=segment maps length onto each segment's curve parameter, so cuts drift up to ~10% of a segment.",
+      "A Trim Path saved before measure existed has no measure key and trims as segment (the panel still shows arc length); set measure explicitly to change it.",
       "offset is unbounded and taken mod 1, sliding the window cyclically; a window that straddles the wrap seam on a closed subpath is stitched into one continuous piece.",
     ],
   },
@@ -70,6 +92,14 @@ export const trimPathNode: NodeDefinition = {
       type: "enum",
       options: ["combined", "per subpath"],
       default: "combined",
+      control: "segmented",
+    },
+    {
+      name: "measure",
+      label: "Measure",
+      type: "enum",
+      options: [...TRIM_MEASURES],
+      default: "arc length",
       control: "segmented",
     },
     ...SPLINE_TRIM_PARAMS,
@@ -115,11 +145,12 @@ export const trimPathNode: NodeDefinition = {
       return { primary: empty };
     }
     const mode = (params.mode as string) ?? "combined";
+    const measure = trimPathMeasure(params);
     if (mode !== "per subpath") {
       return {
         primary: {
           kind: "spline",
-          subpaths: applyTrimParams(src.subpaths, params),
+          subpaths: applyTrimParams(src.subpaths, params, measure),
         },
       };
     }
@@ -156,7 +187,7 @@ export const trimPathNode: NodeDefinition = {
     return {
       primary: {
         kind: "spline",
-        subpaths: trimSubpathsEach(src.subpaths, startAt, endAt, offsetAt),
+        subpaths: trimSubpathsEach(src.subpaths, startAt, endAt, offsetAt, measure),
       },
     };
   },

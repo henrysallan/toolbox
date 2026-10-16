@@ -30,7 +30,7 @@ import {
 } from "@/engine/element";
 import { OPACITY_PARAM } from "@/engine/conventions";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
-import { trimSubpaths } from "@/engine/spline-trim";
+import { trimSubpaths, type TrimMeasure } from "@/engine/spline-trim";
 
 // Shared "view this spline" rasterizer bundled into the spline primitive
 // nodes (Circle, Rectangle, …). Each primitive keeps its `spline` output and
@@ -115,15 +115,18 @@ export const SPLINE_TRIM_PARAMS: ParamDef[] = [
 
 // Apply the bundled trim params to a set of subpaths. Identity (returns the
 // same array) when trim_start/trim_end are at their 0/1 defaults, so untrimmed
-// primitives pay nothing.
+// primitives pay nothing. The primitives' bundled sliders stay on the
+// original `segment` measure (spline-trim.ts) — saved projects are timed to
+// it and they carry no measure param; Trim Path passes its own.
 export function applyTrimParams(
   subpaths: SplineSubpath[],
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  measure: TrimMeasure = "segment"
 ): SplineSubpath[] {
   const s = typeof params.trim_start === "number" ? params.trim_start : 0;
   const e = typeof params.trim_end === "number" ? params.trim_end : 1;
   const o = typeof params.trim_offset === "number" ? params.trim_offset : 0;
-  return trimSubpaths(subpaths, s, e, o);
+  return trimSubpaths(subpaths, s, e, o, measure);
 }
 
 // Optional image input that drives the fill instead of the flat

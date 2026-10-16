@@ -29,6 +29,10 @@
 //
 //   npm run compare:skia -- --a paint:s1n --b paint:s1s --expect close
 //
+// The Trim Paths (tr*) are measure = arc length, what a new node gets and
+// what React Native's <Path start end> does; a segment-measure Trim Path
+// (an old save) cuts up to ~10 % of a segment away on these straight edges.
+//
 // Fonts: Geist Regular (public/fonts, OFL 1.1) on both sides — the Text
 // node through a FontFace registered here, the Skia side through its scene
 // asset. Both are fetched when the fixture is first built (info) and must
@@ -76,7 +80,7 @@ function ngon(cx: number, cy: number, R: number, n: number): SplineSubpath {
 }
 
 // An open S-curve with handles.
-const sCurve: SplineSubpath = {
+export const S_CURVE: SplineSubpath = {
   closed: false,
   anchors: [
     { pos: [0.18, 0.7], outHandle: [0.12, -0.35] },
@@ -183,7 +187,7 @@ export function paintGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
     draw("star", [STAR]),
     draw("hex", [HEXAGON]),
     draw("circle", [CIRCLE]),
-    draw("scurve", [sCurve]),
+    draw("scurve", [S_CURVE]),
     draw("two", TWO_CIRCLES),
   ];
   const edges: GraphEdge[] = [];
@@ -220,26 +224,26 @@ export function paintGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
 
   // ---- trim (keyframed on both sides with the same keys) ----
   const trimEnd = { trim_end: block([[0, 0.05, "easeInOutCubic"], [40, 1, "linear"], [60, 1, "linear"]]) };
-  add({ id: "tr1t", type: "trim-path", params: { mode: "combined", trim_start: 0, trim_end: 0.05, trim_offset: 0 }, animation: trimEnd }, ["star", "in:path"]);
+  add({ id: "tr1t", type: "trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0, trim_end: 0.05, trim_offset: 0 }, animation: trimEnd }, ["star", "in:path"]);
   add({ id: "tr1n", type: "spline-stroke", params: { ...STROKE_BASE, thickness: 10, cap: "butt", join: "miter", color: "#ef476f" } }, ["tr1t", "in:path"]);
   add({ id: "tr1k", type: "skia-stroke", params: { ...STROKE_BASE, thickness: 10, cap: "butt", join: "miter", color: "#ef476f" } }, ["star", "in:path"]);
-  add({ id: "tr1x", type: "skia-trim-path", params: { mode: "combined", trim_start: 0, trim_end: 0.05, trim_offset: 0 }, animation: trimEnd }, ["tr1k", "in:drawing"]);
+  add({ id: "tr1x", type: "skia-trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0, trim_end: 0.05, trim_offset: 0 }, animation: trimEnd }, ["tr1k", "in:drawing"]);
   canvas("tr1", "tr1x");
   const trimOffset = { trim_offset: block([[0, 0, "linear"], [60, 1, "linear"]]) };
-  add({ id: "tr2t", type: "trim-path", params: { mode: "combined", trim_start: 0, trim_end: 0.4, trim_offset: 0 }, animation: trimOffset }, ["hex", "in:path"]);
+  add({ id: "tr2t", type: "trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0, trim_end: 0.4, trim_offset: 0 }, animation: trimOffset }, ["hex", "in:path"]);
   add({ id: "tr2n", type: "spline-stroke", params: { ...STROKE_BASE, thickness: 12, cap: "butt", join: "miter" } }, ["tr2t", "in:path"]);
   add({ id: "tr2k", type: "skia-stroke", params: { ...STROKE_BASE, thickness: 12, cap: "butt", join: "miter" } }, ["hex", "in:path"]);
-  add({ id: "tr2x", type: "skia-trim-path", params: { mode: "combined", trim_start: 0, trim_end: 0.4, trim_offset: 0 }, animation: trimOffset }, ["tr2k", "in:drawing"]);
+  add({ id: "tr2x", type: "skia-trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0, trim_end: 0.4, trim_offset: 0 }, animation: trimOffset }, ["tr2k", "in:drawing"]);
   canvas("tr2", "tr2x");
 
   // Trim on Circle (Skia)'s oval: redrawn as toolbox's circle, so the
   // window starts at the top like Circle → Trim Path.
   const circleParams = { centerX: 0.5, centerY: 0.5, radiusX: 0.3, radiusY: 0.3, opacity: 1, trim_start: 0, trim_end: 1, trim_offset: 0 };
   add({ id: "tcirc", type: "circle", params: { ...circleParams, stroke_enabled: false, fill_enabled: false } });
-  add({ id: "tr3t", type: "trim-path", params: { mode: "combined", trim_start: 0.1, trim_end: 0.45, trim_offset: 0 } }, ["tcirc", "in:path"]);
+  add({ id: "tr3t", type: "trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0.1, trim_end: 0.45, trim_offset: 0 } }, ["tcirc", "in:path"]);
   add({ id: "tr3n", type: "spline-stroke", params: { ...STROKE_BASE, thickness: 10, color: "#ffd166" } }, ["tr3t", "in:path"]);
   add({ id: "tr3c", type: "skia-circle", params: { ...circleParams, stroke_enabled: true, stroke_thickness: 10, stroke_units: "px", stroke_color: "#ffd166", fill_enabled: false, fill_color: "#ffffff" } });
-  add({ id: "tr3x", type: "skia-trim-path", params: { mode: "combined", trim_start: 0.1, trim_end: 0.45, trim_offset: 0 } }, ["tr3c", "in:drawing"]);
+  add({ id: "tr3x", type: "skia-trim-path", params: { mode: "combined", measure: "arc length", trim_start: 0.1, trim_end: 0.45, trim_offset: 0 } }, ["tr3c", "in:drawing"]);
   canvas("tr3", "tr3x");
 
   // ---- round corners ----

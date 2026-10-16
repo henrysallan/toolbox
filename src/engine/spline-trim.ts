@@ -1,6 +1,18 @@
 import { Bezier } from "bezier-js";
 import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
-import { measureSpline, measureSubpath, sampleAttrsOntoAnchors } from "./spline-math";
+import {
+  measureSpline,
+  sampleAttrsOntoAnchors,
+  subpathToCurves,
+  type SplineLengths,
+  type SubpathLengths,
+} from "./spline-math";
+import {
+  cubicArcLength,
+  cubicParamAtLength,
+  cubicSpeed,
+  type CubicSpeed,
+} from "./cubic-arc-length";
 import {
   makeSubpathDriverFn,
   type ColorRampBy,
@@ -20,8 +32,66 @@ import {
 // mod 1), so keyframing 0→N loops the trim N times. Pure, engine-side; the
 // boundary cubics are split with bezier-js. See
 // specdocs/archive/062526_node-expansion.md.
+//
+// Two measures place a fraction on the path:
+//   arc length  the exact arc-length point (cubic-arc-length.ts). What
+//               React Native Skia's <Path start end> and After Effects do,
+//               and what Trim Path nodes made since 2026-10-16 use.
+//   segment     the original (pre-2026-10-16) mapping, kept bit-for-bit so
+//               saved Trim Paths and the primitives' bundled trim sliders
+//               keep their timing: the fraction picks its segment by
+//               bezier-js arc length, then lands at the curve parameter
+//               t = (length into the segment) / (segment length). A cubic's
+//               parameter is not its length, so the cut drifts inside each
+//               segment — on a handle-less line it runs along the
+//               smoothstep 3t² − 2t³ (up to ~10 % of that segment's length
+//               away from the true point), on a curve with uneven handles
+//               further.
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+export const TRIM_MEASURES = ["arc length", "segment"] as const;
+export type TrimMeasure = (typeof TRIM_MEASURES)[number];
+
+// Per-subpath measurement plus, in the arc-length measure, each segment's
+// speed polynomial (the inverse length → t needs it at the cut segments).
+interface TrimLengths extends SplineLengths {
+  speeds: CubicSpeed[][] | null;
+}
+
+// measureSpline's shape with every segment measured by cubicArcLength, so
+// the window's fractions and the cut inside a segment share one integrator.
+function measureSplineArc(subpaths: SplineSubpath[]): TrimLengths {
+  const perSubpath: SubpathLengths[] = [];
+  const offsets: number[] = [];
+  const speeds: CubicSpeed[][] = [];
+  let acc = 0;
+  for (const sub of subpaths) {
+    const curves = subpathToCurves(sub);
+    const segments: SubpathLengths["segments"] = [];
+    const cumulative: number[] = [];
+    const subSpeeds: CubicSpeed[] = [];
+    let subAcc = 0;
+    for (const curve of curves) {
+      const k = cubicSpeed(curve);
+      const length = cubicArcLength(k);
+      segments.push({ curve, length });
+      subSpeeds.push(k);
+      subAcc += length;
+      cumulative.push(subAcc);
+    }
+    offsets.push(acc);
+    perSubpath.push({ segments, cumulative, total: subAcc });
+    speeds.push(subSpeeds);
+    acc += subAcc;
+  }
+  return { perSubpath, offsets, total: acc, speeds };
+}
+
+function measureTrim(subpaths: SplineSubpath[], measure: TrimMeasure): TrimLengths {
+  if (measure === "arc length") return measureSplineArc(subpaths);
+  return { ...measureSpline({ kind: "spline", subpaths } as SplineValue), speeds: null };
+}
 
 export const TRIM_SOURCES = [
   "value",
@@ -120,16 +190,18 @@ export function cubicsToSubpath(curves: Bezier[]): SplineSubpath | null {
 }
 
 // Extract the portion of `sub` between arc lengths [lo, hi] in the subpath's
-// OWN length domain. Each segment is clipped to the window independently (a
-// boundary that lands on a segment join is handled by adjacent clips — no
-// degenerate split(1,1) at the seam). Returns an open subpath, or null when
-// the window is degenerate.
+// OWN length domain (`m`, its measurement; `speeds` its segments' speed
+// polynomials in the arc-length measure, null in the segment measure). Each
+// segment is clipped to the window independently (a boundary that lands on
+// a segment join is handled by adjacent clips — no degenerate split(1,1) at
+// the seam). Returns an open subpath, or null when the window is degenerate.
 function trimSubpathByLength(
   sub: SplineSubpath,
+  m: SubpathLengths,
+  speeds: CubicSpeed[] | null,
   lo: number,
   hi: number
 ): SplineSubpath | null {
-  const m = measureSubpath(sub);
   if (m.total <= 0 || m.segments.length === 0) return null;
   lo = Math.max(0, Math.min(m.total, lo));
   hi = Math.max(0, Math.min(m.total, hi));
@@ -142,8 +214,13 @@ function trimSubpathByLength(
     const cum = m.cumulative[i];
     // Overlap of [lo,hi] with this segment's arc range [prevCum, cum].
     if (seg.length > 1e-12 && hi > prevCum && lo < cum) {
-      const segLo = clamp01((lo - prevCum) / seg.length);
-      const segHi = clamp01((hi - prevCum) / seg.length);
+      // Length into the segment → curve parameter: exact arc length, or
+      // the segment measure's linear map (see the header).
+      const k = speeds?.[i];
+      const toT = (len: number): number =>
+        k ? cubicParamAtLength(k, len, seg.length) : clamp01(len / seg.length);
+      const segLo = toT(lo - prevCum);
+      const segHi = toT(hi - prevCum);
       if (segHi - segLo > 1e-6) {
         // Whole segment → use it directly; otherwise split out the sub-arc.
         curves.push(
@@ -164,7 +241,7 @@ function trimSubpathByLength(
 // pre-computed measurement. The per-subpath loop of the original trim.
 function trimWindow(
   subpaths: SplineSubpath[],
-  lengths: ReturnType<typeof measureSpline>,
+  lengths: TrimLengths,
   s: number,
   e: number
 ): SplineSubpath[] {
@@ -187,6 +264,8 @@ function trimWindow(
     }
     const trimmed = trimSubpathByLength(
       subpaths[i],
+      lengths.perSubpath[i],
+      lengths.speeds?.[i] ?? null,
       lo - subStart,
       hi - subStart
     );
@@ -224,12 +303,14 @@ function joinAtSeam(a: SplineSubpath, b: SplineSubpath): SplineSubpath {
 // closed loop the two pieces are stitched into one continuous subpath (so a
 // stroke sliding around a circle never shows cap breaks). Returns the input
 // unchanged when not trimming (identity fast-path), or [] when the window is
-// empty (including start >= end).
+// empty (including start >= end). `measure` places the fractions on the path
+// (see the header); the window math above is the same in both.
 export function trimSubpaths(
   subpaths: SplineSubpath[],
   start: number,
   end: number,
-  offset = 0
+  offset = 0,
+  measure: TrimMeasure = "arc length"
 ): SplineSubpath[] {
   if (!subpaths || subpaths.length === 0) return subpaths;
   const s = clamp01(Number.isFinite(start) ? start : 0);
@@ -241,7 +322,7 @@ export function trimSubpaths(
   let o = oRaw - Math.floor(oRaw); // wrap to [0, 1)
   if (o <= 1e-9 || o >= 1 - 1e-9) o = 0;
 
-  const lengths = measureSpline({ kind: "spline", subpaths } as SplineValue);
+  const lengths = measureTrim(subpaths, measure);
   if (lengths.total <= 0) return subpaths;
   if (o === 0) return trimWindow(subpaths, lengths, s, e);
 
@@ -284,7 +365,8 @@ export function trimSubpathsEach(
   subpaths: SplineSubpath[],
   startAt: (i: number, sub: SplineSubpath) => number,
   endAt: (i: number, sub: SplineSubpath) => number,
-  offsetAt: (i: number, sub: SplineSubpath) => number
+  offsetAt: (i: number, sub: SplineSubpath) => number,
+  measure: TrimMeasure = "arc length"
 ): SplineSubpath[] {
   if (!subpaths || subpaths.length === 0) return subpaths;
   const out: SplineSubpath[] = [];
@@ -294,7 +376,8 @@ export function trimSubpathsEach(
       [sub],
       startAt(i, sub),
       endAt(i, sub),
-      offsetAt(i, sub)
+      offsetAt(i, sub),
+      measure
     );
     for (let j = 0; j < trimmed.length; j++) out.push(trimmed[j]);
   }

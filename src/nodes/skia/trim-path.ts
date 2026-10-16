@@ -1,6 +1,7 @@
 import type { NodeDefinition } from "@/engine/types";
 import { bindDerived, bindParam, type Bind, type BindRef, type PathEffectIR, type SkiaNode } from "@/engine/skia/scene-ir";
 import { SPLINE_TRIM_PARAMS } from "../source/spline-raster-aux";
+import { TRIM_MEASURES } from "@/engine/spline-trim";
 import { copyShape, geomSubpaths, modifyDrawing, num, subpathsToD, toolboxContour, type ShapeNode } from "./paint-shared";
 
 // Trim Path (Skia) — the Skia-layer mirror of Trim Path over a drawing:
@@ -25,10 +26,26 @@ import { copyShape, geomSubpaths, modifyDrawing, num, subpathsToD, toolboxContou
 //                one shape per contour (an export needs the contour count
 //                to hold still).
 //
-// Arc length: Skia measures its contours adaptively, toolbox by flattened
-// samples, so a cut can land a fraction of a pixel apart.
+// Arc length: Skia measures its contours (SkContourMeasure: curves
+// subdivided until their control points sit within 0.5 px of the chord's
+// thirds, length mapped linearly inside each piece) and cuts at that arc
+// length, as Trim Path does with measure=arc length (cubic-arc-length.ts,
+// exact). They agree to Skia's tolerance: ≤ 0.3 px on the degenerate-cubic
+// edges splineToSvgPathD writes for handle-less segments at 512 px, 0.0005
+// px once those are lines (check-skia-paint). `measure` mirrors Trim Path's
+// param. RN's trim has
+// no way to say Trim Path's original `segment` measure (a cut that drifts
+// along each segment's curve parameter, spline-trim.ts), so segment is
+// refused with a reason and the shapes are trimmed by arc length. Unlike
+// Trim Path, an absent `measure` here is arc length: this node has always
+// trimmed that way.
 
 const EMPTY = 1e-9;
+
+export function skiaTrimMeasureProblem(nodeId: string, params: Record<string, unknown>): string | null {
+  if (params.measure !== "segment") return null;
+  return `Trim Path (Skia) "${nodeId}": measure "segment" has no React Native Skia equivalent — <Path start end> cuts by arc length, and segment's cut drifts along each segment's curve parameter. Trimmed by arc length; set measure to arc length (re-time the trim if it was matched to a segment-measure Trim Path), or trim with Trim Path before Skia Shape.`;
+}
 
 // [lo, hi] of trimSubpaths, as two drawable intervals (a, b).
 export function trimWindows(start: number, end: number, offset: number): { a: [number, number]; b: [number, number]; plain: boolean } {
@@ -53,12 +70,12 @@ export const skiaTrimPathNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Reveals only part of every shape in a Skia drawing by arc length (React Native Skia <Path start end>), with Trim Path's start / end / offset. Offset wraps; Combined measures each shape's contours as one length, Per subpath gives every contour its own 0–1.",
+    "Reveals only part of every shape in a Skia drawing by arc length (React Native Skia <Path start end>), with Trim Path's start / end / offset. Offset wraps; Combined measures each shape's contours as one length, Per subpath gives every contour its own 0–1. Measure is arc length only: Trim Path's older segment measure has no React Native form and is refused.",
   searchAliases: ["skia", "trim", "trim paths", "draw on", "reveal", "react native"],
   facts: {
     gotchas: [
       "trim_start/trim_end/trim_offset are arc-length fractions (0-1) from each shape's start; circles and ovals are redrawn as toolbox's circle (top, clockwise), like Circle.",
-      "Skia cuts at the exact arc length; Trim Path maps length to the curve parameter linearly per segment, so on straight segments its cut can land a few px away.",
+      "Cuts at the exact arc length, like Trim Path with measure=arc length (to Skia's ~0.5 px contour tolerance); measure=segment is refused (no RN form) and trimmed by arc length.",
       "Each shape draws twice (window + wrapped remainder): React Native's trim takes one interval. The remainder is empty unless offset pushes the window past the end.",
       "A non-zero offset exports the windows as per-frame samples; an offset keyed from exactly 0 does too, with an export warning.",
       "mode=per subpath splits each shape into one shape per contour; an export then needs the contour count to stay constant.",
@@ -75,6 +92,14 @@ export const skiaTrimPathNode: NodeDefinition = {
       type: "enum",
       options: ["combined", "per subpath"],
       default: "combined",
+      control: "segmented",
+    },
+    {
+      name: "measure",
+      label: "Measure",
+      type: "enum",
+      options: [...TRIM_MEASURES],
+      default: "arc length",
       control: "segmented",
     },
     ...SPLINE_TRIM_PARAMS,
@@ -96,6 +121,8 @@ export const skiaTrimPathNode: NodeDefinition = {
       : [derived(w.a[0]), derived(w.a[1])];
     const b: [Bind<number>, Bind<number>] = [derived(w.b[0]), derived(w.b[1])];
     const problems: string[] = [];
+    const measureProblem = skiaTrimMeasureProblem(nodeId, params);
+    if (measureProblem) problems.push(measureProblem);
 
     // Trims go after the shape's own trims (they compose by length
     // fraction) and ahead of its other effects (Skia trims first anyway).

@@ -44,6 +44,7 @@ import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { GradientCanvas } from "@/engine/spline-gradient-fill";
 import type { SkiaNode, SkiaScene, ShaderIR } from "@/engine/skia/scene-ir";
 import type { SplineSubpath } from "@/engine/types";
+import type { TrimMeasure } from "@/engine/spline-trim";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -54,7 +55,7 @@ const { makeSceneSampler } = await import("@/lib/skia-export");
 const { renderScene } = await import("@/engine/skia/scene-render");
 const fx = await import("./fixtures/skia/paint-graph");
 const { trimWindows } = await import("@/nodes/skia/trim-path");
-const { parseSvgPathD } = await import("@/nodes/skia/paint-shared");
+const { parseSvgPathD, subpathsToD, subpathsToLineD } = await import("@/nodes/skia/paint-shared");
 const { SKIA_FONTS, canvasMiddleToAlphabetic, paragraphLineBox } = await import("@/nodes/skia/fonts");
 const { roundCorners, measureSpline } = await import("@/engine/spline-math");
 const { trimSubpaths } = await import("@/engine/spline-trim");
@@ -303,17 +304,80 @@ function maxPathDiff(a: string, b: string): number {
     const ok = [...w.a, ...w.b].every((v, i) => Math.abs(v - [...a, ...b][i]) < 1e-9);
     check(`trim window (${s}, ${e}, offset ${o}) → [${a}] + [${b}]`, ok, JSON.stringify(w));
   }
-  // … and the arc length they keep is the length trimSubpaths keeps (on a
-  // circle, where toolbox's per-segment length → parameter map is close to
-  // uniform; on straight cubics it is not — see the compare numbers).
-  const total = measureSpline({ kind: "spline", subpaths: [fx.CIRCLE] }).total;
+  // … and the arc length they keep is the length trimSubpaths keeps
+  // (measure = arc length, what a new Trim Path does: exact on the star's
+  // and hexagon's straight cubics as on the circle).
   let worst = 0;
-  for (const [s, e, o] of [[0, 0.4, 0.75], [0.1, 0.7, 0], [0.25, 0.5, 0.6]] as const) {
-    const kept = measureSpline({ kind: "spline", subpaths: trimSubpaths([fx.CIRCLE], s, e, o) }).total / total;
-    const w = trimWindows(s, e, o);
-    worst = Math.max(worst, Math.abs(kept - (w.a[1] - w.a[0] + w.b[1] - w.b[0])));
+  for (const sub of [fx.CIRCLE, fx.STAR, fx.HEXAGON, fx.S_CURVE]) {
+    const total = measureSpline({ kind: "spline", subpaths: [sub] }).total;
+    for (const [s, e, o] of [[0, 0.4, 0.75], [0.1, 0.7, 0], [0.25, 0.5, 0.6], [0.03, 0.37, 0]] as const) {
+      const kept = measureSpline({ kind: "spline", subpaths: trimSubpaths([sub], s, e, o, "arc length") }).total / total;
+      const w = trimWindows(s, e, o);
+      worst = Math.max(worst, Math.abs(kept - (w.a[1] - w.a[0] + w.b[1] - w.b[0])));
+    }
   }
-  check("trim windows keep the arc length trimSubpaths keeps (circle, within 0.5 %)", worst < 0.005, `worst ${worst}`);
+  check("trim windows keep the arc length trimSubpaths keeps (circle, star, hexagon, S-curve; within 1e-9)", worst < 1e-9, `worst ${worst.toExponential(2)}`);
+}
+{
+  // Where React Native cuts: CanvasKit's Path.makeTrimmed (SkTrimPathEffect,
+  // what <Path start end> runs) on the path data the Skia nodes emit
+  // (splineToSvgPathD: every segment a cubic, a handle-less edge a
+  // degenerate one), vs where Trim Path cuts. Arc length agrees to Skia's
+  // own measuring tolerance: SkContourMeasure subdivides a cubic until its
+  // control points sit within 0.5 px of the chord's thirds and maps length
+  // linearly inside each piece, so on a degenerate-cubic edge its cut lands
+  // up to ~0.3 px off the true point; written as lines (L), it is exact and
+  // so is the agreement. The original segment measure (old saves) drifts
+  // along each straight edge.
+  const pxOf = (sub: SplineSubpath): SplineSubpath => ({
+    closed: sub.closed,
+    anchors: sub.anchors.map((a) => ({
+      pos: [a.pos[0] * SIZE, a.pos[1] * SIZE],
+      ...(a.inHandle ? { inHandle: [a.inHandle[0] * SIZE, a.inHandle[1] * SIZE] as [number, number] } : {}),
+      ...(a.outHandle ? { outHandle: [a.outHandle[0] * SIZE, a.outHandle[1] * SIZE] as [number, number] } : {}),
+    })),
+  });
+  const L_PATH: SplineSubpath = { closed: false, anchors: [{ pos: [0.1, 0.2] }, { pos: [0.82, 0.2] }, { pos: [0.82, 0.38] }] };
+  const shapes: [string, SplineSubpath, boolean][] = [["star", fx.STAR, true], ["hexagon", fx.HEXAGON, true], ["circle", fx.CIRCLE, false], ["S-curve", fx.S_CURVE, false], ["0.72 + 0.18 polyline", L_PATH, true]];
+  type Worst = [number, string];
+  const worstBy: Record<"arc" | "seg" | "arcLines", Worst> = { arc: [0, ""], seg: [0, ""], arcLines: [0, ""] };
+  const cutAt = (d: string, f: number): [number, number] => {
+    const ck = CK.Path.MakeFromSVGString(d)!;
+    const cut = ck.makeTrimmed(0, f, false)!;
+    const pt = cut.getPoint(cut.countPoints() - 1);
+    cut.delete();
+    ck.delete();
+    return [pt[0], pt[1]];
+  };
+  for (const [name, sub, straight] of shapes) {
+    const px = pxOf(sub);
+    for (const f of [0.07, 0.23, 0.4, 0.61, 0.88]) {
+      const rn = cutAt(subpathsToD([px]), f);
+      const sides: ["arc" | "seg" | "arcLines", TrimMeasure, [number, number]][] = [["arc", "arc length", rn], ["seg", "segment", rn]];
+      if (straight) sides.push(["arcLines", "arc length", cutAt(subpathsToLineD([px]), f)]);
+      for (const [key, measure, ref] of sides) {
+        const out = trimSubpaths([px], 0, f, 0, measure);
+        const end = out[out.length - 1].anchors[out[out.length - 1].anchors.length - 1].pos;
+        const d = Math.hypot(end[0] - ref[0], end[1] - ref[1]);
+        if (d > worstBy[key][0]) worstBy[key] = [d, `${name} @${f}`];
+      }
+    }
+  }
+  const fmtW = (w: Worst) => `${w[0].toFixed(4)} px (${w[1]})`;
+  check(
+    `Trim Path (measure = arc length) cuts where React Native does (CanvasKit makeTrimmed on the emitted path data, ${shapes.length} shapes × 5 ends, within Skia's 0.5 px measure tolerance at 512 px)`,
+    worstBy.arc[0] < 0.5,
+    `worst ${fmtW(worstBy.arc)}`
+  );
+  check("…and exactly on the straight shapes once their edges are lines (L; within 0.01 px)", worstBy.arcLines[0] < 0.01, `worst ${fmtW(worstBy.arcLines)}`);
+  check("…while the original segment measure does not (> 2 px off)", worstBy.seg[0] > 2, `worst ${fmtW(worstBy.seg)}`);
+  console.log(`     cut vs React Native: arc length ${fmtW(worstBy.arc)}, as lines ${fmtW(worstBy.arcLines)}; segment ${fmtW(worstBy.seg)}`);
+}
+{
+  // measure = segment has no RN form: the export refuses with the reason.
+  const nodes = G.nodes.map((n) => (n.id === "tr3x" ? { ...n, params: { ...n.params, measure: "segment" } } : n));
+  const r = await checkExportable({ nodes, edges: G.edges, canvasId: "tr3s", canvas: CANVAS, timeline: TIMELINE, slot: "paint-tr3s-segment" });
+  check("Trim Path (Skia) measure = segment: the export is refused with the reason", !r.files && r.problems.some((p) => p.includes('measure "segment"')), r.problems.join(" | "));
 }
 {
   // Gradients: what Rasterize Spline hands Canvas2D, recorded.
