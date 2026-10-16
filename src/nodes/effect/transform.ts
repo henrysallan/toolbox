@@ -25,10 +25,15 @@ import {
   applyTransformToSpline,
   asTransform,
   composeOpsToAffine,
+  composeOpsToCanvasAffine,
   composeTransform,
+  imageTrsUniforms,
   invertAffine,
+  isLegacySkew,
+  LEGACY_SKEW_PARAM,
   opFromParams,
   transformTrsVisible,
+  trsAspect,
 } from "@/engine/transform-value";
 
 // Scale/rotate/translate around a user-controlled pivot. All params are in
@@ -46,6 +51,12 @@ import {
 // effective placement (wired value, or own TRS with Source-space pivot baked
 // to canvas coords) so another Transform or primitive can share it.
 //
+// Image mode is aspect-rigid (101526_aspect-rigid-rotation.md): the image
+// lands exactly where composeOpsToCanvasAffine puts it — the same place the
+// spline / points path puts a shape under the same params — so translateY /
+// pivotY are authored (width-relative) and rotation stays rigid in pixels.
+// A ≤v12 save carries `legacySkew` and keeps the old per-axis canvas01 path.
+//
 // Image Tile (AE RepeTile): wrap the inverse-sampled UV instead of clipping
 // it, so extra copies fall out of scale/translate for free. Cost is one
 // fullscreen pass regardless of tile count — no extra draws, no larger
@@ -58,6 +69,9 @@ uniform vec2 u_translate; // screen convention (Y down)
 uniform vec2 u_scale;     // uniform passed as vec2 so we can do non-uniform later
 uniform float u_angle;    // radians
 uniform vec2 u_pivot;     // screen convention (Y down)
+// W / H: the rotation runs in pixels (101526_aspect-rigid-rotation.md).
+// 1.0 for a legacySkew node — per-axis, bit-identical to the old shader.
+uniform float u_aspect;
 // Extra source-widths past each edge: (left, right, down, up). Y is UV-up
 // (down expands uv.y < 0, up expands uv.y > 1). Ignored when u_tileMode is 0.
 uniform vec4 u_tileExpand;
@@ -80,7 +94,9 @@ void main() {
   // mode — the historical bug).
   float c = cos(u_angle);
   float s = sin(u_angle);
+  p.y /= u_aspect;
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p.y *= u_aspect;
   p /= max(u_scale, vec2(0.0001));
   uv = p + pivot;
 
@@ -233,6 +249,8 @@ export const transformNode: NodeDefinition = {
       "Behavior follows the connected input's type (image/spline/points), not a mode param; the legacy `mode` param is hidden and no longer read.",
       "Wiring a `transform` socket (e.g. from a Gizmo) replaces this node's own TRS params entirely, using inverse-affine math on images or direct math on spline/points.",
       "The transform aux emits the placement this node applied: the wired value if connected, else own TRS with space=local pivot baked to canvas coords.",
+      "Image mode (own TRS or wired) is aspect-rigid: the image lands where a shape under the same params does, rotation rigid in pixels, translateY / pivotY width-relative.",
+      "legacySkew (set on ≤v12 saves) keeps the old per-axis TRS: it shears when W ≠ H and reads translateY / pivotY height-relative.",
       "space=local (default) makes pivotX/Y a fraction of the incoming shape's bbox so scale/rotate track it; space=global pins the pivot to a fixed canvas point; images always act as global.",
       "tile (image-only) wraps sampling past the edges by tileLeft/Right/Up/Down source-widths, with tileUnfold mirroring odd copies edge-to-edge.",
       "On points, rotation and scale compose with the point's existing rotation (additive) and scale (multiplicative) rather than replacing them.",
@@ -437,6 +455,10 @@ export const transformNode: NodeDefinition = {
       group: "tile",
       visibleIf: tileEnabled,
     },
+    {
+      ...LEGACY_SKEW_PARAM,
+      visibleIf: (p, meta) => p.legacySkew === true && isImageInput(p, meta),
+    },
   ],
   primaryOutput: "image",
   resolvePrimaryOutput(params, ctx): SocketType {
@@ -473,7 +495,14 @@ export const transformNode: NodeDefinition = {
         ctx.clearTarget(output, [0, 0, 0, 0]);
         return pack(output);
       }
-      const affine = composeOpsToAffine(wired.ops);
+      // A TransformValue is authored space (shared with shapes), so the
+      // rigid canvas affine lands the image where a shape under it lands.
+      const affine = isLegacySkew(params)
+        ? composeOpsToAffine(wired.ops)
+        : composeOpsToCanvasAffine(
+            wired.ops,
+            trsAspect(params, ctx.width, ctx.height)
+          );
       const inv = invertAffine(affine) ?? {
         a: 1,
         b: 0,
@@ -595,7 +624,10 @@ export const transformNode: NodeDefinition = {
     }
 
     const prog = ctx.getShader("transform/tile", TRANSFORM_FS);
-    const angle = (rotateDeg * Math.PI) / 180;
+    const u = imageTrsUniforms(
+      params,
+      trsAspect(params, ctx.width, ctx.height)
+    );
     const tile = params.tile === true;
     const tileMode = !tile ? 0 : params.tileUnfold === true ? 2 : 1;
     const tileLeft = Math.max(0, (params.tileLeft as number) ?? 1);
@@ -607,18 +639,11 @@ export const transformNode: NodeDefinition = {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, src.texture);
       gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
-      gl.uniform2f(
-        gl.getUniformLocation(prog, "u_translate"),
-        translateX,
-        translateY
-      );
-      gl.uniform2f(gl.getUniformLocation(prog, "u_scale"), scaleX, scaleY);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_angle"), angle);
-      gl.uniform2f(
-        gl.getUniformLocation(prog, "u_pivot"),
-        pivotXParam,
-        pivotYParam
-      );
+      gl.uniform2f(gl.getUniformLocation(prog, "u_translate"), ...u.translate);
+      gl.uniform2f(gl.getUniformLocation(prog, "u_scale"), ...u.scale);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_angle"), u.angle);
+      gl.uniform2f(gl.getUniformLocation(prog, "u_pivot"), ...u.pivot);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_aspect"), u.aspect);
       gl.uniform4f(
         gl.getUniformLocation(prog, "u_tileExpand"),
         tileLeft,

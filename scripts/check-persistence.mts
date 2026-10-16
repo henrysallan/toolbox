@@ -514,5 +514,95 @@ const imageParam = (g2: SavedProject) => (g2.nodes[0].params as any).image;
   );
 }
 
+// --- 7. project asset library (SavedProject.assetLibrary): its image/SVG
+//        envelopes and preset-fragment nodes ride both containers exactly
+//        like node media — extracted, deduped, kept, resolved, re-inlined ---
+{
+  const libGraph = (): SavedProject =>
+    ({
+      ...graphWith({ kind: "file", dataUrl: PNG_DATA_URL }),
+      assetLibrary: [
+        {
+          id: "a1",
+          kind: "image",
+          name: "tiny",
+          params: {
+            media: { kind: "file", dataUrl: PNG_DATA_URL, filename: "tiny.png", mime: "image/png" },
+          },
+        },
+        {
+          id: "a2",
+          kind: "preset",
+          name: "pre",
+          fragment: graphWith({ kind: "file", dataUrl: PNG_DATA_URL }),
+        },
+        { id: "bad", kind: "nope", name: "x" },
+      ],
+    }) as unknown as SavedProject;
+  const libMedia = (g2: SavedProject) => (g2 as any).assetLibrary[0].params.media;
+  const fragImage = (g2: SavedProject) => (g2 as any).assetLibrary[1].fragment.nodes[0].params.image;
+
+  const fake = makeFakeSupabase();
+  const input = libGraph();
+  const res = await uploadGraphAssets(fake.supabase, input, LOC);
+  const media = libMedia(res.graph);
+  check(
+    "library media + fragment + node share ONE upload (content-addressed)",
+    fake.uploads.length === 1 && res.keepFilenames.size === 1,
+    `${fake.uploads.length} uploads`
+  );
+  check(
+    "library media becomes a clean ref, envelope fields kept",
+    media.asset && media.ext === "png" && !("dataUrl" in media) && media.filename === "tiny.png",
+    JSON.stringify(media)
+  );
+  check("preset fragment node media becomes a clean ref", !!fragImage(res.graph).asset && !("dataUrl" in fragImage(res.graph)));
+  check(
+    "caller's graph untouched by the rewrite",
+    libMedia(input).dataUrl === PNG_DATA_URL && fragImage(input).dataUrl === PNG_DATA_URL
+  );
+  check("malformed library entries are dropped from the clone", (res.graph as any).assetLibrary.length === 2);
+
+  const resolved = resolveAssetRefs(fake.supabase, res.graph, LOC);
+  check(
+    "resolveAssetRefs resolves library + fragment media (keeps asset/ext)",
+    String(libMedia(resolved).dataUrl).startsWith("https://fake.supabase/") &&
+      libMedia(resolved).asset === media.asset &&
+      String(fragImage(resolved).dataUrl).startsWith("https://fake.supabase/")
+  );
+  check("resolveAssetRefs leaves the stored row untouched", !("dataUrl" in libMedia(res.graph)));
+
+  // A library-only asset (no node uses it) must survive the prune.
+  const onlyLib = {
+    schemaVersion: CURRENT_SCHEMA,
+    nodes: [],
+    edges: [],
+    assetLibrary: [
+      { id: "a1", kind: "image", name: "lib", params: { media: { kind: "file", asset: "HASHL", ext: "png" } } },
+    ],
+  } as unknown as SavedProject;
+  const fake2 = makeFakeSupabase(["HASHL.png", "ORPHAN.png"]);
+  const res2 = await uploadGraphAssets(fake2.supabase, onlyLib, LOC);
+  check("library-only ref is in the keep-set", res2.keepFilenames.has("HASHL.png") && !res2.keepFilenames.has("ORPHAN.png"));
+
+  // .toolbox: extracted to assets/<hash>.png once, re-inlined on read.
+  const { writeProjectFile, readProjectFile } = await import("@/lib/project-file");
+  const blob = await writeProjectFile({ name: "lib", graph: libGraph() });
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const entries = Object.keys(zip.files).filter((n) => n.startsWith("assets/") && !zip.files[n].dir);
+  check(".toolbox stores the shared image once", entries.length === 1, entries.join(","));
+  const stored = JSON.parse(await zip.file("project.json")!.async("string"));
+  check(".toolbox project.json holds a library ref, not bytes", !!stored.assetLibrary[0].params.media.asset && !("dataUrl" in stored.assetLibrary[0].params.media));
+  // JSZip can't read a Blob under Node — hand it the bytes (it takes either).
+  const back = await readProjectFile((await blob.arrayBuffer()) as unknown as Blob);
+  check(
+    ".toolbox read re-inlines library + fragment media",
+    libMedia(back.graph).dataUrl?.startsWith("data:image/png;base64,") &&
+      fragImage(back.graph).dataUrl?.startsWith("data:image/png;base64,") &&
+      libMedia(back.graph).filename === "tiny.png"
+  );
+}
+
 if (failures === 0) console.log("\nALL GREEN ✅");
 process.exit(failures ? 1 : 0);

@@ -6,7 +6,8 @@ export interface ExportImage {
   width: number;
   height: number;
   fit: "cover" | "contain" | "fill";
-  // Image Source's TRS: per-axis canvas fractions (Y-down), degrees.
+  // Image Source's TRS (Y-down, degrees): rigid, translate / pivot Y
+  // width-relative; legacySkew = per-axis canvas fractions (shears).
   translateX: number;
   translateY: number;
   scaleX: number;
@@ -14,13 +15,15 @@ export interface ExportImage {
   rotate: number;
   pivotX: number;
   pivotY: number;
+  legacySkew?: boolean;
 }
 
 // Where an image lands on a width × height canvas, as Image Source draws it:
 // fitted (cover / contain / fill, centered), then its translate / rotate /
-// scale about the pivot — in per-axis canvas fractions, so a rotation on a
-// non-square canvas shears exactly as it does in toolbox. Row-major 3×3:
-// image px → canvas px (the <ImageShader>'s local matrix).
+// scale about the pivot — rigid in pixels, translate / pivot Y
+// width-relative; a legacySkew image rotates in per-axis canvas fractions
+// and shears on a non-square canvas, exactly as it does in toolbox.
+// Row-major 3×3: image px → canvas px (the <ImageShader>'s local matrix).
 export function imageMatrix(img: ExportImage, width: number, height: number): number[] {
   const iw = img.width;
   const ih = img.height;
@@ -30,19 +33,20 @@ export function imageMatrix(img: ExportImage, width: number, height: number): nu
   else if (img.fit === "contain") s0 = s1 = Math.min(s0, s1);
   const fx = (width - iw * s0) / 2;
   const fy = (height - ih * s1) / 2;
-  const a = width / height;
+  const legacy = img.legacySkew === true;
+  const k = legacy ? width / height : 1;
   const r = (img.rotate * Math.PI) / 180;
   const c = Math.cos(r);
   const s = Math.sin(r);
-  // L = diag(a, 1) · R(r) · diag(1 / a, 1) · diag(scaleX, scaleY)
+  // L = diag(k, 1) · R(r) · diag(1 / k, 1) · diag(scaleX, scaleY)
   const l00 = c * img.scaleX;
-  const l01 = -s * a * img.scaleY;
-  const l10 = (s / a) * img.scaleX;
+  const l01 = -s * k * img.scaleY;
+  const l10 = (s / k) * img.scaleX;
   const l11 = c * img.scaleY;
   const px = img.pivotX * width;
-  const py = img.pivotY * height;
+  const py = legacy ? img.pivotY * height : height / 2 + (img.pivotY - 0.5) * width;
   const tx = px + img.translateX * width - (l00 * px + l01 * py);
-  const ty = py + img.translateY * height - (l10 * px + l11 * py);
+  const ty = py + img.translateY * (legacy ? height : width) - (l10 * px + l11 * py);
   // [L | t] · [diag(s0, s1) | (fx, fy)]
   return [l00 * s0, l01 * s1, l00 * fx + l01 * fy + tx, l10 * s0, l11 * s1, l10 * fx + l11 * fy + ty, 0, 0, 1];
 }

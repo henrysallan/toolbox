@@ -157,7 +157,12 @@ import {
   resolveAnchorTracks,
   withMaskInput,
 } from "@/engine/conventions";
-import type { SplineAnchor, SplineSubpath } from "@/engine/types";
+import type {
+  PaintParamValue,
+  SplineAnchor,
+  SplineSubpath,
+} from "@/engine/types";
+import { PAINT_SURFACE_PARAMS } from "@/engine/types";
 import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
@@ -220,6 +225,12 @@ import {
   withUpdatedParams,
   resolveInsertParent,
 } from "@/state/graph-ops";
+import {
+  carriedParentEdges,
+  jumpReasonText,
+  setLayerParent,
+  unparentChildrenOf,
+} from "@/state/layer-parenting";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
@@ -395,11 +406,19 @@ import {
   seedCloudMediaRef,
   setCloudMediaEnabled,
 } from "@/lib/cloud-media-upload";
+import { cloudMediaUrl } from "@/lib/cloud-media";
 import {
   getUserAsset,
   loadUserAssets,
-  type AddAssetResult,
 } from "@/state/user-assets";
+import {
+  applySavedProjectLibrary,
+  attachProjectLibrary,
+  clearProjectLibrary,
+  getProjectAsset,
+  projectAssetBlob,
+  setProjectLibraryEditListener,
+} from "@/state/project-library";
 import { userAssetFilename, userAssetUrl } from "@/lib/supabase/user-assets";
 import { flattenGraph, resolvePreviewProducer } from "@/engine/flatten";
 import { PICK_ALPHA_THRESHOLD, pickNodesAt } from "@/lib/viewport-pick";
@@ -407,6 +426,8 @@ import {
   importImageSourceValue,
   importSvgSourceValue,
   importVideoSourceValue,
+  type LibraryAddResult,
+  type LibraryTarget,
 } from "@/lib/asset-import";
 import {
   encodeThumbDataUrlWithinCap,
@@ -1361,6 +1382,7 @@ function EffectsShell({
               .viewportGuides
           )
         );
+        applySavedProjectLibrary(initialProject.graph);
         // Live-link design: absent stays null (never materialize a
         // default block), present is validated as an untrusted blob.
         const rawLiveDesign = (
@@ -2917,30 +2939,41 @@ function EffectsShell({
     [setNodes, setEdges]
   );
   // Restoring paint pixels is only half of undo — the pipeline's input is the
-  // `snapshot` ImageBitmap stashed on the paint param, so we refresh it from
-  // the just-restored canvas and swap it in.
+  // `snapshot` ImageBitmap stashed on each paint-typed param (the edit layer
+  // `paint`, the input knockout `knockout`), so we refresh the snapshot of
+  // every restored canvas and swap it into whichever param owns it.
   const onPaintRestore = useCallback(
-    (nodeId: string, canvas: HTMLCanvasElement) => {
+    (nodeId: string, canvases: HTMLCanvasElement[]) => {
+      // Editor-side surfaces (the Paint overlay's selection mask) aren't
+      // params — tell the overlay so it re-derives what it shows.
+      window.dispatchEvent(
+        new CustomEvent("paint-surfaces-restored", {
+          detail: { nodeId, canvases },
+        })
+      );
       // premultiplyAlpha "none": paint snapshots must be straight-alpha —
       // WebGL ignores UNPACK_PREMULTIPLY_ALPHA_WEBGL for ImageBitmaps, and a
       // premultiplied upload double-applies alpha downstream (grey fringes
       // on soft strokes). Matches paint-editor/PaintOverlay's snapshot().
-      createImageBitmap(canvas, { premultiplyAlpha: "none" }).then((bmp) => {
-        setNodes((prev) =>
-          prev.map((n) =>
-            n.id === nodeId
-              ? {
-                  ...n,
-                  data: {
-                    ...n.data,
-                    params: {
-                      ...n.data.params,
-                      paint: { canvas, snapshot: bmp },
-                    },
-                  },
-                }
-              : n
+      Promise.all(
+        canvases.map((c) =>
+          createImageBitmap(c, { premultiplyAlpha: "none" }).then(
+            (bmp) => [c, bmp] as const
           )
+        )
+      ).then((pairs) => {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== nodeId) return n;
+            const params = { ...n.data.params };
+            for (const [canvas, snapshot] of pairs) {
+              for (const key of PAINT_SURFACE_PARAMS) {
+                const pv = params[key] as PaintParamValue | null | undefined;
+                if (pv?.canvas === canvas) params[key] = { canvas, snapshot };
+              }
+            }
+            return { ...n, data: { ...n.data, params } };
+          })
         );
       });
     },
@@ -3063,6 +3096,17 @@ function EffectsShell({
     setSavedEasings((prev) => prev.filter((e) => e.id !== id));
     graphRevRef.current++;
     setSaveState("dirty");
+  }, []);
+  // The project asset library (state/project-library.ts) has the same
+  // standing: not graph history, but persisted with the project, so any
+  // add / rename / thumbnail / delete turns the pill dirty. Loads and
+  // File → New replace it without firing this.
+  useEffect(() => {
+    setProjectLibraryEditListener(() => {
+      graphRevRef.current++;
+      setSaveState("dirty");
+    });
+    return () => setProjectLibraryEditListener(null);
   }, []);
 
   useEffect(() => {
@@ -4737,13 +4781,18 @@ function EffectsShell({
     }
   }, [nodes, currentGroupId]);
 
-  // Commit a freshly-built source node into the graph. At strict root it
+  // Commit a freshly-built source node into the graph. At strict root — or
+  // anywhere with `asLayer` (the Assets panel's Layer From Asset) — it
   // becomes its own layer (named `label`), wired into the layer's Group
   // Output so it shows immediately; inside a scope it just drops in. Shared
   // by the file-drop and asset-drop paths. Caller pushes undo first.
   const placeSourceNode = useCallback(
-    (newNode: Node<NodeDataPayload>, label: string) => {
-      if (!currentGroupIdRef.current) {
+    (
+      newNode: Node<NodeDataPayload>,
+      label: string,
+      opts?: { asLayer?: boolean }
+    ) => {
+      if (opts?.asLayer || !currentGroupIdRef.current) {
         const res = createLayer(
           nodesRef.current,
           edgesRef.current,
@@ -4756,6 +4805,10 @@ function EffectsShell({
             n.data.defType === GROUP_OUTPUT_TYPE
         );
         newNode.data.parentId = res.layerId;
+        // The drop point is in the CURRENT scope's space — meaningless inside
+        // a layer opened from elsewhere, so sit the node beside its output.
+        if (opts?.asLayer && go)
+          newNode.position = { x: go.position.x - 260, y: go.position.y };
         const out = newNode.data.primaryOutput;
         const goSocket =
           out === "image" ? "in:image" : out === "audio" ? "in:audio" : null;
@@ -4994,7 +5047,11 @@ function EffectsShell({
   // / AudioFileParamValue). Runs async because registration reads
   // file metadata; the node spawns as soon as the load resolves.
   const onAddFileNode = useCallback(
-    async (file: File, flowPos: { x: number; y: number }) => {
+    async (
+      file: File,
+      flowPos: { x: number; y: number },
+      opts?: { asLayer?: boolean }
+    ) => {
       // A "Download JSON" export from the Figma plugin — the fallback when a
       // frame is too big for the clipboard.
       if (/\.json$/i.test(file.name) || file.type === "application/json") {
@@ -5111,7 +5168,7 @@ function EffectsShell({
       if (kind === "image" || kind === "video" || kind === "model") {
         newNode.data.name = fileLabel(file.name);
       }
-      placeSourceNode(newNode, fileLabel(file.name));
+      placeSourceNode(newNode, fileLabel(file.name), opts);
     },
     [
       pushGraph,
@@ -5164,14 +5221,18 @@ function EffectsShell({
   // (inlined media re-fetches), so the undo snapshot is taken at commit
   // time — pushing it earlier would misorder against any edit landing
   // mid-flight.
-  const insertUserPresetAt = useCallback(
-    (presetId: string, upPos: { x: number; y: number }) => {
-      const preset = getUserNodePreset(presetId);
-      if (!preset) return;
+  // The fragment form serves both libraries' presets (the Project library
+  // stores a copied fragment, not a preset id).
+  const insertPresetFragmentAt = useCallback(
+    (
+      fragment: SavedProject,
+      upPos: { x: number; y: number },
+      opts?: { asLayer?: boolean }
+    ) => {
       void (async () => {
         let frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] };
         try {
-          frag = await deserializeGraph(preset.fragment);
+          frag = await deserializeGraph(fragment);
         } catch {
           flashToast("couldn't insert preset — its stored data is invalid");
           return;
@@ -5182,7 +5243,9 @@ function EffectsShell({
         let baseNodes = nodesRef.current;
         let baseEdges = edgesRef.current;
         let wrapped: string | null = null;
-        if (!targetScope) {
+        let anchor = upPos;
+        let layerOutputId: string | null = null;
+        if (!targetScope || opts?.asLayer) {
           const res = createLayer(
             baseNodes,
             baseEdges,
@@ -5193,13 +5256,24 @@ function EffectsShell({
           baseEdges = res.edges;
           targetScope = res.layerId;
           wrapped = res.layerId;
+          if (opts?.asLayer) {
+            const go = res.nodes.find(
+              (n) =>
+                n.data.parentId === res.layerId &&
+                n.data.defType === GROUP_OUTPUT_TYPE
+            );
+            if (go) {
+              anchor = { x: go.position.x - 320, y: go.position.y };
+              layerOutputId = go.id;
+            }
+          }
         }
         // Anchor the fragment's TOP-LEVEL nodes at the drop point. A group
         // preset carries its interior, whose positions live in the group's
         // own scope space — folding them into the min would land the shell
         // off-cursor by (shell − interior) — see fragmentTopLeft.
         const { x: minX, y: minY } = fragmentTopLeft(frag.nodes);
-        const offset = { x: upPos.x - minX, y: upPos.y - minY };
+        const offset = { x: anchor.x - minX, y: anchor.y - minY };
         const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
           frag.nodes,
           frag.edges,
@@ -5220,7 +5294,28 @@ function EffectsShell({
           }),
           ...newNodes.map(tagActive),
         ]);
-        setEdges([...baseEdges, ...newEdges]);
+        // Layer From Asset: wire the fragment's last top-level image output
+        // that nothing inside consumes into the new layer's Group Output.
+        const wire: Edge[] = [];
+        if (layerOutputId) {
+          const sink = newNodes
+            .filter(
+              (n) =>
+                n.data.parentId === targetScope &&
+                n.data.primaryOutput === "image" &&
+                !newEdges.some((e) => e.source === n.id)
+            )
+            .at(-1);
+          if (sink)
+            wire.push({
+              id: newEdgeId(),
+              source: sink.id,
+              sourceHandle: "out:primary",
+              target: layerOutputId,
+              targetHandle: "in:image",
+            });
+        }
+        setEdges([...baseEdges, ...newEdges, ...wire]);
         const top = newNodes.find((n) => n.data.parentId === targetScope);
         if (wrapped) {
           flashToast("preset added to a new layer");
@@ -5240,6 +5335,17 @@ function EffectsShell({
     },
     [setNodes, setEdges, pushGraph, getGraphSnapshot, navigateScope, flashToast]
   );
+  const insertUserPresetAt = useCallback(
+    (
+      presetId: string,
+      upPos: { x: number; y: number },
+      opts?: { asLayer?: boolean }
+    ) => {
+      const preset = getUserNodePreset(presetId);
+      if (preset) insertPresetFragmentAt(preset.fragment, upPos, opts);
+    },
+    [insertPresetFragmentAt]
+  );
 
   // Drag an asset from the Assets panel into the node editor. Folder media
   // (image/svg/video/audio) read their bytes and route through onAddFileNode
@@ -5247,12 +5353,103 @@ function EffectsShell({
   const onAddAssetNode = useCallback(
     async (
       payload: { source: string; kind: string; ref: string; name: string },
-      flowPos: { x: number; y: number }
+      flowPos: { x: number; y: number },
+      // Layer From Asset: the source lands in a new layer, wired up,
+      // whatever scope the node editor is showing.
+      opts?: { asLayer?: boolean }
     ) => {
+      // A cloud-media clip (either library's video) → Video Source.
+      const insertCloudVideo = async (
+        ref: { hash: string; ext: string; owner: string },
+        filename: string,
+        size: number,
+        name: string
+      ) => {
+        // Seed the registry FIRST: serializeParams looks the ref up by
+        // (filename, size), so the next save carries cloud:{…} and the
+        // project never re-uploads the clip (decision 12).
+        seedCloudMediaRef(filename, size, ref);
+        const mod = await import("@/lib/video");
+        const value = await mod.registerVideoUrl(cloudMediaUrl(ref), {
+          filename,
+          size,
+        });
+        pushGraph(getGraphSnapshot());
+        const node = spawnNode("video-source", flowPos);
+        node.data.params = { ...node.data.params, file: value };
+        node.data.name = name;
+        placeSourceNode(node, name, opts);
+      };
+      // Encoded image/SVG bytes (either library) → Source node.
+      const insertMediaBlob = async (
+        blob: Blob,
+        filename: string,
+        mime: string,
+        name: string
+      ) => {
+        if (mime === "image/x-exr") {
+          // EXR stills don't decode in the browser — build the same
+          // envelope the param control's picker builds (header-parsed
+          // layers, bytes kept as the canonical source).
+          const { parseExrHeader, groupExrLayers } = await import(
+            "@/engine/exr"
+          );
+          const header = parseExrHeader(await blob.arrayBuffer());
+          const value: import("@/engine/types").ExrImageParamValue = {
+            kind: "exr",
+            blob: new File([blob], filename, { type: "image/x-exr" }),
+            filename,
+            layers: groupExrLayers(header),
+            width: header.parts[0]?.width ?? 0,
+            height: header.parts[0]?.height ?? 0,
+          };
+          pushGraph(getGraphSnapshot());
+          const node = spawnNode("image-source", flowPos);
+          node.data.params = { ...node.data.params, file: value };
+          node.data.name = name;
+          placeSourceNode(node, name, opts);
+          return;
+        }
+        // Image / SVG: the bytes ride the file-drop path — the project
+        // copies them into its own prefix on save, exactly as a freshly
+        // dropped file would.
+        await onAddFileNode(
+          new File([blob], filename, { type: mime }),
+          flowPos,
+          opts
+        );
+      };
       try {
         // Library items (090326_asset-library.md §5).
         if (payload.source === "preset") {
-          insertUserPresetAt(payload.ref, flowPos);
+          insertUserPresetAt(payload.ref, flowPos, opts);
+          return;
+        }
+        if (payload.source === "project") {
+          const item = getProjectAsset(payload.ref);
+          if (!item)
+            return void flashToast("That asset is no longer in this project.");
+          if (item.fragment) {
+            insertPresetFragmentAt(item.fragment, flowPos, opts);
+            return;
+          }
+          if (item.video) {
+            await insertCloudVideo(
+              item.video,
+              item.video.filename,
+              item.video.size,
+              item.name
+            );
+            return;
+          }
+          if (!item.media) return void flashToast("Couldn't resolve that asset.");
+          const blob = await projectAssetBlob(item);
+          await insertMediaBlob(
+            blob,
+            item.media.filename,
+            item.media.mime || blob.type,
+            item.name
+          );
           return;
         }
         if (payload.source === "library") {
@@ -5265,60 +5462,18 @@ function EffectsShell({
           if (row.kind === "video") {
             if (!row.owner)
               return void flashToast("That video asset has no cloud reference.");
-            // Seed the registry FIRST: serializeParams looks the ref up by
-            // (filename, size), so the next save carries cloud:{…} and the
-            // project never re-uploads the clip (decision 12).
-            seedCloudMediaRef(filename, row.size, {
-              hash: row.hash,
-              ext: row.ext,
-              owner: row.owner,
-            });
-            const mod = await import("@/lib/video");
-            const value = await mod.registerVideoUrl(url, {
+            await insertCloudVideo(
+              { hash: row.hash, ext: row.ext, owner: row.owner },
               filename,
-              size: row.size,
-            });
-            pushGraph(getGraphSnapshot());
-            const node = spawnNode("video-source", flowPos);
-            node.data.params = { ...node.data.params, file: value };
-            node.data.name = row.name;
-            placeSourceNode(node, row.name);
+              row.size,
+              row.name
+            );
             return;
           }
           const resp = await fetch(url);
           if (!resp.ok)
             throw new Error(`Couldn't fetch "${row.name}" (${resp.status}).`);
-          const blob = await resp.blob();
-          if (row.kind === "image" && row.mime === "image/x-exr") {
-            // EXR stills don't decode in the browser — build the same
-            // envelope the param control's picker builds (header-parsed
-            // layers, bytes kept as the canonical source).
-            const { parseExrHeader, groupExrLayers } = await import(
-              "@/engine/exr"
-            );
-            const header = parseExrHeader(await blob.arrayBuffer());
-            const value: import("@/engine/types").ExrImageParamValue = {
-              kind: "exr",
-              blob: new File([blob], filename, { type: "image/x-exr" }),
-              filename,
-              layers: groupExrLayers(header),
-              width: header.parts[0]?.width ?? 0,
-              height: header.parts[0]?.height ?? 0,
-            };
-            pushGraph(getGraphSnapshot());
-            const node = spawnNode("image-source", flowPos);
-            node.data.params = { ...node.data.params, file: value };
-            node.data.name = row.name;
-            placeSourceNode(node, row.name);
-            return;
-          }
-          // Image / SVG: the bytes ride the file-drop path — the project
-          // copies them into its own prefix on save, exactly as a freshly
-          // dropped file would.
-          await onAddFileNode(
-            new File([blob], filename, { type: row.mime }),
-            flowPos
-          );
+          await insertMediaBlob(await resp.blob(), filename, row.mime, row.name);
           return;
         }
         if (payload.kind === "font") {
@@ -5341,14 +5496,18 @@ function EffectsShell({
           }
           node.data.name =
             (payload.name || "Text").replace(/\.[^/.]+$/, "") || "Text";
-          placeSourceNode(node, node.data.name);
+          placeSourceNode(node, node.data.name, opts);
           return;
         }
         // Folder media → its Source node (reuse the file-drop path).
         const folder = assetsFolderRef.current;
         const r = folder ? await folder.read(payload.ref) : null;
         if (!r) return void flashToast("Couldn't read that asset.");
-        await onAddFileNode(new File([r.bytes], r.name, { type: r.type }), flowPos);
+        await onAddFileNode(
+          new File([r.bytes], r.name, { type: r.type }),
+          flowPos,
+          opts
+        );
       } catch (err) {
         flashToast(err instanceof Error ? err.message : "Couldn't add asset");
       }
@@ -5361,6 +5520,7 @@ function EffectsShell({
       onAddFileNode,
       flashToast,
       insertUserPresetAt,
+      insertPresetFragmentAt,
     ]
   );
 
@@ -5373,6 +5533,19 @@ function EffectsShell({
         x: base.x + (Math.random() - 0.5) * 24,
         y: base.y + (Math.random() - 0.5) * 24,
       });
+    },
+    [onAddAssetNode]
+  );
+  // Assets panel card menu → Layer From Asset: a new layer on top of the
+  // active composition's stack with the asset inside, wired to the layer's
+  // output (a preset's unconsumed image output, likewise).
+  const handleInsertLibraryItemAsLayer = useCallback(
+    (payload: AssetDragPayload) => {
+      void onAddAssetNode(
+        payload,
+        lastPanePointerRef.current ?? { x: 200, y: 200 },
+        { asLayer: true }
+      );
     },
     [onAddAssetNode]
   );
@@ -6485,16 +6658,26 @@ function EffectsShell({
       nodesRef.current,
       selected.map((n) => n.id)
     );
-    const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+    const { nodes: newNodes, edges: newEdges, idMap } = cloneSubgraph(
       nodesRef.current.filter((n) => ids.has(n.id)),
       edgesRef.current,
       { x: 32, y: 32 }
+    );
+    // A duplicated layer keeps an outside parent (§7). Layers only: other
+    // nodes' `in:transform` wires from outside the selection still drop,
+    // as before. The full idMap decides "outside", so a parent duplicated
+    // alongside (even a hand-wired Gizmo) isn't wired twice.
+    const parentEdges = carriedParentEdges(
+      edgesRef.current,
+      idMap,
+      (orig) =>
+        nodesRef.current.find((n) => n.id === orig)?.data.defType === LAYER_TYPE
     );
     setNodes((prev) => [
       ...prev.map((n) => ({ ...n, selected: false })),
       ...newNodes,
     ]);
-    setEdges((prev) => [...prev, ...newEdges]);
+    setEdges((prev) => [...prev, ...newEdges, ...parentEdges]);
   }, [pushGraph, getGraphSnapshot, setNodes, setEdges]);
 
   // Shift+M: wrap the selected nodes' image/mask outputs in a new Merge
@@ -7135,7 +7318,7 @@ function EffectsShell({
       // curve point drags) into a single undo entry keyed by node+param.
       // Paint param updates are internal-only — pipeline snapshots and undo
       // restores trigger them — and are excluded to keep those flows linear.
-      if (paramName !== "paint") {
+      if (!PAINT_SURFACE_PARAMS.includes(paramName)) {
         pushGraph(
           getGraphSnapshot(),
           coalesceKey ?? `param:${nodeId}:${paramName}`
@@ -8469,8 +8652,21 @@ function EffectsShell({
           )
             .map((n) => n.id)
             .filter((id) => !dead.has(id));
-          const survivors = nodesRef.current.filter((n) => !dead.has(n.id));
-          const survEdges = edgesRef.current.filter(
+          // Children of a deleted parent are unparented in place first
+          // (§7), on the full graph, before the parent's edges go.
+          const unparented = unparentChildrenOf(
+            nodesRef.current,
+            edgesRef.current,
+            dead,
+            playbackClock.get().tick
+          );
+          if (unparented.jumped.length > 0) {
+            flashToast(
+              `${unparented.jumped.length} child layer(s) moved when unparented: ${jumpReasonText(unparented.jumped[0].reason)}.`
+            );
+          }
+          const survivors = unparented.nodes.filter((n) => !dead.has(n.id));
+          const survEdges = unparented.edges.filter(
             (e) => !dead.has(e.source) && !dead.has(e.target)
           );
           const res = reorderLayers(survivors, survEdges, order, activeCompositionIdRef.current);
@@ -8493,7 +8689,7 @@ function EffectsShell({
       }
       onNodesChange(changes);
     },
-    [onNodesChange, onEdgesChange, pushGraph, getGraphSnapshot, setNodes, setEdges]
+    [onNodesChange, onEdgesChange, pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast]
   );
   const onEdgesChangeWithHistory = useCallback(
     (changes: EdgeChange[]) => {
@@ -9320,6 +9516,57 @@ function EffectsShell({
       setParamView("node");
     },
     [setNodes, setSelectedId, setParamView]
+  );
+  // Layers editor multi-select (101526_layer-transforms-parenting.md §5):
+  // `ids` becomes the whole node selection (Cmd-click toggles, Shift-click
+  // ranges — the editor resolves those); `primaryId` drives the
+  // ParamPanel and the single-node tools. Empty `ids` clears.
+  const handleSelectLayers = useCallback(
+    (ids: string[], primaryId: string | null) => {
+      const want = new Set(ids);
+      setNodes((prev) =>
+        prev.map((n) =>
+          !!n.selected === want.has(n.id)
+            ? n
+            : { ...n, selected: want.has(n.id) }
+        )
+      );
+      setSelectedId(primaryId);
+      if (primaryId) setParamView("node");
+    },
+    [setNodes, setSelectedId, setParamView]
+  );
+
+  // Layers editor Parent column (101526_layer-transforms-parenting.md §7):
+  // rewires `parent.aux:transform → child.in:transform` and, unless
+  // `keepInPlace` is off (Alt-pick, AE's jump), rewrites the child's TRS so
+  // it holds its placement at the playhead. One undo step; a hold that
+  // couldn't happen says why.
+  const handleSetLayerParent = useCallback(
+    (childId: string, parentId: string | null, keepInPlace: boolean) => {
+      const r = setLayerParent(
+        nodesRef.current,
+        edgesRef.current,
+        childId,
+        parentId,
+        playbackClock.get().tick,
+        { keepInPlace }
+      );
+      if (!r.ok) {
+        flashToast(r.error);
+        return;
+      }
+      if (r.nodes === nodesRef.current && r.edges === edgesRef.current) return;
+      pushGraph(getGraphSnapshot());
+      setNodes(r.nodes);
+      setEdges(r.edges);
+      if (r.jumped) {
+        flashToast(
+          `${parentId ? "Parented" : "Unparented"} without holding position: ${jumpReasonText(r.jumped)}.`
+        );
+      }
+    },
+    [flashToast, pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
 
   // Cmd+Shift+D: split a layer at the playhead into two distinct layers
@@ -12043,6 +12290,9 @@ function EffectsShell({
     if (viewportGuidesRef.current.length > 0) {
       graph.viewportGuides = viewportGuidesRef.current;
     }
+    // The project's own asset library rides the same way (omitted when
+    // empty); its image/SVG envelopes are extracted with the node media.
+    await attachProjectLibrary(graph);
     // Live-link design rides the same way (omitted when never authored).
     // The designer's live draft wins over committed state — a ⌘S taken
     // while designing captures what's on screen.
@@ -12409,6 +12659,7 @@ function EffectsShell({
             (saved.graph as { viewportGuides?: unknown }).viewportGuides
           )
         );
+        applySavedProjectLibrary(saved.graph);
         // Live-link design: absent stays null, present is validated.
         const rawLiveDesign = (saved.graph as { liveDesign?: unknown })
           .liveDesign;
@@ -12593,6 +12844,9 @@ function EffectsShell({
       if (viewportGuidesRef.current.length > 0) {
         graph.viewportGuides = viewportGuidesRef.current;
       }
+      // The project's own asset library rides the same way (omitted when
+      // empty); its image/SVG envelopes are extracted with the node media.
+      await attachProjectLibrary(graph);
       // Live-link design rides the same way (omitted when never
       // authored); the designer's live draft wins, as in the cloud path.
       const liveDesignToFile =
@@ -12789,6 +13043,7 @@ function EffectsShell({
             (graph as { viewportGuides?: unknown }).viewportGuides
           )
         );
+        applySavedProjectLibrary(graph);
         // Live-link design: absent stays null, present is validated.
         const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
         setLiveDesign(
@@ -12872,6 +13127,9 @@ function EffectsShell({
       if (viewportGuidesRef.current.length > 0) {
         graph.viewportGuides = viewportGuidesRef.current;
       }
+      // The project's own asset library rides the same way (omitted when
+      // empty); its image/SVG envelopes are extracted with the node media.
+      await attachProjectLibrary(graph);
       if (liveDesignRef.current) {
         graph.liveDesign = liveDesignRef.current;
       }
@@ -12970,6 +13228,7 @@ function EffectsShell({
             (graph as { viewportGuides?: unknown }).viewportGuides
           )
         );
+        applySavedProjectLibrary(graph as SavedProject);
         const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
         setLiveDesign(
           rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
@@ -13363,6 +13622,7 @@ function EffectsShell({
     setSavedEasings([]);
     setLiveDesign(null);
     setViewportGuides(NO_VIEWPORT_GUIDES);
+    clearProjectLibrary();
     frameGraph();
     // Drop any survival snapshot from a prior session — otherwise a
     // docs round-trip after File → New would resurrect the graph
@@ -14098,15 +14358,17 @@ function EffectsShell({
     },
     [readNodeOutput, readPeekPixels, canvasRes]
   );
-  // Node context menu → Add to Assets (090326_asset-library.md §3.1).
-  // NodeEditor shows the row on Image / SVG / Video Source only; this pair
-  // decides availability (a reason renders the row disabled with it as
-  // the tooltip) and runs the import.
+  // Node context menu → Add to Assets ▸ Project / Server
+  // (090326_asset-library.md §3.1). NodeEditor shows the row on Image / SVG
+  // / Video Source only; this pair decides availability per library (a
+  // reason renders that submenu row disabled with it as the tooltip) and
+  // runs the import. The Project library needs no sign-in — except video,
+  // which is a cloud-media reference in either library.
   const addToAssetsDisabledReason = useCallback(
-    (nodeId: string): string | undefined => {
+    (nodeId: string, target: LibraryTarget): string | undefined => {
       const n = nodesRef.current.find((x) => x.id === nodeId);
       if (!n) return undefined;
-      if (!user) return "Sign in to use your asset library";
+      if (target === "server" && !user) return "Sign in to use your asset library";
       if (n.data.params.file == null) return "Load a file first";
       if (n.data.defType === "video-source" && !entitlements.cloudMedia)
         return "Video assets need cloud media, which isn't enabled for this account";
@@ -14115,12 +14377,12 @@ function EffectsShell({
     [user, entitlements.cloudMedia]
   );
   const handleAddNodeToAssets = useCallback(
-    async (nodeId: string) => {
+    async (nodeId: string, target: LibraryTarget) => {
       const n = nodesRef.current.find((x) => x.id === nodeId);
       if (!n) return;
       const name = n.data.displayName ?? n.data.name;
       const v = n.data.params.file as unknown;
-      let res: AddAssetResult;
+      let res: LibraryAddResult;
       try {
         if (n.data.defType === "image-source") {
           const isExr =
@@ -14132,27 +14394,29 @@ function EffectsShell({
           res = await importImageSourceValue(
             v as ImageBitmap | import("@/engine/types").ExrImageParamValue,
             name,
-            () => captureNodeThumbnail(nodeId)?.canvas ?? null
+            () => captureNodeThumbnail(nodeId)?.canvas ?? null,
+            target
           );
         } else if (n.data.defType === "svg-source") {
           const sv = v as import("@/engine/types").SvgFileParamValue | null;
           if (!sv?.subpaths) return void flashToast("Load an SVG first.");
-          res = await importSvgSourceValue(sv, name);
+          res = await importSvgSourceValue(sv, name, target);
         } else if (n.data.defType === "video-source") {
           const vv = v as import("@/engine/types").VideoFileParamValue | null;
           if (!vv?.video) return void flashToast("Load a video first.");
-          res = await importVideoSourceValue(vv, name);
+          res = await importVideoSourceValue(vv, name, target);
         } else return;
       } catch (err) {
         flashToast(err instanceof Error ? err.message : "Couldn't add to assets");
         return;
       }
+      const where = target === "project" ? "project assets" : "server assets";
       if (!res.ok) flashToast(res.error);
       else
         flashToast(
           res.duplicate
-            ? `"${res.row.name}" is already in your assets`
-            : `added "${res.row.name}" to your assets`
+            ? `"${res.name}" is already in your ${where}`
+            : `added "${res.name}" to your ${where}`
         );
     },
     [flashToast, captureNodeThumbnail]
@@ -14570,6 +14834,7 @@ function EffectsShell({
           folderName={assetsFolder?.name ?? null}
           onPickFolder={handlePickAssetsFolder}
           onInsert={handleInsertLibraryItem}
+          onInsertAsLayer={handleInsertLibraryItemAsLayer}
           onToast={flashToast}
         />
       );
@@ -14915,6 +15180,7 @@ function EffectsShell({
       folderName={assetsFolder?.name ?? null}
       onPickFolder={handlePickAssetsFolder}
       onInsert={handleInsertLibraryItem}
+      onInsertAsLayer={handleInsertLibraryItemAsLayer}
       onToast={flashToast}
     />
   ) : (
@@ -15068,18 +15334,22 @@ function EffectsShell({
                 >
                   fit
                 </DockButton>
-                <DockButton
-                  active={trackEasingEditorOpen}
-                  onClick={() => setTrackEasingEditorOpen((v) => !v)}
-                  title={
-                    trackEasingEditorOpen
-                      ? "Close the easing editor"
-                      : "Easing editor — shape one curve and apply it to every selected keyframe pair"
-                  }
-                >
-                  easing
-                </DockButton>
               </>
+            )}
+            {/* The easing overlay works in both timeline editors; one
+                flag, so it stays open across a Tracks ↔ Layers switch. */}
+            {(dockTab === "tracks" || dockTab === "layers") && (
+              <DockButton
+                active={trackEasingEditorOpen}
+                onClick={() => setTrackEasingEditorOpen((v) => !v)}
+                title={
+                  trackEasingEditorOpen
+                    ? "Close the easing editor"
+                    : "Easing editor — shape one curve and apply it to every selected keyframe pair"
+                }
+              >
+                easing
+              </DockButton>
             )}
             {dockTab === "graph" && (
               <>
@@ -15120,8 +15390,11 @@ function EffectsShell({
               onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
               onClipChange={onClipChange}
               onSelectLayer={handleSelectLayer}
+              onSelectLayers={handleSelectLayers}
               onDiveLayer={handleDiveIntoGroup}
               onToggleVisibility={handleToggleLayerVisibility}
+              onParamChange={onParamChange}
+              onSetLayerParent={handleSetLayerParent}
               onReorder={handleReorderLayers}
               onAddLayer={handleAddLayerFromEditor}
               onSplitLayer={handleSplitLayer}
@@ -15134,6 +15407,12 @@ function EffectsShell({
               initialKeyframeSelection={timelineKfSelection}
               markers={activeMarkers}
               onMarkersChange={setActiveMarkers}
+              easingEditorOpen={trackEasingEditorOpen}
+              onEasingEditorOpenChange={setTrackEasingEditorOpen}
+              savedEasings={savedEasings}
+              onSaveEasing={saveEasing}
+              onRenameEasing={renameEasing}
+              onDeleteEasing={deleteEasing}
             />
           ) : dockTab === "tracks" ? (
             <TrackEditor
@@ -15420,7 +15699,10 @@ function EffectsShell({
             onPreviewScaleChange={setPreviewScale}
             trailing={
               <>
-                {activeTransformNode && (
+                {/* Not for layers: flip writes a negative scale, which
+                    layer scale (clamped positive) can't represent. */}
+                {activeTransformNode &&
+                  activeTransformNode.data.defType !== LAYER_TYPE && (
                   <TransformContextActions
                     // Flip = invert the corresponding scale around the pivot.
                     // The transform shader applies scale around pivot, so a
@@ -15638,9 +15920,15 @@ function EffectsShell({
               canvasRes={canvasRes}
               previewCanvas={canvasRef.current}
               onParamChange={onParamChange}
-              onStrokeCommit={(nodeId, canvas, before) =>
-                pushPaint({ nodeId, canvas, imageData: before })
+              hasInput={edges.some(
+                (e) =>
+                  e.target === activePaintNode.id &&
+                  e.targetHandle === "in:image"
+              )}
+              onStrokeCommit={(nodeId, surfaces) =>
+                pushPaint({ nodeId, surfaces })
               }
+              rulersVisible={rulersVisible}
             />
           )}
           {showGizmos &&

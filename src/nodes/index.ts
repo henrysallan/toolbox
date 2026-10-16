@@ -199,6 +199,7 @@ import { layerNode } from "./group/layer";
 import { iterateNode } from "./group/iterate";
 import { iterateInputNode } from "./group/iterate-input";
 import { iterateFeedNode } from "./group/iterate-feed";
+import { layerXformNode } from "./group/layer-xform";
 import { repeatNode } from "./group/repeat";
 import { repeatInputNode } from "./group/repeat-input";
 import { foreachNode } from "./group/foreach";
@@ -609,6 +610,7 @@ export function registerAllNodes() {
   registerNode(iterateNode);
   registerNode(iterateInputNode);
   registerNode(iterateFeedNode);
+  registerNode(layerXformNode);
   registerNode(repeatNode);
   registerNode(repeatInputNode);
   registerNode(foreachNode);

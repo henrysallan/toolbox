@@ -19,7 +19,7 @@ import {
   isLocalPivotSpace,
   localPivot,
 } from "@/engine/transform-pivot";
-import { GIZMO_REST_AABB } from "@/engine/transform-value";
+import { GIZMO_REST_AABB, isLegacySkew } from "@/engine/transform-value";
 import {
   anchorTrackId,
   gpointXKey,
@@ -223,6 +223,14 @@ export function SplineEditorOverlayAtTick({
   );
 }
 
+// Image nodes whose TRS is aspect-rigid (101526_aspect-rigid-rotation.md);
+// Transform joins them when its input has no geometry bounds.
+const FRAME_GIZMO_TYPES: ReadonlySet<string> = new Set([
+  "image-source",
+  "video-source",
+  "skia-image",
+]);
+
 // Transform gizmo + its motion path, reading effective (keyframe-aware)
 // params at the subscribed tick.
 export function TransformGizmoAtTick({
@@ -280,6 +288,13 @@ export function TransformGizmoAtTick({
       boundsMax = [bbox.maxX, bbox.maxY];
     }
   }
+  // Aspect-rigid image nodes: the box is the frame (their canvas-sized
+  // image), not the unit square. A legacySkew node's per-axis render can't
+  // be drawn by this rigid gizmo, so it keeps the old box.
+  const frameBounds =
+    !isLegacySkew(node.data.params) &&
+    (FRAME_GIZMO_TYPES.has(node.data.defType) ||
+      (node.data.defType === "transform" && !boundsMin));
   // Motion-path anchor = the transform's position (translate + world pivot),
   // so the current-frame diamond coincides with the gizmo's pivot marker.
   // In source (local) space the stored pivot is a bbox fraction.
@@ -322,6 +337,7 @@ export function TransformGizmoAtTick({
         rotate={effective("rotate", 0)}
         boundsMin={boundsMin}
         boundsMax={boundsMax}
+        frameBounds={frameBounds}
         pivotSpace={isGizmo || !localSpace ? "global" : "local"}
         boxTranslate={multiGizmo}
         snapEnabled={snapEnabled}
@@ -507,7 +523,7 @@ export function PrimitiveGizmoAtTick({
           }
           toCenter={mpToCenter}
           fromCenter={mpFromCenter}
-          aspectCorrect={false}
+          aspectCorrect={mp.aspectCorrect ?? false}
           ticksPerFrame={ticksPerFrame}
           onPointDrag={(tick, xVal, yVal) =>
             onMotionPathPointChange(

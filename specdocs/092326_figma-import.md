@@ -85,7 +85,7 @@ with the frame's aspect.
 | Line / open vector | Strokes its centerline (`strokePaths` — LINE's segment, VECTOR's `vectorPaths`); closed vectors stroke the fill outline. |
 | Stroke cap / join / miter / dashes | butt·round·square / miter·bevel·round / `miter_limit` / `style: dashed` with the first dash-gap pair. |
 | Blend modes | By name; HUE / SATURATION / COLOR / LUMINOSITY → Normal (noted). |
-| Image fill | Image Source (`fit: stretch` + TRS onto the image's rect: FILL = cover, FIT = contain, CROP via `inv(imageTransform)`) → Rasterize Spline `fill` input (`fill_fit: window`), which clips it to any shape. Paint opacity → the layer's opacity. A rotated / flipped placement is BAKED into the bitmap (`FigmaBitmapOp`, applied by `import.ts`) and placed on its axis-aligned bounding box — Image Source's own `rotate` works in per-axis uv and skews on any non-square comp. |
+| Image fill | Image Source (`fit: stretch` + TRS onto the image's rect: FILL = cover, FIT = contain, CROP via `inv(imageTransform)`) → Rasterize Spline `fill` input (`fill_fit: window`), which clips it to any shape. Paint opacity → the layer's opacity. A rotated / flipped placement is BAKED into the bitmap (`FigmaBitmapOp`, applied by `import.ts`) and placed on its axis-aligned bounding box. This was required while Image Source's `rotate` worked in per-axis uv and skewed on non-square comps; since v13 it is rigid (101526_aspect-rigid-rotation.md), so live rotation is now possible, but switching the importer is a follow-up. Image Source's `translateY` is width-relative, so `placeImage` writes `(cy − H/2) / W`. |
 | Video / pattern / shader fill | Plugins can't read their content: the plugin exports the layer as a still (JPG for a plain opaque rectangle, else PNG) → Image Source. |
 | Group / frame | FLATTENS into the parent stack unless compositing needs isolation: opacity over several layers, a non-normal blend, a NORMAL (non-pass-through) group with a blend inside, or a clip that actually cuts something. Isolated → a nested Merge on a transparent base, feeding one parent layer that carries the opacity / blend. |
 | Clip content | The frame's contents in a nested Merge, matted by the frame outline (skipped when every child's render bounds sit inside a plain rect frame). |
@@ -150,10 +150,11 @@ segment and its original-case text.
   Spline's gradient fill (or Gradient → Color Ramp as a fill image for
   multi-subpath shapes). Today: average colour, noted.
 - **M2 — images, the rest.** TILE, image rotation / flips, filters
-  (exposure, contrast…), rotated images on non-square comps (Image Source's
-  rotate is per-axis uv, so it skews when W ≠ H).
-- **M3 — live text, the rest.** Rotated text as live text (needs the Text
-  node's rotate to be aspect-correct first), gradient / image fills on
+  (exposure, contrast…), rotated images on non-square comps (no longer
+  blocked: Image Source's rotate is rigid since v13,
+  101526_aspect-rigid-rotation.md).
+- **M3 — live text, the rest.** Rotated text as live text (the Text
+  node's rotate is aspect-correct since v13), gradient / image fills on
   text, per-range colour in ONE node if the Text node grows rich-text runs.
 - **M4 — effects + polish.** Drop / inner shadow, layer / background blur;
   auto-layout reverse z-order is already honoured.

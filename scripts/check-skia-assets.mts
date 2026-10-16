@@ -248,23 +248,56 @@ const mul = (a: number[], b: number[]) => {
 };
 const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
+// The groups from a drawing's root down to its Image, and the Image.
+function groupChain(root: SkiaNode | undefined): { groups: Extract<SkiaNode, { k: "group" }>[]; image?: Extract<SkiaNode, { k: "image" }> } {
+  const groups: Extract<SkiaNode, { k: "group" }>[] = [];
+  let n: SkiaNode | undefined = root;
+  while (n?.k === "group") {
+    groups.push(n);
+    n = n.children[0];
+  }
+  return { groups, image: n?.k === "image" ? n : undefined };
+}
+
 {
+  // Aspect-rigid (101526_aspect-rigid-rotation.md): the default nest.
   const scene = sceneAt("trsd");
-  const outer = scene?.root as Extract<SkiaNode, { k: "group" }> | undefined;
-  const inner = outer?.children[0] as Extract<SkiaNode, { k: "group" }> | undefined;
-  const image = inner?.children[0] as Extract<SkiaNode, { k: "image" }> | undefined;
+  const { groups, image } = groupChain(scene?.root);
+  const [outer, mid, shift] = groups;
   const asset = scene?.assets["image-trsi"];
+  const o = (H - W) / 2;
   check(
-    "drawing: Group (opacity, translate, scale (a, 1), origin) → Group (rotate, scale (sx / a, sy), origin) → Image over the canvas rect",
-    !!outer && outer.k === "group" && !!outer.opacity && !!outer.transform?.translate && !!inner?.transform?.rotate && image?.k === "image" && image.fit === "fill" && image.w.v === W && image.h.v === H
+    "drawing: Group (opacity, translate (0, (H − W) / 2)) → Group (translate, rotate, scale, origin) → Group (translate (0, −(H − W) / 2)) → Image over the canvas rect",
+    groups.length === 3 && !!outer.opacity && outer.transform?.translate?.[1].v === o && !outer.transform?.translate?.[1].ref && !!mid.transform?.rotate && shift.transform?.translate?.[1].v === -o && image?.k === "image" && image.fit === "fill" && image.w.v === W && image.h.v === H
   );
   check(
-    "every TRS bind is one param × a constant (exact tracks): translate × W/H, pivot × W/H, rotate × π/180, scaleX × 1/a",
-    outer?.transform?.translate?.[0].ref?.scale === W &&
-      outer?.transform?.translate?.[1].ref?.scale === H &&
-      inner?.transform?.origin?.[0].ref?.param === "pivotX" &&
-      inner?.transform?.rotate?.ref?.scale === Math.PI / 180 &&
-      inner?.transform?.scale?.[0].ref?.scale === 1 / (W / H)
+    "every TRS bind is one param × a constant (exact tracks): translate × W, pivot × W, rotate × π/180, scale × 1",
+    mid?.transform?.translate?.[0].ref?.scale === W &&
+      mid?.transform?.translate?.[1].ref?.scale === W &&
+      mid?.transform?.origin?.[0].ref?.param === "pivotX" &&
+      mid?.transform?.origin?.[1].ref?.scale === W &&
+      mid?.transform?.rotate?.ref?.scale === Math.PI / 180 &&
+      mid?.transform?.scale?.[0].ref?.param === "scaleX" &&
+      mid?.transform?.scale?.[0].ref?.scale === undefined
+  );
+  // legacySkew keeps the per-axis (shearing) split.
+  const legacyNodes: GraphNode[] = [
+    { id: "li", type: "skia-image", params: { opacity: 1, file: BMP, ...fxi.IMAGE_PAIRS.trs, legacySkew: true } },
+    { id: "ld", type: "skia-canvas", params: {} },
+  ];
+  const legacyEdges: GraphEdge[] = [{ id: "e", source: "li", sourceHandle: "out:primary", target: "ld", targetHandle: "in:scene" }];
+  const legacy = groupChain(sceneAt("ld", legacyNodes, legacyEdges)?.root);
+  const [lo, li] = legacy.groups;
+  check(
+    "legacySkew drawing: Group (opacity, translate, scale (a, 1), origin) → Group (rotate, scale (sx / a, sy), origin) → Image; translate × W/H, scaleX × 1/a",
+    legacy.groups.length === 2 &&
+      !!lo.opacity &&
+      lo.transform?.translate?.[0].ref?.scale === W &&
+      lo.transform?.translate?.[1].ref?.scale === H &&
+      li.transform?.origin?.[0].ref?.param === "pivotX" &&
+      li.transform?.rotate?.ref?.scale === Math.PI / 180 &&
+      li.transform?.scale?.[0].ref?.scale === 1 / (W / H) &&
+      legacy.image?.k === "image"
   );
   check(
     "the asset: the bitmap's original PNG as a blob: URL, 96×64, one per node",
@@ -283,7 +316,9 @@ const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
   // Group algebra: outer · inner · fit ≡ imageLocalMatrix, on several canvases.
   let worst = 0;
   let cases = 0;
-  const trsCases = [fxi.IMAGE_PAIRS.trs, fxi.IMAGE_PAIRS.contain, fxi.IMAGE_PAIRS.cvtrs, { fit: "contain", translateX: -0.2, translateY: 0.11, scaleX: 1.6, scaleY: 0.4, rotate: 137, pivotX: 0.1, pivotY: 0.9 }];
+  const extra = { fit: "contain", translateX: -0.2, translateY: 0.11, scaleX: 1.6, scaleY: 0.4, rotate: 137, pivotX: 0.1, pivotY: 0.9 };
+  const rigidCases = [fxi.IMAGE_PAIRS.trs, fxi.IMAGE_PAIRS.contain, fxi.IMAGE_PAIRS.cvtrs, extra];
+  const trsCases: Record<string, unknown>[] = [...rigidCases, ...rigidCases.map((c) => ({ ...c, legacySkew: true }))];
   for (const size of [[320, 180], [180, 320], [256, 256]] as [number, number][]) {
     for (const p of trsCases) {
       const nodes: GraphNode[] = [
@@ -292,10 +327,10 @@ const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
       ];
       const edges: GraphEdge[] = [{ id: "e", source: "ai", sourceHandle: "out:primary", target: "ad", targetHandle: "in:scene" }];
       const s = sceneAt("ad", nodes, edges, size);
-      const o = s?.root as any;
-      const m = mul(mul(transformMatrix(o.transform) ?? I3, transformMatrix(o.children[0].transform) ?? I3), rnFitMatrix(o.children[0].children[0].fit, 96, 64, size[0], size[1]));
+      const chain = groupChain(s?.root);
+      const m = mul(chain.groups.reduce((acc, g) => mul(acc, transformMatrix(g.transform) ?? I3), I3), rnFitMatrix(chain.image!.fit, 96, 64, size[0], size[1]));
       const fit = ia.rnImageFit(ia.imageFitParam(p.fit));
-      const want = ia.imageLocalMatrix({ width: 96, height: 64, fit, ...ia.imageTrsOf(p as any) }, size[0], size[1]);
+      const want = ia.imageLocalMatrix({ width: 96, height: 64, fit, ...ia.imageTrsOf(p as any), ...(p.legacySkew ? { legacySkew: true } : {}) }, size[0], size[1]);
       for (let i = 0; i < 9; i++) worst = Math.max(worst, Math.abs(m[i] - want[i]) / Math.max(1, Math.abs(want[i])));
       cases++;
     }
@@ -515,7 +550,7 @@ const effectReq = (g = fxi.imageEffectGraph(BMP), animation?: "worklet" | "baked
     const emitted = await import(pathToFileURL(path.join(tmp, "images.ts")).href);
     const child = plan!.children!.find((c) => c.kind === "image") as any;
     for (const [w, h] of [[512, 512], [390, 844], [1170 / 3, 2532 / 3], [320, 180], [1, 1]]) {
-      for (const tweak of [{}, { rotate: -71.3, pivotX: 0.13 }, { fit: "contain" as const, scaleX: 2.5 }, { fit: "cover" as const, rotate: 0, translateX: 0, translateY: 0, scaleX: 1, scaleY: 1 }]) {
+      for (const tweak of [{}, { rotate: -71.3, pivotX: 0.13 }, { rotate: -71.3, pivotY: 0.2, translateY: 0.1, legacySkew: true }, { fit: "contain" as const, scaleX: 2.5 }, { fit: "cover" as const, rotate: 0, translateX: 0, translateY: 0, scaleX: 1, scaleY: 1 }]) {
         const m = { ...ia.mappingOf(child.source), ...tweak };
         const a = emitted.imageMatrix(m, w, h) as number[];
         const b = ia.imageLocalMatrix(m, w, h);

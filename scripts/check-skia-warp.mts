@@ -295,15 +295,20 @@ const over = (s: V4, d: V4): V4 => {
 
 type Ref = (uv: [number, number], P: Record<string, any>, w: number, h: number, up: (q: [number, number]) => V4, mods?: Record<string, (q: [number, number]) => V4>) => V4;
 
-// TRANSFORM_FS
-const refTransform: Ref = (uv, P, _w, _h, up) => {
-  const piv = [P.pivotX, 1 - P.pivotY];
+// TRANSFORM_FS with Transform's uniforms (imageTrsUniforms: aspect-rigid,
+// translate / pivot Y converted from authored; legacySkew = raw, a = 1).
+const refTransform: Ref = (uv, P, w, h, up) => {
+  const a = P.legacySkew === true ? 1 : w / h;
+  const pivY = a === 1 ? P.pivotY : 0.5 + (P.pivotY - 0.5) * a;
+  const piv = [P.pivotX, 1 - pivY];
   let px = uv[0] - P.translateX - piv[0];
-  let py = uv[1] + P.translateY - piv[1];
+  let py = uv[1] + P.translateY * a - piv[1];
   const ang = P.rotate * DEG;
   const c = Math.cos(ang);
   const s = Math.sin(ang);
+  py /= a;
   [px, py] = [c * px - s * py, s * px + c * py];
+  py *= a;
   let q: [number, number] = [px / Math.max(P.scaleX, 1e-4) + piv[0], py / Math.max(P.scaleY, 1e-4) + piv[1]];
   const tile = P.tile === true;
   const lo: [number, number] = tile ? [-Math.max(P.tileLeft, 0), -Math.max(P.tileDown, 0)] : [0, 0];
@@ -457,6 +462,7 @@ const CASES: MathCase[] = [
   { label: "rotate 37°, scale 0.6×0.8, pivot (0.3, 0.6), translate", type: "skia-transform", ref: refTransform, params: { rotate: 37, scaleX: 0.6, scaleY: 0.8, pivotX: 0.3, pivotY: 0.6, translateX: 0.12, translateY: -0.07 } },
   { label: "tile repeat, uneven extents", type: "skia-transform", ref: refTransform, params: { rotate: -20, scaleX: 0.45, scaleY: 0.5, tile: true, tileLeft: 1, tileRight: 0.3, tileUp: 2, tileDown: 0.5 } },
   { label: "tile unfold", type: "skia-transform", ref: refTransform, params: { rotate: 15, scaleX: 0.4, scaleY: 0.55, translateX: 0.05, tile: true, tileUnfold: true } },
+  { label: "legacySkew: per-axis rotate 37°, pivot (0.3, 0.6), translate", type: "skia-transform", ref: refTransform, params: { rotate: 37, scaleX: 0.6, scaleY: 0.8, pivotX: 0.3, pivotY: 0.6, translateX: 0.12, translateY: -0.07, legacySkew: true } },
   { label: "mode x, center 0.37", type: "skia-mirror", ref: refMirror, params: { mode: "x", centerX: 0.37 }, alpha: 0.5 },
   { label: "mode both, no source", type: "skia-mirror", ref: refMirror, params: { mode: "both", centerX: 0.6, centerY: 0.45, includeSource: false }, alpha: 0.5 },
   { label: "radial 5 + kaleidoscope", type: "skia-mirror", ref: refMirror, params: { mode: "radial", count: 5, kaleidoscope: true, centerX: 0.45, centerY: 0.55 }, alpha: 0.5 },

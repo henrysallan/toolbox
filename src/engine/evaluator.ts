@@ -1049,9 +1049,14 @@ export function evaluateGraph(
               // shell: the blend content and the vector export tap. A gated
               // layer shows nothing, so neither interior branch should be
               // kept alive (gatedLayers holds layer ids only, so this can't
-              // catch another node type's `in:spline`).
+              // catch another node type's `in:spline`). Its own world
+              // transform (`in:__xform`) goes too — a gated layer
+              // composites nothing — but the layer-xform node stays alive
+              // whenever a child still pulls it (AE: an out-of-window
+              // parent still drives its children).
               ((e.targetHandle === "in:content" ||
-                e.targetHandle === "in:spline") &&
+                e.targetHandle === "in:spline" ||
+                e.targetHandle === "in:__xform") &&
                 gatedLayers.has(e.target) &&
                 !prerollLayers.has(e.target))
             )

@@ -12,6 +12,7 @@ import type {
   TextInstanceValue,
 } from "@/engine/types";
 import { aspectUncorrectY } from "@/engine/aspect";
+import { LEGACY_SKEW_PARAM, trsAspect } from "@/engine/transform-value";
 import { simplifyPolyline } from "@/engine/spline-math";
 import { computeSDF } from "@/engine/sdf";
 import { emptyElement, uploadCanvasToImage } from "@/engine/element";
@@ -90,7 +91,7 @@ export function resolveTextMetrics(
 // The built-in transform shader. Mostly identical to transform.ts but with an
 // extra Y-flip when sampling the rasterized 2D canvas, whose row 0 sits at
 // the top rather than the pipeline's bottom-origin convention.
-const TEXT_TRANSFORM_FS = `#version 300 es
+export const TEXT_TRANSFORM_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -98,6 +99,9 @@ uniform vec2 u_translate;
 uniform vec2 u_scale;
 uniform float u_angle;
 uniform vec2 u_pivot;
+// W / H: rotation runs in pixels (101526_aspect-rigid-rotation.md); 1.0 for
+// a legacySkew node. Translate / pivot stay uv01.
+uniform float u_aspect;
 out vec4 outColor;
 
 void main() {
@@ -107,7 +111,9 @@ void main() {
   vec2 p = uv - pivot;
   float c = cos(-u_angle);
   float s = sin(-u_angle);
+  p.y /= u_aspect;
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p.y *= u_aspect;
   p /= max(u_scale, vec2(0.0001));
   uv = p + pivot;
 
@@ -121,7 +127,7 @@ void main() {
 // Transform variant for an already-Y-up source (the image-fill composite
 // renders into a standard pooled image, unlike the row-0-top rasterTex). Same
 // math, no sample-time Y-flip.
-const TEXT_TRANSFORM_NOFLIP_FS = `#version 300 es
+export const TEXT_TRANSFORM_NOFLIP_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -129,6 +135,9 @@ uniform vec2 u_translate;
 uniform vec2 u_scale;
 uniform float u_angle;
 uniform vec2 u_pivot;
+// W / H: rotation runs in pixels (101526_aspect-rigid-rotation.md); 1.0 for
+// a legacySkew node. Translate / pivot stay uv01.
+uniform float u_aspect;
 out vec4 outColor;
 
 void main() {
@@ -138,7 +147,9 @@ void main() {
   vec2 p = uv - pivot;
   float c = cos(-u_angle);
   float s = sin(-u_angle);
+  p.y /= u_aspect;
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p.y *= u_aspect;
   p /= max(u_scale, vec2(0.0001));
   uv = p + pivot;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
@@ -302,6 +313,7 @@ function computePostSig(params: Record<string, unknown>): string {
     r: params.rotate,
     px: params.pivotX,
     py: params.pivotY,
+    ls: params.legacySkew,
   });
 }
 
@@ -712,6 +724,10 @@ function applyTransform(
       pivotX,
       pivotY
     );
+    gl.uniform1f(
+      gl.getUniformLocation(prog, "u_aspect"),
+      trsAspect(params, ctx.width, ctx.height)
+    );
   });
 }
 
@@ -737,7 +753,7 @@ export const textNode: NodeDefinition = {
     },
     gotchas: [
       "boxWidth/boxHeight are per-axis uv01 fractions of the working canvas (width/height respectively), not aspect-corrected canvas01; 1×1 is the full canvas.",
-      "translateX/Y, pivotX/Y, and rotate operate as raw per-axis UV offsets on the rasterized image (uv01), so rotate skews text on a non-square canvas.",
+      "translateX/Y and pivotX/Y are per-axis uv01 offsets on the raster; rotate is rigid in pixels (legacySkew on ≤v12 saves keeps the old rotation, which skews when W ≠ H).",
       "font_size, strokeWidth and letter_spacing default to raw pixels; units=% resolves them as a percent of canvas width, so the framing holds across comp resolutions and preview scales.",
       "sdf and spline aux build lazily only when consumed; dragging text while only primary/element are wired skips the JFA SDF and marching-squares contour work.",
       "A wired path or a maskDriven morph_mask axis forces a full re-rasterize every frame, bypassing the normal per-param signature cache.",
@@ -1146,6 +1162,7 @@ export const textNode: NodeDefinition = {
       step: 0.001,
       default: 0.5,
     },
+    LEGACY_SKEW_PARAM,
     // Stackable per-character animators (Type On / Opacity / Position / Scale /
     // Rotation / Tracking / Color). Each: enable toggle → min/max + a keyframable
     // 0–1 Amount + driver (field/cascade/uniform), based on character or word,

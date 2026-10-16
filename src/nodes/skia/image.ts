@@ -1,6 +1,7 @@
 import type { NodeDefinition, RenderContext, SkiaDrawValue, SkiaShaderValue } from "@/engine/types";
 import { canvasKit, canvasKitError, canvasKitReady, ensureCanvasKit } from "@/engine/skia/canvaskit";
 import { constExpr, mirrorParams } from "@/engine/skia/library";
+import { isLegacySkew } from "@/engine/transform-value";
 import { bindDegrees, WARP_DEG } from "@/engine/skia/library/helpers-warp";
 import { registerSkslFunction } from "@/engine/skia/library/registry";
 import { makeSceneAssetResolver, sceneAssetGeneration } from "@/engine/skia/scene-assets";
@@ -35,15 +36,24 @@ import { imageSourceNode } from "../source/image-source";
 //   primary  skia_draw   the React Native Skia <Image>: the file fitted to
 //                        the canvas rect (cover / contain / stretch → RN's
 //                        cover / contain / fill), inside two Groups that
-//                        apply Image Source's TRS. Image Source inverts its
-//                        TRS in per-axis uv space, so a rotation on a
-//                        non-square canvas SHEARS; in canvas px that is
+//                        apply Image Source's TRS. That TRS is aspect-rigid
+//                        (101526_aspect-rigid-rotation.md): in canvas px
+//                          T(t·W) · T(P) · R(θ) · diag(sx, sy) · T(−P),
+//                          P = (pivotX·W, pivotY·W + (H − W) / 2)
+//                        (translate and pivot Y width-relative), nested as
+//                        Group(translate (0, o)) › Group(origin
+//                        (pivotX·W, pivotY·W), translate t·W, rotate θ,
+//                        scale (sx, sy)) › Group(translate (0, −o)) with
+//                        o = (H − W) / 2. A legacySkew node keeps Image
+//                        Source's old per-axis TRS, which SHEARS on a
+//                        non-square canvas:
 //                          T(P) · T(t) · diag(a, 1) · R(θ) · diag(sx / a, sy) · T(−P)
-//                        (a = W / H), split as an outer Group (origin P,
-//                        translate t, scale (a, 1)) and an inner Group
-//                        (origin P, rotate θ, scale (sx / a, sy)). Every bind
-//                        is one param × a constant, so keyframed TRS exports
-//                        as exact tracks (BindRef.scale).
+//                        (a = W / H, P = pivot · size, t = translate · size),
+//                        split as an outer Group (origin P, translate t,
+//                        scale (a, 1)) and an inner Group (origin P, rotate
+//                        θ, scale (sx / a, sy)). Every bind is one param × a
+//                        constant either way, so keyframed TRS exports as
+//                        exact tracks (BindRef.scale).
 //   shader   skia_shader  the same picture as a fused-program input: FIT_FS
 //                        line for line (tbx.image.fit@1 below) over an image
 //                        LEAF — Skia's ImageShader of the file stretched over
@@ -62,13 +72,19 @@ import { imageSourceNode } from "../source/image-source";
 
 const IMAGE_FIT_SKSL = `float4 tbx_image_fit(float2 uv, float2 res, float2 inv_scale, int letterbox,
                      float translateX, float translateY, float scaleX, float scaleY,
-                     float rotate, float pivotX, float pivotY, float opacity) {
+                     float rotate, float pivotX, float pivotY, float opacity, int legacySkew) {
   // Image Source's FIT_FS: inverse TRS in output uv (screen → uv y-flip for
   // pivot and translate), the unit-square test, then the aspect fit.
-  float2 pivot = float2(pivotX, 1.0 - pivotY);
-  float2 translate = float2(translateX, -translateY);
+  // Aspect-rigid: translateY / pivotY authored (width-relative), rotation
+  // conjugated by a = W / H; legacySkew keeps per-axis (a = 1).
+  float a = legacySkew != 0 ? 1.0 : res.x / res.y;
+  float pivY = legacySkew != 0 ? pivotY : 0.5 + (pivotY - 0.5) * a;
+  float2 pivot = float2(pivotX, 1.0 - pivY);
+  float2 translate = float2(translateX, -translateY * a);
   float2 p = (uv - translate) - pivot;
+  p.y /= a;
   p = tbx_warp_rotate(p, cos(rotate), sin(rotate));
+  p.y *= a;
   float2 sc = float2(abs(scaleX) < 0.0001 ? 0.0001 : scaleX, abs(scaleY) < 0.0001 ? 0.0001 : scaleY);
   float2 q = p / sc + pivot;
   if (tbx_warp_outside(q, float2(0.0), float2(1.0))) return float4(0.0);
@@ -97,6 +113,7 @@ function registerImageFit() {
       { name: "pivotX", type: "float" as const },
       { name: "pivotY", type: "float" as const },
       { name: "opacity", type: "float" as const },
+      { name: "legacySkew", type: "int" as const },
     ],
     inputs: [{ name: "image", mode: "gather" as const, taps: 1 }],
     uses: ["tbx.warp.rotate", "tbx.warp.outside"],
@@ -140,8 +157,11 @@ function build(params: Record<string, unknown>, nodeId: string, W: number, H: nu
   }
   const asset = a.asset;
   const fit = imageFitParam(params.fit);
+  const legacy = isLegacySkew(params);
   const aspect = W / H;
-  const origin = (): [Bind<number>, Bind<number>] => [scaled(params, nodeId, "pivotX", 0.5, W), scaled(params, nodeId, "pivotY", 0.5, H)];
+  // Rigid: the pivot's Y is width-relative about the canvas center, so the
+  // middle Group's origin is pivotY·W and the outer pair shifts it by o.
+  const origin = (): [Bind<number>, Bind<number>] => [scaled(params, nodeId, "pivotX", 0.5, W), scaled(params, nodeId, "pivotY", 0.5, legacy ? H : W)];
   const image: SkiaNode = {
     k: "image",
     id: nodeId,
@@ -151,6 +171,27 @@ function build(params: Record<string, unknown>, nodeId: string, W: number, H: nu
     w: bindStatic(W),
     h: bindStatic(H),
     fit: rnImageFit(fit),
+  };
+  const opacity = bindParam(num(params.opacity, 1), nodeId, "opacity");
+  const o = (H - W) / 2;
+  const rigid: SkiaNode = {
+    k: "group",
+    id: nodeId,
+    transform: { translate: [bindStatic(0), bindStatic(o)] },
+    opacity,
+    children: [
+      {
+        k: "group",
+        id: nodeId,
+        transform: {
+          translate: [scaled(params, nodeId, "translateX", 0, W), scaled(params, nodeId, "translateY", 0, W)],
+          rotate: bindDegrees(params, nodeId, "rotate"),
+          scale: [bindParam(num(params.scaleX, 1), nodeId, "scaleX"), bindParam(num(params.scaleY, 1), nodeId, "scaleY")],
+          origin: origin(),
+        },
+        children: [{ k: "group", id: nodeId, transform: { translate: [bindStatic(0), bindStatic(-o)] }, children: [image] }],
+      },
+    ],
   };
   const inner: SkiaNode = {
     k: "group",
@@ -162,7 +203,7 @@ function build(params: Record<string, unknown>, nodeId: string, W: number, H: nu
     },
     children: [image],
   };
-  const draw: SkiaNode = {
+  const legacyDraw: SkiaNode = {
     k: "group",
     id: nodeId,
     transform: {
@@ -170,9 +211,10 @@ function build(params: Record<string, unknown>, nodeId: string, W: number, H: nu
       scale: [bindStatic(aspect), bindStatic(1)],
       origin: origin(),
     },
-    opacity: bindParam(num(params.opacity, 1), nodeId, "opacity"),
+    opacity,
     children: [inner],
   };
+  const draw = legacy ? legacyDraw : rigid;
   const fs = imageFitScale(fit, asset.width ?? 1, asset.height ?? 1, W, H);
   const fitDeps: BindRef[] = [{ node: nodeId, param: "fit" }];
   const p = imageTrsOf(params);
@@ -191,6 +233,7 @@ function build(params: Record<string, unknown>, nodeId: string, W: number, H: nu
       pivotX: bindParam(p.pivotX, nodeId, "pivotX"),
       pivotY: bindParam(p.pivotY, nodeId, "pivotY"),
       opacity: bindParam(num(params.opacity, 1), nodeId, "opacity"),
+      legacySkew: bindParam(legacy ? 1 : 0, nodeId, "legacySkew"),
     },
     inputs: {
       image: {
@@ -246,13 +289,14 @@ export const skiaImageNode: NodeDefinition = {
   facts: {
     space: {
       out: "pixels",
-      "param:translateX": "uv01",
-      "param:translateY": "uv01",
-      "param:pivotX": "uv01",
-      "param:pivotY": "uv01",
+      "param:translateX": "canvas01",
+      "param:translateY": "canvas01",
+      "param:pivotX": "canvas01",
+      "param:pivotY": "canvas01",
     },
     gotchas: [
-      "TRS is Image Source's: per-axis canvas fractions (Y-down) applied about the pivot after the fit, so a rotation on a non-square canvas shears exactly as Image Source does.",
+      "TRS is Image Source's, about the pivot after the fit: rigid in pixels, translateY / pivotY width-relative (Y-down).",
+      "legacySkew (set on ≤v12 saves) keeps the old per-axis TRS: it shears when W ≠ H and reads translateY / pivotY height-relative.",
       "The drawing's edges are anti-aliased by Skia where Image Source cuts hard (a rotated image differs in its 1-px edge band); the `shader` output keeps Image Source's hard edges.",
       "opacity fades the drawing (React Native Skia group opacity) and the shader's alpha; the preview image is faded by the evaluator like any image output.",
       "No EXR stills and no uv_in field: React Native Skia has no float image format or per-pixel warp for an <Image>.",
@@ -265,7 +309,7 @@ export const skiaImageNode: NodeDefinition = {
   noMaskInput: true,
   gatesOutputs: true,
   inputs: [],
-  params: mirrorParams(imageSourceNode, ["opacity", "file", "fit", "translateX", "translateY", "scaleX", "scaleY", "rotate", "pivotX", "pivotY"]),
+  params: mirrorParams(imageSourceNode, ["opacity", "file", "fit", "translateX", "translateY", "scaleX", "scaleY", "rotate", "pivotX", "pivotY", "legacySkew"]),
   linkedPairs: [{ a: "scaleX", b: "scaleY" }],
   primaryOutput: "skia_draw",
   auxOutputs: [

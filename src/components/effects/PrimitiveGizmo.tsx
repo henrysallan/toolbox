@@ -75,6 +75,9 @@ export interface PrimitiveMotionPath {
   y: string;
   toCenter?: (xVal: number, yVal: number) => { cx: number; cy: number };
   fromCenter?: (cx: number, cy: number) => { xVal: number; yVal: number };
+  // The position params are spline-space y (authored, pre-aspect), so the
+  // overlay applies aspectCorrectY to draw them and its inverse to write.
+  aspectCorrect?: boolean;
 }
 
 export interface PrimitiveGizmoAdapter {
@@ -366,39 +369,49 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
     },
   },
 
+  // Spline primitives: center y goes through aspectCorrectY and the
+  // half-height scales by the aspect (see splineAspect above).
   circle: {
     hideWhenWired: ["transform"],
-    motionPath: { x: "centerX", y: "centerY" },
-    read: (g) => ({
-      cx: g("centerX", 0.5),
-      cy: g("centerY", 0.5),
-      hx: g("radiusX", 0.25),
-      hy: g("radiusY", 0.25),
-    }),
-    write: (p) => {
+    motionPath: { x: "centerX", y: "centerY", aspectCorrect: true },
+    read: (g, env) => {
+      const a = splineAspect(env);
+      return {
+        cx: g("centerX", 0.5),
+        cy: aspectCorrectY(g("centerY", 0.5), a),
+        hx: g("radiusX", 0.25),
+        hy: g("radiusY", 0.25) * a,
+      };
+    },
+    write: (p, env) => {
+      const a = splineAspect(env);
       const out: Array<[string, number | string]> = [];
       if (p.cx !== undefined) out.push(["centerX", p.cx]);
-      if (p.cy !== undefined) out.push(["centerY", p.cy]);
+      if (p.cy !== undefined) out.push(["centerY", aspectUncorrectY(p.cy, a)]);
       if (p.hx !== undefined) out.push(["radiusX", p.hx]);
-      if (p.hy !== undefined) out.push(["radiusY", p.hy]);
+      if (p.hy !== undefined) out.push(["radiusY", p.hy / a]);
       return out;
     },
   },
   rectangle: {
     hideWhenWired: ["transform"],
-    motionPath: { x: "originX", y: "originY" },
-    read: (g) => ({
-      cx: g("originX", 0.5),
-      cy: g("originY", 0.5),
-      hx: g("width", 0.5) / 2,
-      hy: g("height", 0.5) / 2,
-    }),
-    write: (p) => {
+    motionPath: { x: "originX", y: "originY", aspectCorrect: true },
+    read: (g, env) => {
+      const a = splineAspect(env);
+      return {
+        cx: g("originX", 0.5),
+        cy: aspectCorrectY(g("originY", 0.5), a),
+        hx: g("width", 0.5) / 2,
+        hy: (g("height", 0.5) / 2) * a,
+      };
+    },
+    write: (p, env) => {
+      const a = splineAspect(env);
       const out: Array<[string, number | string]> = [];
       if (p.cx !== undefined) out.push(["originX", p.cx]);
-      if (p.cy !== undefined) out.push(["originY", p.cy]);
+      if (p.cy !== undefined) out.push(["originY", aspectUncorrectY(p.cy, a)]);
       if (p.hx !== undefined) out.push(["width", p.hx * 2]);
-      if (p.hy !== undefined) out.push(["height", p.hy * 2]);
+      if (p.hy !== undefined) out.push(["height", (p.hy / a) * 2]);
       return out;
     },
   },
@@ -487,19 +500,23 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
     hideWhenWired: ["transform", "center", "start", "end"],
     points: {
       connect: "open",
-      read: (g) => {
+      read: (g, env) => {
+        const a = splineAspect(env);
         const cx = g("centerX", 0.5);
         const cy = g("centerY", 0.5);
         const r = g("radius", 0.3);
         const a0 = (g("startAngle", 0) * Math.PI) / 180;
         const a1 = (g("endAngle", 270) * Math.PI) / 180;
+        const sy = (y: number) => aspectCorrectY(y, a);
         return [
-          { x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0), label: "Start" },
-          { x: cx, y: cy, label: "Center" },
-          { x: cx + r * Math.cos(a1), y: cy + r * Math.sin(a1), label: "End" },
+          { x: cx + r * Math.cos(a0), y: sy(cy + r * Math.sin(a0)), label: "Start" },
+          { x: cx, y: sy(cy), label: "Center" },
+          { x: cx + r * Math.cos(a1), y: sy(cy + r * Math.sin(a1)), label: "End" },
         ];
       },
-      write: (i, x, y, env) => {
+      write: (i, x, screenY, env) => {
+        const a = splineAspect(env);
+        const y = aspectUncorrectY(screenY, a);
         const raw = (name: string, fb: number) => {
           const v = env.getRaw(name);
           return typeof v === "number" && Number.isFinite(v) ? v : fb;
@@ -745,9 +762,8 @@ export default function PrimitiveGizmo({
   useEffect(() => {
     if (!drag || !rect) return;
     const onMove = (e: PointerEvent) => {
-      // Spline primitives rasterize [0,1]² straight to canvas pixels (no
-      // aspect correction), and the canvas displays at that same aspect —
-      // so node UV maps linearly to the displayed box.
+      // The box lives in screen UV (0..1 across the displayed canvas);
+      // adapters convert to and from their node's param space.
       const ux = (e.clientX - rect.left) / rect.width;
       const uy = (e.clientY - rect.top) / rect.height;
       const s = drag.start;

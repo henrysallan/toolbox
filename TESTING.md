@@ -20,6 +20,7 @@ Run these before claiming a change works. The first three are CI gates.
 | `npm run lint:ratchet` | ~90s | Fails only on errors **above** `scripts/lint-baseline.json`. |
 | `npm run check:shaders` | ~20s | GLSL compiles/links + blend equivalence. Needs Electron + GL. |
 | `npm run check:readback-async` | ~10s | `EngineBackend.readImagePixelsAsync` (PBO + fence) is byte-identical to the sync readback, never hands back a stale frame with one read in flight, and cancel/destroy leave GL clean. Needs Electron (SwiftShader). |
+| `npm run check:paint-canvas` | ~5s | The Paint editor's selection compositing against Chromium's real Canvas2D (101526_paint-selection-transform.md M1): combine modes (intersect must clear outside the shape), invert / all / none, the clipped-fill cross-fade on soft mask edges, delete + knockout, fill, the mask store's rescale, and strokes / erase+knockout clipped to a selection with undo regions that restore both surfaces. M2 floats: the composite under a selection (edit over input minus knockout, masked), lift hole + move + selection-follows-pixels, Alt-drag duplicate, cancel restore, fit-scaled paste. M3: a handle-scaled, a rotated and a flipped float each land where their matrix says. M4: lasso polygon combine/subtract, wand region with and without anti-alias, feather softening, exact expand/contract on a real mask, select-painted = layer alpha, and Fill matching a composite sample while writing the edit layer. Needs Electron. |
 | `npm run check:blend-gpu` | ~2min | Blend Intersections GPU field ≡ CPU reference (field/contour/temporal gates). Needs Electron + GL. |
 | `npm run bench:nodes` | ~2min | Per-node cost ranking. Needs Electron + hardware GL. |
 
@@ -66,6 +67,57 @@ that pair). Offline node tests should push each input through
   round trip + the untrusted-JSON sanitize gate.
 - `check-kernel`, `check-sim-preroll` — the vector kernel and simulation
   pre-roll predicate.
+- `check-gizmo-transform`, `check-layer-transform-math` — the `transform`
+  value. Compose order is world = parent ∘ local (local first); the gizmo
+  gate's rotating / scaling-parent and three-level cases catch the
+  pre-2026-10-15 reversed order, which pure translations can't.
+  `check-layer-transform-math` covers `composeOpsToCanvasAffine` (rigid in
+  pixels on 16:9, lands images where geometry lands) and
+  `decomposeAffineToTrs` (round trip, shear / mirror refusal, parenting
+  compensation), and the aspect-rigid image TRS
+  (101526_aspect-rigid-rotation.md): the shaders' inverse
+  (`imageTrsInverseUv`) ≡ `composeOpsToCanvasAffine` for Transform / Image /
+  Video, Text rigid with uv01 translate, `legacySkew` bit-identical to the
+  pre-v13 shader, and the gizmo's frame box on the image's corners. It still
+  prints the per-axis skew the `legacySkew` path keeps.
+- `check-aspect-rigid` — the v13 `legacySkew` migration (≤v12 nodes of
+  `LEGACY_SKEW_TYPES` pinned, v13 untouched, survives a re-save), the param
+  on every type and its Skia mirrors, and Transform's compute binding
+  rigid / wired / legacy uniforms on a stub GL. The GPU side is
+  `check:shaders` stage 6: a 45° pixel-square on 16:9 comes out as wide as
+  tall with `u_aspect = W/H` and sheared with 1.
+- `check-layer-transform` — layer transforms in the engine
+  (101526_layer-transforms-parenting.md M1), on a stub GL context that
+  records each layer's shader and uniforms. Covers: parity (a layer that
+  doesn't use its transform gets no `layer-xform` node and keeps its old
+  draw path); the flatten split (a child below its parent evaluates with no
+  cycle; gated and bypassed parents still drive children); three-level
+  composition; TRS keyframes; and the loop cut. The loop cut matters
+  because the evaluator's topo sort silently drops every node on or
+  downstream of a cycle, which blanks the frame with no error. The shader
+  half (identity ≡ Merge's pairwise blend in all 29 modes, and integer
+  shifts) is in `check:shaders`.
+- `check-layer-properties` — the Layers editor's property model
+  (`timeline/layer-properties.ts`, M2). Covers: the A / P / S / R / T / U
+  reveal state machine (bare key solos and a second press collapses; Shift
+  adds or removes; U per row from its keyed properties; the chevron's
+  "all"); grouped-lane display blocks (the union of member keys, with
+  member-tuple values); member-key selection; and D5's bar-slide key shift
+  from a drag-start snapshot. The row UI that drives it has no offline
+  gate: the editor needs sign-in.
+- `check-layer-pane` — the Layers label pane (`timeline/layer-pane.ts`,
+  M3). Covers the width clamp; which optional columns fit (Blend drops
+  first, then Parent, monotone in width); and per-viewer storage (round
+  trip, clamp on read, junk, and a missing or throwing storage that never
+  throws out).
+- `check-layer-parenting` — timeline parenting (`state/layer-parenting.ts`,
+  M4). Covers: the loop guard; keep-in-place for parent, re-parent with
+  the child below its parents, and unparent (a round trip restores the
+  TRS); a keyframed parent (held at the playhead); jumps (animated child,
+  shear from a non-uniform parent, Alt); refusals; deleting a parent
+  (children unparented in place, not adopted by the grandparent); the
+  duplicate and split rules; `parentLayerId` in root `get_graph`; and
+  `worldOpsAt` against the engine's own `layer-xform` evaluation.
 - `check-image-trace` — Image Trace SVG→spline mapping (image-pixel Y-down
   → canvas01 via `aspectUncorrectY`, fill color + driver) and the vendored
   VTracer WASM glue. Potrace (`esm-potrace-wasm`) is browser-only — Node
@@ -139,6 +191,36 @@ that pair). Offline node tests should push each input through
   the shader's hash → Gaussian draw has the right mean / std /
   decorrelation, and saved nodes migrate to `classic`. The GLSL itself
   compiles under `check:shaders`; the look is a live-app question.
+- `check-paint-input` — the Paint node's image input + knockout
+  (101526_paint-selection-transform.md M0), pure half: the optional `image`
+  input and hidden paint-typed `knockout` param; an UNWIRED Paint takes the
+  original blit path unchanged (same shader key/source, empty canvas clears
+  transparent, a stray knockout ignored); a wired one switches to the
+  composite and binds the input; and the paint-input registry (a request
+  bumps the fingerprint epoch, the next compute serves it via
+  `readImagePixels` at the requested size, null when unwired, waiters taken
+  once, unserved requests time out to null). Region requests (M2 lifts):
+  an input at canvas size reads just the crop on the GPU
+  (`readImageRegion`), any other size resamples fully and crops on the CPU,
+  both returning the rect's origin and pixels. The eraser cutting the input
+  and Flatten are live-app questions.
+- `check-paint-selection` — the Paint selection's pure geometry
+  (paint-editor/selection.ts, M1): mask bbox at the 50% threshold (empty =
+  no selection), the pixel-edge ant runs (rect = 4 runs, holes add their
+  own, total length = perimeter), the marquee rect (any drag direction,
+  Shift square, Alt from-center, outward snap, canvas clamp, null when off
+  canvas) and rect union; plus floating.ts's affine math (compose order,
+  placed-source bounds, centered scale-down-only paste fit), and M3's
+  transform.ts: corner scale proportional by default (Shift frees it), Alt
+  about the center, edges one axis, flipping through the anchor, rotation
+  about the content center with Shift's 15° snap, Cmd-edge skew, gizmo
+  hit-testing priority, rotated resize cursors, the matrix ⇄ readout round
+  trip (shear kept) and flips. M4: floodRegion (contiguous vs global,
+  tolerance, alpha participates), the exact distance transform behind
+  Expand / Contract (checked against brute force), growAlpha's soft round
+  edge, the wand's anti-alias keeping the 50% outline (bbox + ants
+  unchanged), snap45 and pointsBBox. The compositing half is
+  `check:paint-canvas`.
 - `check-node-facts` — every visible node carries a well-formed `facts`
   block (the NodeFacts mini-schema behind `description`: per-socket space,
   attributes read/written, gotchas) and the catalog DSL renders it. It

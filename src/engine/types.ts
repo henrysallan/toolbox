@@ -187,7 +187,9 @@ export type ImageValue = {
 export interface SkiaImageSource {
   asset: AssetIR;
   fit: "cover" | "contain" | "fill";
-  // Image Source's TRS: per-axis canvas fractions (Y-down), degrees.
+  // Image Source's TRS params (Y-down, degrees): aspect-rigid, translate /
+  // pivot Y width-relative; `legacySkew` = the ≤v12 per-axis canvas
+  // fractions (101526_aspect-rigid-rotation.md).
   translateX: number;
   translateY: number;
   scaleX: number;
@@ -195,6 +197,7 @@ export interface SkiaImageSource {
   rotate: number;
   pivotX: number;
   pivotY: number;
+  legacySkew?: boolean;
   // Outside the image: the edge texel (clamp) or transparent (decal).
   tile: "clamp" | "decal";
 }
@@ -1602,6 +1605,14 @@ export interface PaintParamValue {
   canvas: HTMLCanvasElement;
   snapshot: ImageBitmap | null;
 }
+
+// The Paint node's paint-typed params, i.e. its CPU surfaces
+// (101526_paint-selection-transform.md §1): `paint` is the straight-alpha
+// edit layer, `knockout` the mask (alpha 1 = hide the input) that lets the
+// eraser and pixel moves cut into a wired-in image. Both are editor-mutated
+// in place and refreshed through snapshot ImageBitmaps; neither is an undo
+// target of the graph lane (the paint lane owns their pixels).
+export const PAINT_SURFACE_PARAMS: readonly string[] = ["paint", "knockout"];
 
 // Brush settings for the Paint node's stamp engine (the `brush_settings`
 // param). Plain JSON; the node stores the full blob (not a preset reference)

@@ -623,7 +623,9 @@ function imageSourceFor(
 
 // An Image Source whose bitmap fills the axis-aligned rect `r` (root-frame
 // px): stretch maps the bitmap onto the canvas's unit square, the TRS
-// shrinks and moves that square onto the rect.
+// shrinks and moves that square onto the rect. Image Source's translateY is
+// width-relative (101526_aspect-rigid-rotation.md), so the vertical offset
+// divides by W; scale stays per-axis.
 function placeImage(
   ctx: Ctx,
   name: string,
@@ -634,7 +636,7 @@ function placeImage(
     file: bitmap,
     fit: "stretch",
     translateX: (r.x + r.w / 2) / ctx.W - 0.5,
-    translateY: (r.y + r.h / 2) / ctx.H - 0.5,
+    translateY: (r.y + r.h / 2 - ctx.H / 2) / ctx.W,
     scaleX: r.w / ctx.W,
     scaleY: r.h / ctx.H,
     rotate: 0,

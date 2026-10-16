@@ -15,10 +15,20 @@ export type GraphSnapshot = {
   activeCompositionId?: string;
 };
 
+// One paint action's pre-action pixels. An action records only the surfaces
+// it touched (the Paint node's edit layer, its knockout mask, …) and only
+// the region it changed: `imageData` covers the rect at (x, y) on `canvas`.
+// Full-canvas entries are just x = y = 0 at canvas size.
+export type PaintSurfaceSnapshot = {
+  canvas: HTMLCanvasElement;
+  x: number;
+  y: number;
+  imageData: ImageData;
+};
+
 export type PaintSnapshot = {
   nodeId: string;
-  canvas: HTMLCanvasElement;
-  imageData: ImageData;
+  surfaces: PaintSurfaceSnapshot[];
 };
 
 type GraphEntry = { kind: "graph"; snap: GraphSnapshot; coalesceKey?: string };
@@ -34,8 +44,8 @@ export interface UseHistoryArgs {
   getGraphSnapshot: () => GraphSnapshot;
   applyGraphSnapshot: (snap: GraphSnapshot) => void;
   // Called after paint pixels are restored so the caller can refresh the
-  // ImageBitmap snapshot that feeds the pipeline.
-  onPaintRestore: (nodeId: string, canvas: HTMLCanvasElement) => void;
+  // ImageBitmap snapshot of each restored canvas that feeds the pipeline.
+  onPaintRestore: (nodeId: string, canvases: HTMLCanvasElement[]) => void;
 }
 
 export interface History {
@@ -113,19 +123,28 @@ export function useHistory(args: UseHistoryArgs): History {
         applyRef.current(entry.snap);
         to.push({ kind: "graph", snap: current });
       } else {
-        const { canvas, nodeId, imageData } = entry.snap;
-        const c2d = canvas.getContext("2d");
-        if (!c2d) {
-          // Can't restore — drop the entry.
-          return true;
+        const { nodeId, surfaces } = entry.snap;
+        // Swap each recorded region with the pixels currently there, so the
+        // inverse entry covers exactly the same rects.
+        const inverse: PaintSurfaceSnapshot[] = [];
+        for (const { canvas, x, y, imageData } of surfaces) {
+          const c2d = canvas.getContext("2d");
+          if (!c2d) continue; // can't restore this surface — drop it
+          const current = c2d.getImageData(
+            x,
+            y,
+            imageData.width,
+            imageData.height
+          );
+          c2d.putImageData(imageData, x, y);
+          inverse.push({ canvas, x, y, imageData: current });
         }
-        const current = c2d.getImageData(0, 0, canvas.width, canvas.height);
-        c2d.putImageData(imageData, 0, 0);
-        to.push({
-          kind: "paint",
-          snap: { canvas, nodeId, imageData: current },
-        });
-        paintRef.current(nodeId, canvas);
+        if (inverse.length === 0) return true;
+        to.push({ kind: "paint", snap: { nodeId, surfaces: inverse } });
+        paintRef.current(
+          nodeId,
+          inverse.map((s) => s.canvas)
+        );
       }
       lastPushRef.current = null;
       return true;

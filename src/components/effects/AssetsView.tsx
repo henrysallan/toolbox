@@ -4,16 +4,24 @@
 // three mounts: the "assets" panel kind (with a kind chip), the parameter
 // panel via File → Assets, and the Project view's Comps/Assets pill.
 //
-// Primary section: the user's project-agnostic LIBRARY — images / SVGs /
-// videos from state/user-assets.ts plus node presets from
-// state/node-presets.ts, merged into one card grid. Cards drag into the
-// node editor (`application/x-toolbox-asset` — NodeEditor's drop handler
-// forwards any payload with a `ref`), double-click to insert at the last
-// pointer position, right-click for Rename / Replace Thumbnail / Delete.
-// OS files dropped anywhere on the panel upload into the library.
+// Two libraries, picked by the header's selector menu (which also holds
+// Upload Asset… / Refresh):
+//   - Project (the default): the open project's own library,
+//     state/project-library.ts — empty in a new project, saved with it.
+//   - Server: the user's project-agnostic library — images / SVGs /
+//     videos from state/user-assets.ts plus node presets from
+//     state/node-presets.ts.
+// Either shows as one card grid (or a row list — the header's grid/list
+// toggle, remembered per browser). Cards drag into the node editor
+// (`application/x-toolbox-asset` — NodeEditor's drop handler forwards any
+// payload with a `ref`), double-click to insert at the last pointer
+// position, right-click for Layer From Asset (a new layer holding it, wired
+// up) / Rename / Replace Thumbnail / Copy to the other library / Delete. OS files dropped anywhere on the panel upload into the
+// library on show.
 //
-// Below it, the June sections (archive/062926_assets.md) stay as they were:
-// "In project" (bundled fonts) and "Folder" (an external assets/ folder).
+// Under Project, the June sections (archive/062926_assets.md) stay as they
+// were: "In project" (bundled fonts) and "Folder" (an external assets/
+// folder).
 //
 // The panel reads the stores directly — the three mounts need no plumbing
 // beyond `onInsert` (graph access lives in EffectsApp) and `onToast`.
@@ -34,7 +42,14 @@ import {
   encodeThumbDataUrlWithinCap,
   normalizeThumbnailFile,
 } from "@/lib/asset-thumbnails";
-import { importFilesToLibrary } from "@/lib/asset-import";
+import {
+  copyProjectAssetToServer,
+  copyServerAssetToProject,
+  copyServerPresetToProject,
+  importFilesToLibrary,
+  type LibraryAddResult,
+  type LibraryTarget,
+} from "@/lib/asset-import";
 import {
   deleteAsset,
   loadUserAssets,
@@ -44,12 +59,21 @@ import {
   type UserAssetRow,
 } from "@/state/user-assets";
 import {
+  getUserNodePreset,
   removeUserNodePreset,
   renameUserNodePreset,
   setUserNodePresetThumbnail,
   useUserNodePresets,
   type UserNodePreset,
 } from "@/state/node-presets";
+import {
+  getProjectAsset,
+  removeProjectAsset,
+  renameProjectAsset,
+  setProjectAssetThumb,
+  useProjectLibrary,
+  type ProjectAsset,
+} from "@/state/project-library";
 import { MenuDropdown, type MenuItem } from "./MenuBar";
 import PresetNameModal from "./PresetNameModal";
 import { Spinner } from "./Spinner";
@@ -79,7 +103,7 @@ export const ASSET_DRAG_MIME = "application/x-toolbox-asset";
  * library row id / preset id / font family / folder read-ref by source.
  */
 export interface AssetDragPayload {
-  source: "bundled" | "folder" | "library" | "preset";
+  source: "bundled" | "folder" | "library" | "preset" | "project";
   kind: string;
   ref: string;
   name: string;
@@ -97,6 +121,8 @@ interface AssetsViewProps {
   kindMenu?: React.ReactNode;
   /** Double-click a card → insert at the last pointer position. */
   onInsert?: (payload: AssetDragPayload) => void;
+  /** Card menu → Layer From Asset: a new layer holding it, wired up. */
+  onInsertAsLayer?: (payload: AssetDragPayload) => void;
   onToast?: (message: string) => void;
 }
 
@@ -119,6 +145,29 @@ const KIND_LABEL: Record<LibraryKind, string> = {
   video: "vid",
   preset: "preset",
 };
+
+// Grid (thumbnail cards) or list (one row per item). Remembered per browser
+// — a convenience: the default is "grid" when storage is unavailable.
+type ViewMode = "grid" | "list";
+const VIEW_MODE_STORAGE_KEY = "toolbox.assets.view";
+
+function readViewMode(): ViewMode {
+  try {
+    return window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) === "list"
+      ? "list"
+      : "grid";
+  } catch {
+    return "grid";
+  }
+}
+
+function writeViewMode(v: ViewMode) {
+  try {
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, v);
+  } catch {
+    // storage blocked — the toggle still works for this mount
+  }
+}
 
 interface LibraryItem {
   id: string;
@@ -165,6 +214,30 @@ function itemFromPreset(p: UserNodePreset): LibraryItem {
   };
 }
 
+function itemFromProject(a: ProjectAsset): LibraryItem {
+  let meta: string = KIND_LABEL[a.kind];
+  if (a.kind === "video" && a.duration) meta = fmtDuration(a.duration);
+  else if (a.kind === "image" && a.width && a.height)
+    meta = `${a.width}×${a.height}`;
+  else if (a.kind === "preset" && a.fragment) {
+    const n = a.fragment.nodes.length;
+    meta = `${n} node${n === 1 ? "" : "s"}`;
+  }
+  return {
+    id: `project:${a.id}`,
+    kind: a.kind,
+    name: a.name,
+    thumb: a.thumb,
+    meta,
+    payload: { source: "project", kind: a.kind, ref: a.id, name: a.name },
+  };
+}
+
+const LIBRARY_LABEL: Record<LibraryTarget, string> = {
+  project: "Project",
+  server: "Server",
+};
+
 function itemFromLegacy(a: AssetItem): LibraryItem {
   return {
     id: a.id,
@@ -184,6 +257,7 @@ export function AssetsView({
   onPickFolder,
   kindMenu,
   onInsert,
+  onInsertAsLayer,
   onToast,
 }: AssetsViewProps) {
   const toast = useCallback(
@@ -197,6 +271,9 @@ export function AssetsView({
   const { entitlements } = useEntitlements();
   const library = useUserAssets();
   const presets = useUserNodePresets();
+  const projectLib = useProjectLibrary();
+  // Which library the panel shows — Project unless the user picks Server.
+  const [target, setTarget] = useState<LibraryTarget>("project");
 
   // A cold mount (e.g. the panel opened before EffectsApp's identity
   // effect ran) kicks the first load; later mounts reuse the store.
@@ -206,6 +283,11 @@ export function AssetsView({
 
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<ViewMode>(readViewMode);
+  const changeView = useCallback((v: ViewMode) => {
+    setView(v);
+    writeViewMode(v);
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   const [cardMenu, setCardMenu] = useState<{
     x: number;
@@ -234,8 +316,14 @@ export function AssetsView({
   }, [menuOpen, panelWin]);
 
   const items = useMemo(() => {
-    const media = library.rows.map(itemFromRow); // newest first (query order)
-    const pres = presets.slice().reverse().map(itemFromPreset); // newest last in store
+    const media =
+      target === "project"
+        ? projectLib.filter((a) => a.kind !== "preset").map(itemFromProject)
+        : library.rows.map(itemFromRow); // newest first (query order)
+    const pres =
+      target === "project"
+        ? projectLib.filter((a) => a.kind === "preset").map(itemFromProject)
+        : presets.slice().reverse().map(itemFromPreset); // newest last in store
     let list: LibraryItem[] =
       filter === "all"
         ? [...media, ...pres]
@@ -251,17 +339,20 @@ export function AssetsView({
         .map((x) => x.i);
     }
     return list;
-  }, [library.rows, presets, filter, query]);
+  }, [target, projectLib, library.rows, presets, filter, query]);
 
   // --- uploads ------------------------------------------------------------------
 
   const importFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
-      if (!user) return toast("Sign in to use your asset library.");
+      if (target === "server" && !user)
+        return toast("Sign in to use your server asset library.");
       const results = await importFilesToLibrary(files, {
         cloudMedia: entitlements.cloudMedia,
+        target,
       });
+      const where = target === "project" ? "project assets" : "server assets";
       const failed = results.filter((r) => !r.result.ok);
       const dups = results.filter((r) => r.result.ok && r.result.duplicate);
       const added = results.length - failed.length - dups.length;
@@ -275,37 +366,57 @@ export function AssetsView({
       } else if (added === 0 && dups.length) {
         toast(
           dups.length === 1
-            ? `"${dups[0].result.ok ? dups[0].result.row.name : ""}" is already in your assets`
-            : `${dups.length} files were already in your assets`
+            ? `"${dups[0].result.ok ? dups[0].result.name : ""}" is already in your ${where}`
+            : `${dups.length} files were already in your ${where}`
         );
       } else {
         toast(
-          `added ${added} asset${added === 1 ? "" : "s"}` +
+          `added ${added} asset${added === 1 ? "" : "s"} to ${where}` +
             (dups.length ? ` (${dups.length} already there)` : "")
         );
       }
     },
-    [user, entitlements.cloudMedia, toast]
+    [user, entitlements.cloudMedia, toast, target]
   );
 
+  // The selector: the two libraries (✓ on the one showing), then the
+  // actions for it.
+  const canUpload = target === "project" || !!user;
   const menuItems: MenuItem[] = [
-    {
-      kind: "item",
-      label: "Upload Asset…",
-      disabled: !user,
-      title: user
-        ? entitlements.cloudMedia
-          ? "Images, SVGs, and videos"
-          : "Images and SVGs (video assets need cloud media)"
-        : "Sign in to use your asset library",
-      onClick: () => uploadInputRef.current?.click(),
-    },
+    ...(["project", "server"] as const).map(
+      (t): MenuItem => ({
+        kind: "item",
+        label: LIBRARY_LABEL[t],
+        shortcut: target === t ? "✓" : undefined,
+        title:
+          t === "project"
+            ? "Assets saved with this project"
+            : "Your library across every project",
+        onClick: () => setTarget(t),
+      })
+    ),
     { kind: "divider" },
     {
       kind: "item",
-      label: "Refresh",
-      onClick: () => void loadUserAssets(),
+      label: "Upload Asset…",
+      disabled: !canUpload,
+      title: canUpload
+        ? (entitlements.cloudMedia
+            ? "Images, SVGs, and videos"
+            : "Images and SVGs (video assets need cloud media)") +
+          (target === "project" ? " — saved with this project" : "")
+        : "Sign in to use your server asset library",
+      onClick: () => uploadInputRef.current?.click(),
     },
+    ...(target === "server"
+      ? ([
+          {
+            kind: "item",
+            label: "Refresh",
+            onClick: () => void loadUserAssets(),
+          },
+        ] as MenuItem[])
+      : []),
   ];
 
   // --- card actions ------------------------------------------------------------------
@@ -322,6 +433,13 @@ export function AssetsView({
       if (!file || !item) return;
       const canvas = await normalizeThumbnailFile(file);
       if (!canvas) return toast("Couldn't read that image.");
+      if (item.payload.source === "project") {
+        const url = encodeThumbDataUrlWithinCap(canvas, "jpeg");
+        if (!url) return toast("Thumbnail is too large.");
+        setProjectAssetThumb(item.payload.ref, url);
+        toast(`updated thumbnail for "${item.name}"`);
+        return;
+      }
       if (item.kind === "preset") {
         const url = encodeThumbDataUrlWithinCap(canvas, "jpeg");
         if (!url) return toast("Thumbnail is too large.");
@@ -339,6 +457,11 @@ export function AssetsView({
 
   const deleteItem = useCallback(
     async (item: LibraryItem) => {
+      if (item.payload.source === "project") {
+        removeProjectAsset(item.payload.ref);
+        toast(`removed "${item.name}" from project assets`);
+        return;
+      }
       if (item.kind === "preset") {
         removeUserNodePreset(item.payload.ref);
         toast(`deleted preset "${item.name}"`);
@@ -350,12 +473,62 @@ export function AssetsView({
     [toast]
   );
 
+  // Copy to the other library (a copy — the source card stays).
+  const copyItem = useCallback(
+    async (item: LibraryItem) => {
+      const { source, ref } = item.payload;
+      let res: LibraryAddResult;
+      try {
+        if (source === "project") {
+          const a = getProjectAsset(ref);
+          if (!a) return;
+          if (!user) return toast("Sign in to use your server asset library.");
+          res = await copyProjectAssetToServer(a);
+        } else if (source === "preset") {
+          const p = getUserNodePreset(ref);
+          if (!p) return;
+          res = copyServerPresetToProject(p);
+        } else {
+          const row = library.rows.find((r) => r.id === ref);
+          if (!row) return;
+          res = await copyServerAssetToProject(row);
+        }
+      } catch (err) {
+        return toast(err instanceof Error ? err.message : "Copy failed.");
+      }
+      const where = source === "project" ? "server assets" : "project assets";
+      if (!res.ok) toast(res.error);
+      else
+        toast(
+          res.duplicate
+            ? `"${res.name}" is already in ${where}`
+            : `copied "${res.name}" to ${where}`
+        );
+    },
+    [user, library.rows, toast]
+  );
+
   const cardMenuItems: { label: string; onClick: () => void }[] = cardMenu
     ? [
+        ...(onInsertAsLayer
+          ? [
+              {
+                label: "Layer From Asset",
+                onClick: () => onInsertAsLayer(cardMenu.item.payload),
+              },
+            ]
+          : []),
         { label: "Rename…", onClick: () => setRenaming(cardMenu.item) },
         {
           label: "Replace Thumbnail…",
           onClick: () => startReplaceThumb(cardMenu.item),
+        },
+        {
+          label:
+            cardMenu.item.payload.source === "project"
+              ? "Copy to Server"
+              : "Copy to Project",
+          onClick: () => void copyItem(cardMenu.item),
         },
         { label: "Delete", onClick: () => void deleteItem(cardMenu.item) },
       ]
@@ -363,9 +536,13 @@ export function AssetsView({
 
   // --- states --------------------------------------------------------------------------
 
+  const onServer = target === "server";
   const signedOut = !user;
-  const loading = library.status === "loading" && library.rows.length === 0;
-  const hasAnyLibrary = library.rows.length > 0 || presets.length > 0;
+  const loading =
+    onServer && library.status === "loading" && library.rows.length === 0;
+  const hasAnyLibrary = onServer
+    ? library.rows.length > 0 || presets.length > 0
+    : projectLib.length > 0;
 
   const chip = (active: boolean): React.CSSProperties => ({
     padding: "1px 7px",
@@ -442,7 +619,7 @@ export function AssetsView({
               gap: 4,
             }}
           >
-            Assets
+            {LIBRARY_LABEL[target]}
             <span style={{ fontSize: 8, opacity: 0.8 }}>▾</span>
           </button>
           {menuOpen && (
@@ -484,6 +661,26 @@ export function AssetsView({
           {items.length}
         </span>
         {library.busy > 0 && <Spinner size={12} />}
+        <div style={{ display: "flex", gap: 2, flexShrink: 0, marginLeft: "auto" }}>
+          {(["grid", "list"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => changeView(v)}
+              title={v === "grid" ? "Grid view" : "List view"}
+              aria-label={v === "grid" ? "Grid view" : "List view"}
+              aria-pressed={view === v}
+              style={{
+                ...chip(view === v),
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <ViewGlyph mode={v} />
+            </button>
+          ))}
+        </div>
         <input
           ref={uploadInputRef}
           type="file"
@@ -512,14 +709,14 @@ export function AssetsView({
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {/* library */}
         <div style={{ padding: "8px 10px" }}>
-          {signedOut && (
+          {onServer && signedOut && (
             <Hint>
               Sign in to keep images, SVGs, and videos in a library you can
               drag into any project.
               {presets.length > 0 ? " Your node presets are listed below." : ""}
             </Hint>
           )}
-          {!signedOut && library.status === "error" && (
+          {onServer && !signedOut && library.status === "error" && (
             <Hint>
               Couldn&apos;t load your assets — {library.error}.{" "}
               <button
@@ -545,61 +742,69 @@ export function AssetsView({
               <Spinner size={12} /> loading assets…
             </div>
           )}
-          {!loading && !hasAnyLibrary && !signedOut && library.status === "ready" && (
+          {onServer && !loading && !hasAnyLibrary && !signedOut && library.status === "ready" && (
             <Hint>
-              Nothing here yet. Use <b>Assets ▸ Upload Asset…</b>, drop files
-              on this panel, or right-click a node → <b>Add to Assets</b>.
-              Node presets you save land here too.
+              Nothing here yet. Use <b>Server ▸ Upload Asset…</b>, drop files
+              on this panel, or right-click a node → <b>Add to Assets ▸
+              Server</b>. Node presets you save land here too.
+            </Hint>
+          )}
+          {!onServer && !hasAnyLibrary && (
+            <Hint>
+              This project&apos;s library is empty. Use <b>Project ▸ Upload
+              Asset…</b>, drop files on this panel, right-click a node →{" "}
+              <b>Add to Assets ▸ Project</b>, or copy cards over from{" "}
+              <b>Server</b>. Everything here is saved with the project.
             </Hint>
           )}
           {items.length === 0 && hasAnyLibrary && (query || filter !== "all") && (
             <Hint>No matches.</Hint>
           )}
           {items.length > 0 && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-                gap: 6,
+            <ItemCollection
+              items={items}
+              view={view}
+              onInsert={onInsert}
+              onContextMenu={(e, it) => {
+                e.preventDefault();
+                setCardMenu({ x: e.clientX, y: e.clientY, item: it });
               }}
-            >
-              {items.map((it) => (
-                <Card
-                  key={it.id}
-                  item={it}
-                  onDoubleClick={onInsert ? () => onInsert(it.payload) : undefined}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setCardMenu({ x: e.clientX, y: e.clientY, item: it });
-                  }}
-                />
-              ))}
-            </div>
+            />
           )}
         </div>
 
-        {/* project-scoped sections (062926_assets.md) */}
-        <AssetSection
-          title="In project"
-          hint="Custom fonts you add are bundled with the project and appear here."
-          items={assets.filter((a) => a.source === "bundled").map(itemFromLegacy)}
-          onInsert={onInsert}
-        />
-        <AssetSection
-          title={folderName ? `Folder · ${folderName}` : "Folder"}
-          hint={
-            onPickFolder
-              ? "Choose a folder of assets to reference alongside this project."
-              : "Open a .toolbox that sits next to an assets/ folder to see its files here."
-          }
-          items={assets.filter((a) => a.source === "folder").map(itemFromLegacy)}
-          onInsert={onInsert}
-          action={
-            onPickFolder
-              ? { label: "Choose folder…", onClick: onPickFolder }
-              : undefined
-          }
-        />
+        {/* project-scoped sections (062926_assets.md) — Project only */}
+        {!onServer && (
+          <>
+            <AssetSection
+              title="In project"
+              hint="Custom fonts you add are bundled with the project and appear here."
+              items={assets
+                .filter((a) => a.source === "bundled")
+                .map(itemFromLegacy)}
+              view={view}
+              onInsert={onInsert}
+            />
+            <AssetSection
+              title={folderName ? `Folder · ${folderName}` : "Folder"}
+              hint={
+                onPickFolder
+                  ? "Choose a folder of assets to reference alongside this project."
+                  : "Open a .toolbox that sits next to an assets/ folder to see its files here."
+              }
+              items={assets
+                .filter((a) => a.source === "folder")
+                .map(itemFromLegacy)}
+              view={view}
+              onInsert={onInsert}
+              action={
+                onPickFolder
+                  ? { label: "Choose folder…", onClick: onPickFolder }
+                  : undefined
+              }
+            />
+          </>
+        )}
       </div>
 
       {cardMenu && (
@@ -623,6 +828,11 @@ export function AssetsView({
           saveLabel="Rename"
           onClose={() => setRenaming(null)}
           onSave={async (name) => {
+            if (renaming.payload.source === "project") {
+              if (!renameProjectAsset(renaming.payload.ref, name))
+                throw new Error("A preset with that name already exists.");
+              return;
+            }
             if (renaming.kind === "preset") {
               if (!renameUserNodePreset(renaming.payload.ref, name))
                 throw new Error("A preset with that name already exists.");
@@ -658,12 +868,14 @@ function AssetSection({
   title,
   hint,
   items,
+  view,
   action,
   onInsert,
 }: {
   title: string;
   hint: string;
   items: LibraryItem[];
+  view: ViewMode;
   action?: { label: string; onClick: () => void };
   onInsert?: (payload: AssetDragPayload) => void;
 }) {
@@ -710,44 +922,169 @@ function AssetSection({
       {items.length === 0 ? (
         <Hint>{hint}</Hint>
       ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-            gap: 6,
-          }}
-        >
-          {items.map((it) => (
-            <Card
-              key={it.id}
-              item={it}
-              onDoubleClick={onInsert ? () => onInsert(it.payload) : undefined}
-            />
-          ))}
-        </div>
+        <ItemCollection items={items} view={view} onInsert={onInsert} />
       )}
     </div>
   );
 }
 
-function Card({
-  item,
-  onDoubleClick,
+// The items of one section, as a card grid or a row list. Both carry the
+// same drag payload / double-click / right-click behavior.
+function ItemCollection({
+  items,
+  view,
+  onInsert,
   onContextMenu,
 }: {
+  items: LibraryItem[];
+  view: ViewMode;
+  onInsert?: (payload: AssetDragPayload) => void;
+  onContextMenu?: (e: React.MouseEvent, item: LibraryItem) => void;
+}) {
+  const Item = view === "list" ? Row : Card;
+  return (
+    <div
+      style={
+        view === "list"
+          ? { display: "flex", flexDirection: "column", gap: 1 }
+          : {
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
+              gap: 6,
+            }
+      }
+    >
+      {items.map((it) => (
+        <Item
+          key={it.id}
+          item={it}
+          onDoubleClick={onInsert ? () => onInsert(it.payload) : undefined}
+          onContextMenu={onContextMenu ? (e) => onContextMenu(e, it) : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface ItemProps {
   item: LibraryItem;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
-}) {
+}
+
+// The drag source both views share.
+function dragProps(item: LibraryItem, onDoubleClick?: () => void) {
+  return {
+    title: `${item.name} — drag into the node editor${onDoubleClick ? ", or double-click to insert" : ""}`,
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData(ASSET_DRAG_MIME, JSON.stringify(item.payload));
+    },
+  };
+}
+
+function Row({ item, onDoubleClick, onContextMenu }: ItemProps) {
   const [hover, setHover] = useState(false);
   return (
     <div
-      title={`${item.name} — drag into the node editor${onDoubleClick ? ", or double-click to insert" : ""}`}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.effectAllowed = "copy";
-        e.dataTransfer.setData(ASSET_DRAG_MIME, JSON.stringify(item.payload));
+      {...dragProps(item, onDoubleClick)}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        padding: "2px 4px",
+        borderRadius: 3,
+        background: hover ? "var(--tb-n-2)" : "transparent",
+        cursor: "grab",
+        userSelect: "none",
+        minWidth: 0,
       }}
+    >
+      <div
+        style={{
+          width: 24,
+          height: 24,
+          flexShrink: 0,
+          borderRadius: 3,
+          border: "1px solid var(--tb-n-5)",
+          background: "var(--tb-n-1)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+          color: "var(--tb-n-10)",
+        }}
+      >
+        {item.thumb ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={item.thumb}
+            alt=""
+            draggable={false}
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              pointerEvents: "none",
+            }}
+          />
+        ) : (
+          <KindGlyph kind={item.kind} size={14} />
+        )}
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: 10,
+          color: "var(--tb-n-13)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.name}
+      </div>
+      <span
+        style={{
+          fontSize: 9,
+          color: "var(--tb-n-9)",
+          flexShrink: 0,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.meta}
+      </span>
+      <span
+        style={{
+          fontSize: 8,
+          padding: "1px 4px",
+          borderRadius: 3,
+          background: "var(--tb-n-3)",
+          color: "var(--tb-n-12)",
+          letterSpacing: 0.4,
+          textTransform: "uppercase",
+          flexShrink: 0,
+          minWidth: 30,
+          textAlign: "center",
+        }}
+      >
+        {KIND_LABEL[item.kind]}
+      </span>
+    </div>
+  );
+}
+
+function Card({ item, onDoubleClick, onContextMenu }: ItemProps) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      {...dragProps(item, onDoubleClick)}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)}
@@ -837,9 +1174,27 @@ function Card({
   );
 }
 
-function KindGlyph({ kind }: { kind: LibraryKind }) {
+function ViewGlyph({ mode }: { mode: ViewMode }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1 } as const;
+  if (mode === "grid") {
+    return (
+      <svg width={10} height={10} viewBox="0 0 10 10" aria-hidden>
+        <rect x={0.5} y={0.5} width={3.5} height={3.5} {...common} />
+        <rect x={6} y={0.5} width={3.5} height={3.5} {...common} />
+        <rect x={0.5} y={6} width={3.5} height={3.5} {...common} />
+        <rect x={6} y={6} width={3.5} height={3.5} {...common} />
+      </svg>
+    );
+  }
+  return (
+    <svg width={10} height={10} viewBox="0 0 10 10" aria-hidden>
+      <path d="M0.5 1.5h9M0.5 5h9M0.5 8.5h9" {...common} />
+    </svg>
+  );
+}
+
+function KindGlyph({ kind, size = 28 }: { kind: LibraryKind; size?: number }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.2 } as const;
-  const size = 28;
   if (kind === "preset") {
     return (
       <svg width={size} height={size} viewBox="0 0 12 12" aria-hidden>

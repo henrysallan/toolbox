@@ -108,7 +108,7 @@ export function effectChildrenCode(plan: SkiaExportPlan, header: (what: string) 
     // in Node (check-skia-assets holds imageMatrix to the preview's).
     files["images.ts"] =
       header("where the shader's images land on the canvas") +
-      `\nexport interface ExportImage {\n  // The bundled file's size in px.\n  width: number;\n  height: number;\n  fit: "cover" | "contain" | "fill";\n  // Image Source's TRS: per-axis canvas fractions (Y-down), degrees.\n  translateX: number;\n  translateY: number;\n  scaleX: number;\n  scaleY: number;\n  rotate: number;\n  pivotX: number;\n  pivotY: number;\n}\n\n` +
+      `\nexport interface ExportImage {\n  // The bundled file's size in px.\n  width: number;\n  height: number;\n  fit: "cover" | "contain" | "fill";\n  // Image Source's TRS (Y-down, degrees): rigid, translate / pivot Y\n  // width-relative; legacySkew = per-axis canvas fractions (shears).\n  translateX: number;\n  translateY: number;\n  scaleX: number;\n  scaleY: number;\n  rotate: number;\n  pivotX: number;\n  pivotY: number;\n  legacySkew?: boolean;\n}\n\n` +
       IMAGE_MATRIX_SOURCE +
       images.map((c) => `\n// ${c.name}: ${c.from}\nexport const IMAGE_${v(c.name)}: ExportImage = ${JSON.stringify(mappingOf(c.source))};\n`).join("");
   }

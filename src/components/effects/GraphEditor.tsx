@@ -685,6 +685,19 @@ export function GraphEditor({
   );
   const [yMinView, setYMinView] = useState(initialBounds.yMinView);
   const [yMaxView, setYMaxView] = useState(initialBounds.yMaxView);
+  // The value window the last FIT set (activation, refit, F). Pans and
+  // zooms move yMin/yMaxView away from it; the other visible tracks' ghost
+  // curves apply that same relative pan / zoom to their own fits, so every
+  // curve moves together instead of only the active one.
+  const [yRest, setYRest] = useState({
+    lo: initialBounds.yMinView,
+    hi: initialBounds.yMaxView,
+  });
+  const setFittedY = useCallback((lo: number, hi: number) => {
+    setYMinView(lo);
+    setYMaxView(hi);
+    setYRest({ lo, hi });
+  }, []);
 
   const innerW = Math.max(40, width - PADDING.left - PADDING.right);
   const innerH = Math.max(40, height - HEADER_H - PADDING.top - PADDING.bottom);
@@ -758,19 +771,16 @@ export function GraphEditor({
         );
         setViewTickOffset(fit.viewTickOffset);
         setPixelsPerTick(fit.pixelsPerTick);
-        setYMinView(fit.yMinView);
-        setYMaxView(fit.yMaxView);
+        setFittedY(fit.yMinView, fit.yMaxView);
         return;
       }
     }
     if (!normalizeY && yMin != null && yMax != null) {
-      setYMinView(yMin);
-      setYMaxView(yMax);
+      setFittedY(yMin, yMax);
       return;
     }
     const fit = computeFitBoundsFromKeys(block.keyframes, innerW);
-    setYMinView(fit.yMinView);
-    setYMaxView(fit.yMaxView);
+    setFittedY(fit.yMinView, fit.yMaxView);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.key, normalizeY, refitVersion, yMin, yMax]);
 
@@ -821,6 +831,11 @@ export function GraphEditor({
   // share units). One source for ghost drawing, cross-track hit-testing,
   // marquee and transforms.
   const trackViews = useMemo(() => {
+    // The active view's pan / zoom relative to its last fit, in fractions
+    // of that fit's span — applied to each ghost's own fit below.
+    const restSpan = yRest.hi - yRest.lo || 1;
+    const zoom = (yMaxView - yMinView) / restSpan;
+    const shift = (yMinView - yRest.lo) / restSpan;
     return visibleTracks.map((t) => {
       if (t.key === active?.key) {
         return {
@@ -831,17 +846,27 @@ export function GraphEditor({
         };
       }
       const fit = computeFitBoundsFromKeys(t.block.keyframes, innerW, t.yMin, t.yMax);
-      const span = fit.yMaxView - fit.yMinView || 1;
+      const fitSpan = fit.yMaxView - fit.yMinView || 1;
+      const lo = fit.yMinView + shift * fitSpan;
+      const span = fitSpan * zoom || 1;
       return {
         track: t,
         isActive: false,
-        yFor: (v: number) =>
-          PADDING.top + (1 - (v - fit.yMinView) / span) * innerH,
-        yInv: (sy: number) =>
-          fit.yMinView + (1 - (sy - PADDING.top) / innerH) * span,
+        yFor: (v: number) => PADDING.top + (1 - (v - lo) / span) * innerH,
+        yInv: (sy: number) => lo + (1 - (sy - PADDING.top) / innerH) * span,
       };
     });
-  }, [visibleTracks, active?.key, valueToScreen, screenToValue, innerW, innerH]);
+  }, [
+    visibleTracks,
+    active?.key,
+    valueToScreen,
+    screenToValue,
+    innerW,
+    innerH,
+    yMinView,
+    yMaxView,
+    yRest,
+  ]);
 
   // Live mirrors for gesture handlers — a mid-drag commit re-renders and
   // the drag effect's closures go stale; refs keep commits aimed at the
@@ -1573,8 +1598,7 @@ export function GraphEditor({
         );
         setViewTickOffset(fit.viewTickOffset);
         setPixelsPerTick(fit.pixelsPerTick);
-        setYMinView(fit.yMinView);
-        setYMaxView(fit.yMaxView);
+        setFittedY(fit.yMinView, fit.yMaxView);
       }
     }
     function onUp(e: KeyboardEvent) {

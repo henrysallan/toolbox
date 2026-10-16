@@ -2945,11 +2945,22 @@ export function splitLayer(
   // The clone takes over the original's outgoing connections (image to
   // Output / the layer above, audio passthrough); the original now feeds
   // the clone's stack. Net chain order: …below → original → clone → above.
+  // Parenting (101526_layer-transforms-parenting.md §7): children stay
+  // on the original (its `aux:transform` edges don't move), and the clone
+  // gets the original's parent, so both halves sit where they did.
   const nextEdges = edges.map((e) =>
-    e.source === layerId && !ids.has(e.target)
+    e.source === layerId &&
+    !ids.has(e.target) &&
+    e.sourceHandle !== "out:aux:transform"
       ? { ...e, source: newLayerId }
       : e
   );
+  const parentEdge = edges.find(
+    (e) => e.target === layerId && e.targetHandle === "in:transform"
+  );
+  if (parentEdge) {
+    nextEdges.push({ ...parentEdge, id: newEdgeId(), target: newLayerId });
+  }
   nextEdges.push({
     id: newEdgeId(),
     source: layerId,

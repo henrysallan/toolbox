@@ -174,7 +174,9 @@ void main() {
 // Formulas match the widely-cited Photoshop / Krita set; division-based
 // modes guard the denominator so backgrounds don't explode to infinity on
 // black/white pixels.
-const BLEND_MODE_GLSL = `
+// Exported for the Layer node's transformed-content blend
+// (nodes/group/layer.ts), which must share these formulas exactly.
+export const BLEND_MODE_GLSL = `
 vec3 overlayCh(vec3 a, vec3 b) {
   return mix(2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b), step(0.5, a));
 }

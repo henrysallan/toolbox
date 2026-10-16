@@ -132,7 +132,25 @@ import { sanitizeMarkers, type TimelineMarker } from "@/lib/timeline-markers";
 // falloff) instead of opaque black. Loading a ≤v11 save re-points every wire
 // out of a Cursor's primary at `out:aux:image` (see deserializeGraph) so old
 // graphs keep receiving the field.
-export const CURRENT_SCHEMA = 12;
+//
+// v13 — aspect-rigid image rotation: Transform's image path, Image / Video
+// Source, Text and their Skia mirrors rotate rigidly in pixels on
+// non-square canvases (they sheared), and Transform / Image / Video read
+// translateY / pivotY width-relative like shapes. Loading a ≤v12 save sets
+// the hidden `legacySkew` param on every node of those types so it renders
+// exactly as before (see deserializeGraph and LEGACY_SKEW_TYPES). See
+// specdocs/101526_aspect-rigid-rotation.md.
+export const CURRENT_SCHEMA = 13;
+
+// Node types whose image TRS went aspect-rigid in v13.
+export const LEGACY_SKEW_TYPES: ReadonlySet<string> = new Set([
+  "transform",
+  "image-source",
+  "video-source",
+  "text",
+  "skia-transform",
+  "skia-image",
+]);
 
 // Thrown when a project was saved by a NEWER client than this one. Without
 // this guard the load silently drops fields the older client doesn't know,
@@ -330,6 +348,15 @@ export interface SavedProject {
   // has no guides. Older builds ignore it and drop it on resave, losing
   // only the guides. Live viewer / exported apps never read it.
   viewportGuides?: unknown;
+  // The project's own asset library (the Assets panel's "Project" side).
+  // ADDITIVE; lib/project-library-format.ts owns the shape and
+  // state/project-library.ts attaches/applies it around serialize/
+  // deserialize like `layout` above. UNLIKE the other blobs, its image/SVG
+  // envelopes are extracted by both containers (they walk
+  // mediaParamHolders), so the bytes dedupe with node media. Omitted when
+  // empty. Older builds ignore it and drop it on resave, losing only the
+  // library. Live viewer / exported apps never read it.
+  assetLibrary?: unknown;
 }
 
 // --- image helpers -------------------------------------------------------
@@ -1612,6 +1639,15 @@ export async function deserializeGraph(
       if (e.sourceHandle == null || e.sourceHandle === "out:primary") {
         e.sourceHandle = "out:aux:image";
       }
+    }
+  }
+  // v13 migration: these nodes' image TRS became aspect-rigid. Pin every
+  // ≤v12 one to the old per-axis path (identical on square comps either
+  // way); its panel shows a "Legacy skew" box to opt in.
+  if ((saved.schemaVersion ?? 1) < 13) {
+    for (const n of nodes) {
+      if (!LEGACY_SKEW_TYPES.has(n.data.defType)) continue;
+      n.data.params = { ...n.data.params, legacySkew: true };
     }
   }
   // Bounding Box's one `guides` toggle became show_guides_v / show_guides_h

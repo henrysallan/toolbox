@@ -1,6 +1,14 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   ownerWindow,
@@ -11,8 +19,12 @@ import { getNodeDef } from "@/engine/registry";
 import type { NodeDataPayload } from "@/state/graph";
 import { playbackClock } from "@/state/playback-clock";
 import type {
+  BezierEasing,
+  Keyframe,
   KeyframeAnimationBlock,
   ProjectTimeline,
+  SavedEasing,
+  SpringEasing,
 } from "@/engine/keyframes";
 import {
   emptyAnimationBlock,
@@ -30,6 +42,21 @@ import { resolvePromotedParams } from "@/state/graph-ops";
 import { readInputValues } from "@/engine/groups";
 import { readLayerTarget } from "@/engine/skia/layer-target";
 import SkiaLayerBadge from "./SkiaLayerBadge";
+import LayerBlendSelect, {
+  LayerParentSelect,
+  type ParentOption,
+} from "./LayerBlendSelect";
+import { layerParentOf, wouldLoop } from "@/state/layer-parenting";
+import {
+  BLEND_SLOT,
+  PARENT_SLOT,
+  clampCardWidth,
+  LABEL_CARD_DEFAULT,
+  LABEL_WIDTH_STORAGE_KEY,
+  paneColumns,
+  readCardWidth,
+  writeCardWidth,
+} from "./timeline/layer-pane";
 import type { ClipBlock } from "@/engine/clips";
 import {
   clipSlipsOnInTrim,
@@ -38,7 +65,7 @@ import {
 } from "@/engine/clips";
 import { useCoarsePointer } from "@/lib/pointer-drag";
 import { getShortcutScope } from "./shortcut-scope";
-import { wheelWantsZoom } from "./input-device";
+import { getEffectiveDevice } from "./input-device";
 import {
   COLOR_CLIP_BORDER as CLIP_BORDER,
   COLOR_CLIP_BORDER_SELECTED as CLIP_BORDER_SELECTED,
@@ -95,6 +122,18 @@ import { moveClipWindow, trimClipWindow } from "./timeline/clip-ops";
 import { rulerSpacing as computeRulerSpacing } from "./timeline/ruler";
 import { LaneFrameTicks, RulerFrameStubs } from "./timeline/FrameTicks";
 import { EasingTile } from "./timeline/EasingTile";
+import { EasingEditorOverlay } from "./timeline/EasingEditorOverlay";
+import {
+  applyBezierToLane,
+  applyPresetToLane,
+  applySpringToLane,
+  easingPairsFor,
+  firstEasingPair,
+  pairsUniform,
+  seedForPair,
+  type EasingLane,
+  type EasingPair,
+} from "./timeline/easing-editor";
 import {
   HoverLine,
   type HoverLineHandle,
@@ -104,6 +143,18 @@ import {
 import { DiamondNav } from "./timeline/DiamondNav";
 import { MarkerRuler, type MarkerRulerHandle } from "./timeline/MarkerRuler";
 import { NO_MARKERS, type TimelineMarker } from "@/lib/timeline-markers";
+import {
+  animatedProperties,
+  applyRevealKey,
+  memberKeysAt,
+  mergeLaneBlocks,
+  revealedProperties,
+  revealKeyFor,
+  shiftBlocks,
+  toggleRevealAll,
+  LAYER_PROPERTIES,
+  type Reveal,
+} from "./timeline/layer-properties";
 
 // AE-style layer stack editor (spec §2 "Layers editor"). A lens over
 // the root compositing chain: each row is a layer, top-of-list =
@@ -118,23 +169,31 @@ const LANE_HEIGHT = 22;
 // The label gutter is an inset rounded card (matching Tracks). Unlike
 // Tracks — where the gutter is one absolutely-positioned column — here
 // every row owns its own label cell, so the card is a static backdrop
-// painted BEHIND the rows and the inset is folded into LABEL_WIDTH:
+// painted BEHIND the rows and the inset is folded into labelWidth:
 // the cells keep starting at x=0 and just pad themselves in, which
-// leaves every existing `LABEL_WIDTH + tickToPx(...)` lane offset
+// leaves every existing `labelWidth + tickToPx(...)` lane offset
 // correct with no other edits.
 const GUTTER_INSET = 12;
-const GUTTER_CARD_WIDTH = 200;
-const LABEL_WIDTH = GUTTER_CARD_WIDTH + GUTTER_INSET;
+// The card's width is user-resizable (drag its right edge; double-click
+// resets) and remembered per viewer — timeline/layer-pane.ts. Every
+// `labelWidth + tickToPx(...)` lane offset follows it.
 
-// One keyframable param surfaced under a layer's twirl-down: the layer's
-// own opacity, plus any param promoted via the layer's Group Input
-// "new socket" (those keyframes live on the deep node the socket feeds).
+// One lane under a layer's twirl-down: one of the layer's own AE
+// properties (timeline/layer-properties.ts — Position groups translateX +
+// translateY into ONE lane), or a param promoted via the layer's Group
+// Input "new socket" (those keyframes live on the deep node the socket
+// feeds). `params` are the member params (one for promoted / Rotation /
+// Opacity); `paramName` is the first, kept for single-param call sites.
 interface LayerTrack {
   nodeId: string;
   paramName: string;
+  params: readonly string[];
   label: string;
   type: ParamType;
 }
+
+const laneHas = (track: LayerTrack, nodeId: string, paramName: string) =>
+  track.nodeId === nodeId && track.params.includes(paramName);
 
 export type AddLayerKind = "empty" | "text" | "image" | "video";
 
@@ -152,10 +211,30 @@ export interface LayersEditorProps {
   timeline: ProjectTimeline;
   selectedId: string | null;
   onScrub(tick: number): void;
-  onClipChange(nodeId: string, next: ClipBlock[] | undefined): void;
+  // `coalesceKey` lets one gesture (a bar slide that also moves the
+  // layer's own keys, D5) land as a single undo step.
+  onClipChange(
+    nodeId: string,
+    next: ClipBlock[] | undefined,
+    coalesceKey?: string
+  ): void;
   onSelectLayer(nodeId: string): void;
+  // Multi-select (Cmd-click toggle, Shift-click range): the full set of
+  // selected layer ids plus the primary one (ParamPanel). Empty clears.
+  // Falls back to onSelectLayer (single) when omitted.
+  onSelectLayers?(ids: string[], primaryId: string | null): void;
   onDiveLayer(nodeId: string): void;
   onToggleVisibility(nodeId: string): void;
+  // The row's Blend column writes the layer's `blendMode` through this
+  // (the same path as the param panel). Omitted → no Blend column.
+  onParamChange?(nodeId: string, paramName: string, value: unknown): void;
+  // The row's Parent column (§7): set / clear a layer's parent;
+  // `keepInPlace` false = Alt-pick (the child jumps). Omitted → no column.
+  onSetLayerParent?(
+    childId: string,
+    parentId: string | null,
+    keepInPlace: boolean
+  ): void;
   // New bottom → top order after a row drag-reorder.
   onReorder(orderedBottomToTop: string[]): void;
   onAddLayer(kind: AddLayerKind): void;
@@ -189,7 +268,55 @@ export interface LayersEditorProps {
   // onMarkersChange for a read-only strip.
   markers?: readonly TimelineMarker[];
   onMarkersChange?(next: TimelineMarker[], label: string): void;
+  // The easing overlay (specdocs/091726_easing-editor.md), same as the
+  // Tracks editor: the dock header's "easing" chip owns the flag; the
+  // overlay's close button reports back. Saved easings come from the
+  // project (EffectsApp).
+  easingEditorOpen?: boolean;
+  onEasingEditorOpenChange?(open: boolean): void;
+  savedEasings?: SavedEasing[];
+  onSaveEasing?(easing: SavedEasing): void;
+  onRenameEasing?(id: string, name: string): void;
+  onDeleteEasing?(id: string): void;
 }
+
+// localStorage, or null where touching it throws (private window, blocked
+// site data) — the pane width just doesn't persist there.
+function safeLocalStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+// Subscribers to the saved pane width: every mounted Layers editor (main
+// window and a popped-out one) follows a resize, and a change from another
+// tab arrives as a `storage` event.
+const paneWidthListeners = new Set<() => void>();
+function subscribePaneWidth(cb: () => void): () => void {
+  paneWidthListeners.add(cb);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === null || e.key === LABEL_WIDTH_STORAGE_KEY) cb();
+  };
+  if (typeof window !== "undefined") window.addEventListener("storage", onStorage);
+  return () => {
+    paneWidthListeners.delete(cb);
+    if (typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+  };
+}
+function savePaneWidth(width: number): void {
+  writeCardWidth(safeLocalStorage(), width);
+  for (const cb of paneWidthListeners) cb();
+}
+
+type RowSelectMode = "replace" | "toggle" | "range";
+
+const rowSelectModeOf = (e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }): RowSelectMode =>
+  e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : "replace";
+
+// Every own-param name a layer's properties cover (D5 shifts these).
+const LAYER_OWN_PARAMS: readonly string[] = LAYER_PROPERTIES.flatMap((p) => p.params);
 
 type Drag =
   | { kind: "none" }
@@ -208,6 +335,12 @@ type Drag =
       // Whether an in-trim slips sourceInTick (clipSlipsOnInTrim — true
       // for layer rows, kept dynamic so this editor never hardcodes it).
       slipsInTrim: boolean;
+      // D5: the layer's own keyed blocks at drag start. A move of a
+      // single-window layer shifts them by the window's Δ (from this
+      // snapshot, so the live drag never compounds); null = don't shift
+      // (trims, or a sliced layer whose windows move independently).
+      startKeys: Map<string, KeyframeAnimationBlock> | null;
+      gestureKey: string;
     }
   | {
       kind: "reorder";
@@ -216,6 +349,9 @@ type Drag =
       // Insertion index in the TOP→BOTTOM display order, updated on move.
       overIndex: number;
       moved: boolean;
+      // Selection gesture for a click that doesn't move: plain replaces,
+      // Cmd/Ctrl toggles, Shift extends a range.
+      selectMode: RowSelectMode;
     }
   | {
       // Marquee rubber-band over the lane area → selects keyframes.
@@ -260,8 +396,11 @@ export function LayersEditor({
   onScrub,
   onClipChange,
   onSelectLayer,
+  onSelectLayers,
   onDiveLayer,
   onToggleVisibility,
+  onParamChange,
+  onSetLayerParent,
   onReorder,
   onAddLayer,
   onSplitLayer,
@@ -274,10 +413,66 @@ export function LayersEditor({
   initialKeyframeSelection,
   markers = NO_MARKERS,
   onMarkersChange,
+  easingEditorOpen = false,
+  onEasingEditorOpenChange,
+  savedEasings,
+  onSaveEasing,
+  onRenameEasing,
+  onDeleteEasing,
 }: LayersEditorProps) {
   // Null in the main window; the child Window when the timeline panel
   // is popped out (080226_panel-popout-windows.md §3).
   const panelWin = usePanelWindow();
+
+  // Label pane width (the gutter card), per viewer. The saved width comes
+  // through useSyncExternalStore with the default as the server snapshot —
+  // the editor server-renders, so reading storage during the first client
+  // render would mismatch hydration. A live drag overrides it locally and
+  // writes on release.
+  const storedCardWidth = useSyncExternalStore(
+    subscribePaneWidth,
+    () => readCardWidth(safeLocalStorage()),
+    () => LABEL_CARD_DEFAULT
+  );
+  const [dragCardWidth, setDragCardWidth] = useState<number | null>(null);
+  const cardWidth = dragCardWidth ?? storedCardWidth;
+  const cardWidthRef = useRef(cardWidth);
+  useEffect(() => {
+    cardWidthRef.current = cardWidth;
+  }, [cardWidth]);
+  const labelWidth = cardWidth + GUTTER_INSET;
+  // Optional row columns that fit (Blend drops first as the pane narrows,
+  // then Parent).
+  const columns = paneColumns(cardWidth, !!onSetLayerParent);
+  const showBlend = columns.blend && !!onParamChange;
+  const showParent = columns.parent && !!onSetLayerParent;
+  // The row whose layer is the parent under the hovered Parent control.
+  const [hoverParentId, setHoverParentId] = useState<string | null>(null);
+  const startPaneResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const win = ownerWindow(e.currentTarget);
+    const startX = e.clientX;
+    const startW = cardWidthRef.current;
+    const onMove = (ev: PointerEvent) => {
+      setDragCardWidth(clampCardWidth(startW + ev.clientX - startX));
+    };
+    const onUp = () => {
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointercancel", onUp);
+      savePaneWidth(cardWidthRef.current);
+      setDragCardWidth(null);
+    };
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
+    win.addEventListener("pointercancel", onUp);
+  };
+  const resetPaneWidth = () => {
+    setDragCardWidth(null);
+    savePaneWidth(LABEL_CARD_DEFAULT);
+  };
   // Timeline markers on the ruler (timeline/MarkerRuler.tsx); the ruler's
   // contextmenu goes through its handle.
   const markerRulerRef = useRef<MarkerRulerHandle>(null);
@@ -287,6 +482,82 @@ export function LayersEditor({
   // re-renders the whole editor per frame.
   // Display order: top of stack first.
   const display = useMemo(() => [...layers].reverse(), [layers]);
+
+  // Parent choices per row: every other layer, loop-closing ones disabled.
+  // Memoized on the chain + edges (wouldLoop walks parent chains).
+  const parentOptionsByLayer = useMemo(() => {
+    const out = new Map<string, ParentOption[]>();
+    if (!onSetLayerParent) return out;
+    for (const l of display) {
+      out.set(
+        l.id,
+        display
+          .filter((o) => o.id !== l.id)
+          .map((o) => ({
+            id: o.id,
+            label: o.data.name,
+            disabled: wouldLoop(edges, l.id, o.id),
+          }))
+      );
+    }
+    return out;
+  }, [display, edges, onSetLayerParent]);
+
+  // Row selection = node selection (n.selected) on the layer nodes, plus
+  // the primary `selectedId`. Display order (top first) for ranges and
+  // reveal-key targets.
+  const selectedRows = useMemo(
+    () =>
+      display
+        .filter((l) => l.selected || l.id === selectedId)
+        .map((l) => l.id),
+    [display, selectedId]
+  );
+  const selectedRowSet = useMemo(() => new Set(selectedRows), [selectedRows]);
+  // Read by event handlers (row clicks, reveal keys); synced after render
+  // like this file's other live refs.
+  const selectedRowsRef = useRef(selectedRows);
+  useEffect(() => {
+    selectedRowsRef.current = selectedRows;
+  }, [selectedRows]);
+  // Anchor for Shift-click ranges: the last row clicked without Shift.
+  const rangeAnchorRef = useRef<string | null>(null);
+  const selectRow = useCallback(
+    (id: string, mode: RowSelectMode) => {
+      if (!onSelectLayers || mode === "replace") {
+        rangeAnchorRef.current = id;
+        onSelectLayer(id);
+        return;
+      }
+      const cur = selectedRowsRef.current;
+      if (mode === "toggle") {
+        rangeAnchorRef.current = id;
+        const has = cur.includes(id);
+        const next = has ? cur.filter((x) => x !== id) : [...cur, id];
+        // Deselecting a non-primary row keeps the ParamPanel where it is.
+        const primary = !has
+          ? id
+          : id !== selectedId && selectedId && next.includes(selectedId)
+            ? selectedId
+            : (next[next.length - 1] ?? null);
+        onSelectLayers(next, primary);
+        return;
+      }
+      const ids = display.map((l) => l.id);
+      // An anchor that's no longer selected (selection changed elsewhere —
+      // node editor, Escape) falls back to the primary row.
+      const kept = rangeAnchorRef.current;
+      const anchor = (kept && cur.includes(kept) ? kept : selectedId) ?? id;
+      const a = ids.indexOf(anchor);
+      const b = ids.indexOf(id);
+      if (a === -1 || b === -1) {
+        onSelectLayer(id);
+        return;
+      }
+      onSelectLayers(ids.slice(Math.min(a, b), Math.max(a, b) + 1), id);
+    },
+    [display, onSelectLayer, onSelectLayers, selectedId]
+  );
 
   const view = useTimelineView();
   const {
@@ -302,35 +573,48 @@ export function LayersEditor({
   const [drag, setDrag] = useState<Drag>({ kind: "none" });
   // Touch primary → widen the clip trim grips (see their style below).
   const coarsePointer = useCoarsePointer();
-  // Layers whose keyframe lanes are twirled open.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Which properties each row shows (timeline/layer-properties.ts):
+  // "all" from the chevron, or the subset the P / S / R / T / A / U keys
+  // picked. Absent = collapsed. Editor session state, never saved.
+  const [revealed, setRevealed] = useState<ReadonlyMap<string, Reveal>>(
+    () => new Map()
+  );
 
-  // Keyframe lanes for a layer: its own opacity, plus any param
-  // promoted through the layer's Group Input "new socket" (each such
-  // socket feeds a deep node's exposed param `in:param:Y`; the lane
-  // edits that deep node's animation directly).
+  // Keyframe lanes for a layer: the revealed built-in properties, plus —
+  // under "all" — any param promoted through the layer's Group Input "new
+  // socket" (each such socket feeds a deep node's exposed param
+  // `in:param:Y`; the lane edits that deep node's animation directly).
   const tracksFor = useCallback(
     (layer: Node<NodeDataPayload>): LayerTrack[] => {
+      const { properties, promoted } = revealedProperties(
+        revealed.get(layer.id)
+      );
       return [
-        {
+        ...properties.map((p) => ({
           nodeId: layer.id,
-          paramName: "opacity",
-          label: "Opacity",
-          type: "scalar",
-        },
-        ...resolvePromotedParams(layer.id, nodes, edges),
+          paramName: p.params[0],
+          params: p.params,
+          label: p.label,
+          type: "scalar" as ParamType,
+        })),
+        ...(promoted
+          ? resolvePromotedParams(layer.id, nodes, edges).map((t) => ({
+              ...t,
+              params: [t.paramName],
+            }))
+          : []),
       ];
     },
-    [nodes, edges]
+    [nodes, edges, revealed]
   );
 
   // Current value of a track's param at the LIVE playhead — the
   // evaluated keyframe value when animated, else the node's stored
   // constant. Used as the value for a freshly-inserted keyframe.
   const currentValueOf = useCallback(
-    (track: LayerTrack): unknown => {
+    (track: LayerTrack, paramName: string = track.paramName): unknown => {
       const tickNow = playbackClock.get().tick;
-      const block = getAnimation(track.nodeId, track.paramName);
+      const block = getAnimation(track.nodeId, paramName);
       if (block?.animated && block.keyframes.length > 0) {
         return evaluateKeyframesAt(block, track.type, tickNow);
       }
@@ -342,7 +626,13 @@ export function LayersEditor({
         const iv = readInputValues(shell.data.params);
         if (track.label in iv) return iv[track.label];
       }
-      return node?.data.params[track.paramName];
+      // A layer saved before its TRS params existed has none stored — key
+      // the def default rather than `undefined`.
+      return (
+        node?.data.params[paramName] ??
+        getNodeDef(node?.data.defType ?? "")?.params.find((p) => p.name === paramName)
+          ?.default
+      );
     },
     [getAnimation, nodes]
   );
@@ -392,7 +682,7 @@ export function LayersEditor({
     const lanes: { track: LayerTrack; laneTop: number }[] = [];
     let y = 0;
     for (const layer of display) {
-      const tracks = expanded.has(layer.id) ? tracksFor(layer) : [];
+      const tracks = tracksFor(layer);
       const height = ROW_HEIGHT + tracks.length * LANE_HEIGHT;
       tracks.forEach((track, ti) => {
         lanes.push({ track, laneTop: y + ROW_HEIGHT + ti * LANE_HEIGHT });
@@ -401,7 +691,7 @@ export function LayersEditor({
       y += height;
     }
     return { rows, lanes, totalHeight: y };
-  }, [display, expanded, tracksFor]);
+  }, [display, tracksFor]);
   const layoutRef = useRef(rowLayout);
 
   // Sync the refs the window-level handlers read. Runs after every
@@ -412,12 +702,31 @@ export function LayersEditor({
     layoutRef.current = rowLayout;
   });
 
+  // Visual lane of a (node, param) — a grouped lane (Position, Scale,
+  // Anchor) holds several params. -1 when not shown.
+  const laneIndexOf = useCallback(
+    (nodeId: string, paramName: string) =>
+      layoutRef.current.lanes.findIndex((l) => laneHas(l.track, nodeId, paramName)),
+    []
+  );
+  // Stagger ordinal per base: rank of its VISUAL lane among the lanes the
+  // selection touches, so a grouped lane's members move together.
+  const staggerLaneOf = useCallback(
+    (orderedBases: GroupBase[]) => {
+      const lanes = [
+        ...new Set(orderedBases.map((b) => laneIndexOf(b.nodeId, b.paramName))),
+      ].sort((a, b) => a - b);
+      return (base: GroupBase) =>
+        lanes.indexOf(laneIndexOf(base.nodeId, base.paramName));
+    },
+    [laneIndexOf]
+  );
+
   // Stagger fans lanes top → bottom; order bases by their lane Y.
   const orderBasesByLane = useCallback((bases: GroupBase[]): GroupBase[] => {
     const topOf = (b: GroupBase) =>
-      layoutRef.current.lanes.find(
-        (l) => l.track.nodeId === b.nodeId && l.track.paramName === b.paramName
-      )?.laneTop ?? 0;
+      layoutRef.current.lanes.find((l) => laneHas(l.track, b.nodeId, b.paramName))
+        ?.laneTop ?? 0;
     return [...bases].sort((a, b) => topOf(a) - topOf(b));
   }, []);
 
@@ -446,10 +755,20 @@ export function LayersEditor({
 
   // True when the selection spans ≥2 distinct lanes (stagger has an
   // effect only then).
-  const selectionSpansLanes = useCallback((sel: SelectionKey[]) => {
-    const laneSet = new Set(sel.map((s) => laneKey(s.nodeId, s.paramName)));
-    return laneSet.size >= 2;
-  }, []);
+  const selectionSpansLanes = useCallback(
+    (sel: SelectionKey[]) => {
+      // Visual lanes, not params: one Position diamond is two params
+      // but a single lane.
+      const laneSet = new Set(
+        sel.map((s) => {
+          const i = laneIndexOf(s.nodeId, s.paramName);
+          return i >= 0 ? `#${i}` : laneKey(s.nodeId, s.paramName);
+        })
+      );
+      return laneSet.size >= 2;
+    },
+    [laneIndexOf]
+  );
 
   // Apply an easing preset to a set of keyframes (one undo entry).
   const setEasingFor = useCallback(
@@ -517,9 +836,8 @@ export function LayersEditor({
     for (const s of selection) {
       minTick = Math.min(minTick, s.tick);
       maxTick = Math.max(maxTick, s.tick);
-      const lane = rowLayout.lanes.find(
-        (l) =>
-          l.track.nodeId === s.nodeId && l.track.paramName === s.paramName
+      const lane = rowLayout.lanes.find((l) =>
+        laneHas(l.track, s.nodeId, s.paramName)
       );
       if (lane) tops.push(lane.laneTop);
     }
@@ -531,6 +849,83 @@ export function LayersEditor({
       bottom: Math.max(...tops) + LANE_HEIGHT,
     };
   }, [selection, rowLayout]);
+
+  // ---- Easing overlay (same model as the Tracks editor) ----
+  // The pairs the overlay writes to — both keys selected AND adjacent in
+  // their param — seeded from the first pair's shape. A grouped lane's
+  // members are separate params sharing one visual row, so easing a
+  // Position pair eases X and Y together. Only computed while open.
+  const easingModel = useMemo(() => {
+    if (!easingEditorOpen) return null;
+    const laneOf = new Map<string, EasingLane>();
+    rowLayout.lanes.forEach(({ track }, i) => {
+      for (const paramName of track.params) {
+        const block = getAnimation(track.nodeId, paramName);
+        if (!block) continue;
+        laneOf.set(laneKey(track.nodeId, paramName), {
+          keyframes: block.keyframes,
+          paramType: track.type,
+          rowIdx: i,
+        });
+      }
+    });
+    const getLane = (nodeId: string, paramName: string) =>
+      laneOf.get(laneKey(nodeId, paramName));
+    const { pairs, skippedStepOnly } = easingPairsFor(selection, getLane);
+    const keysOf = (p: EasingPair): [Keyframe, Keyframe] | undefined => {
+      const ks = getLane(p.nodeId, p.paramName)?.keyframes;
+      const a = ks?.find((k) => k.tick === p.aTick);
+      const b = ks?.find((k) => k.tick === p.bTick);
+      return a && b ? [a, b] : undefined;
+    };
+    const first = firstEasingPair(pairs);
+    const firstKeys = first ? keysOf(first) : undefined;
+    return {
+      pairs,
+      seed: firstKeys ? seedForPair(firstKeys[0], firstKeys[1]) : null,
+      mixed: !pairsUniform(pairs, keysOf),
+      emptyReason:
+        pairs.length === 0 && skippedStepOnly
+          ? "Boolean and enum tracks hold their value between keys — easing doesn't apply"
+          : pairs.length === 0 && selection.length >= 2
+            ? "Select keyframes that sit next to each other in a track"
+            : null,
+    };
+  }, [easingEditorOpen, rowLayout, selection, getAnimation]);
+
+  // Rewrite the pair-owning keys, one onAnimationChange per param; the
+  // overlay mints one gestureKey per drag / shelf click (one undo entry).
+  const rewriteEasingPairs = (
+    pairs: EasingPair[],
+    gestureKey: string,
+    rewrite: (keyframes: Keyframe[], aTicks: Set<number>) => Keyframe[]
+  ) => {
+    const byLane = new Map<string, EasingPair[]>();
+    for (const p of pairs) {
+      const k = laneKey(p.nodeId, p.paramName);
+      const list = byLane.get(k);
+      if (list) list.push(p);
+      else byLane.set(k, [p]);
+    }
+    for (const items of byLane.values()) {
+      const { nodeId, paramName } = items[0];
+      const block = getAnimation(nodeId, paramName);
+      if (!block) continue;
+      const aTicks = new Set(items.map((p) => p.aTick));
+      onAnimationChange(
+        nodeId,
+        paramName,
+        { ...block, keyframes: rewrite(block.keyframes, aTicks) },
+        gestureKey
+      );
+    }
+  };
+  const applyEasingToPairs = (pairs: EasingPair[], bezier: BezierEasing, gestureKey: string) =>
+    rewriteEasingPairs(pairs, gestureKey, (ks, a) => applyBezierToLane(ks, a, bezier));
+  const applyPresetToPairs = (pairs: EasingPair[], preset: EasingPreset, gestureKey: string) =>
+    rewriteEasingPairs(pairs, gestureKey, (ks, a) => applyPresetToLane(ks, a, preset));
+  const applySpringToPairs = (pairs: EasingPair[], spring: SpringEasing, gestureKey: string) =>
+    rewriteEasingPairs(pairs, gestureKey, (ks, a) => applySpringToLane(ks, a, spring));
 
   // Whether the user's last pointer-down landed inside this editor — so
   // Delete removes keyframes here, but still deletes nodes when the user
@@ -562,7 +957,30 @@ export function LayersEditor({
           setSelection([]);
           setSelectedClip(null);
           setKfMenu(null);
+        } else if (selectedRowsRef.current.length > 0) {
+          onSelectLayers?.([], null);
         }
+        return;
+      }
+      // AE property reveal (§5): A / P / S / R / T / U show only that
+      // property on the selected rows (every row when none is selected);
+      // Shift adds or removes it. Capture phase + stopPropagation so,
+      // while this editor was last clicked, Shift+S / Shift+R don't also
+      // toggle the viewport split / rulers (EffectsApp's window handler).
+      const reveal = !e.metaKey && !e.ctrlKey && !e.altKey ? revealKeyFor(e.key) : null;
+      if (reveal) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        const targets =
+          selectedRowsRef.current.length > 0
+            ? selectedRowsRef.current
+            : display.map((l) => l.id);
+        setRevealed((prev) =>
+          applyRevealKey(prev, targets, reveal, e.shiftKey, (id) =>
+            animatedProperties(id, getAnimation)
+          )
+        );
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -583,7 +1001,7 @@ export function LayersEditor({
     const win = panelWin ?? window;
     win.addEventListener("keydown", onKey, true);
     return () => win.removeEventListener("keydown", onKey, true);
-  }, [deleteSelection, deleteSelectedClip, panelWin]);
+  }, [deleteSelection, deleteSelectedClip, panelWin, display, getAnimation, onSelectLayers]);
 
   // Stagger from the dock header's stagger control. The control fires
   // `keyframe-stagger-begin` (snapshot the multi-lane selection),
@@ -592,14 +1010,17 @@ export function LayersEditor({
   // control reports "no effect" to the user.
   const staggerBaseRef = useRef<{
     bases: GroupBase[];
+    laneOf: (base: GroupBase) => number;
     gestureKey: string;
   } | null>(null);
   useEffect(() => {
     const onBegin = (e: Event) => {
       const sel = selectionRef.current;
       if (selectionSpansLanes(sel)) {
+        const bases = orderBasesByLane(buildGroupBases(sel, getAnimation));
         staggerBaseRef.current = {
-          bases: orderBasesByLane(buildGroupBases(sel, getAnimation)),
+          bases,
+          laneOf: staggerLaneOf(bases),
           gestureKey: nextGestureKey("stagger"),
         };
         (e as CustomEvent).detail?.respond?.(true);
@@ -613,10 +1034,12 @@ export function LayersEditor({
       const ticks = (e as CustomEvent<{ stepTicks: number }>).detail?.stepTicks;
       if (typeof ticks === "number") {
         applyKeyframeOp(
-          staggerKeyframesOp(base.bases, ticks, {
-            snap: true,
-            ticksPerFrame: timeline.ticksPerFrame,
-          }),
+          staggerKeyframesOp(
+            base.bases,
+            ticks,
+            { snap: true, ticksPerFrame: timeline.ticksPerFrame },
+            base.laneOf
+          ),
           base.gestureKey
         );
       }
@@ -640,6 +1063,7 @@ export function LayersEditor({
     applyKeyframeOp,
     orderBasesByLane,
     selectionSpansLanes,
+    staggerLaneOf,
     getAnimation,
     timeline.ticksPerFrame,
   ]);
@@ -700,25 +1124,38 @@ export function LayersEditor({
   // Toggle a keyframe at the playhead (the lane-label diamond). Reads
   // the playhead imperatively so the toggle always lands at the live
   // tick.
+  // A grouped lane (Position, Scale, Anchor) toggles ALL its members as one
+  // undo step: any member keyed here → remove the key from every member,
+  // otherwise key every member at its current value.
   const toggleKeyAtPlayhead = useCallback(
     (track: LayerTrack) => {
       const tickNow = playbackClock.get().tick;
-      const block = getAnimation(track.nodeId, track.paramName);
-      if (block && findKeyframeAt(block, tickNow)) {
-        const next = removeKeyframeAt(block, tickNow);
-        onAnimationChange(
-          track.nodeId,
-          track.paramName,
-          next.keyframes.length > 0 ? { ...next, animated: true } : undefined
-        );
-      } else {
-        const base = block ?? emptyAnimationBlock();
-        const next = upsertKeyframe(
-          { ...base, animated: true },
-          tickNow,
-          currentValueOf(track)
-        );
-        onAnimationChange(track.nodeId, track.paramName, next);
+      const gestureKey =
+        track.params.length > 1 ? nextGestureKey("toggle-key") : undefined;
+      const anyKeyed = track.params.some((p) => {
+        const b = getAnimation(track.nodeId, p);
+        return !!b && !!findKeyframeAt(b, tickNow);
+      });
+      for (const paramName of track.params) {
+        const block = getAnimation(track.nodeId, paramName);
+        if (anyKeyed) {
+          if (!block || !findKeyframeAt(block, tickNow)) continue;
+          const next = removeKeyframeAt(block, tickNow);
+          onAnimationChange(
+            track.nodeId,
+            paramName,
+            next.keyframes.length > 0 ? { ...next, animated: true } : undefined,
+            gestureKey
+          );
+        } else {
+          const base = block ?? emptyAnimationBlock();
+          const next = upsertKeyframe(
+            { ...base, animated: true },
+            tickNow,
+            currentValueOf(track, paramName)
+          );
+          onAnimationChange(track.nodeId, paramName, next, gestureKey);
+        }
       }
     },
     [getAnimation, onAnimationChange, currentValueOf]
@@ -738,12 +1175,14 @@ export function LayersEditor({
   const lanesHoverRef = useRef<HoverLineHandle | null>(null);
   const setHoverLineX = (x: number | null) => {
     rulerHoverRef.current?.set(x);
-    lanesHoverRef.current?.set(x == null ? null : LABEL_WIDTH + x);
+    lanesHoverRef.current?.set(x == null ? null : labelWidth + x);
   };
-  // Hide the preview while a drag owns the cursor.
+  // Hide the preview while a drag owns the cursor. (Clears through the
+  // refs directly: setHoverLineX closes over the live label width.)
   useEffect(() => {
-    if (drag.kind !== "none") setHoverLineX(null);
-     
+    if (drag.kind === "none") return;
+    rulerHoverRef.current?.set(null);
+    lanesHoverRef.current?.set(null);
   }, [drag.kind]);
   // "+ Layer" dropdown (Empty / Text / Image / Video).
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -767,6 +1206,18 @@ export function LayersEditor({
   // for vertical scroll + reorder Y.
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const [lanesWidth, setLanesWidth] = useState(0);
+
+  // Editor height, for the easing overlay's max height.
+  const [containerHeight, setContainerHeight] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      setContainerHeight(entries[0]?.contentRect.height ?? 0);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Measure the timeline column so fit + ruler know its width.
   useEffect(() => {
@@ -804,7 +1255,12 @@ export function LayersEditor({
     fit();
   }, [fitVersion, fit]);
 
-  // Wheel: plain = pan horizontally; Cmd/Ctrl = zoom anchored to cursor.
+  // Wheel — same model as the Tracks editor:
+  //  • trackpad two-finger: vertical scrolls the layer list, horizontal
+  //    pans the time axis; Cmd/Ctrl (and pinch, which arrives as
+  //    Ctrl+wheel) zooms time about the cursor.
+  //  • mouse wheel: zooms time about the cursor over the timeline; Shift,
+  //    or scrolling over the labels column, scrolls the list instead.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -812,27 +1268,31 @@ export function LayersEditor({
       const rect = timelineRef.current?.getBoundingClientRect();
       const dx = e.deltaX || 0;
       const dy = e.deltaY || 0;
-      // Zoom on an explicit modifier OR when the device is a mouse (wheel
-      // zooms about the cursor); otherwise a trackpad two-finger scroll pans.
-      if (wheelWantsZoom(e) && rect) {
-        e.preventDefault();
-        e.stopPropagation();
+      const overTimeline = !!rect && e.clientX >= rect.left;
+      const scrollList = (by: number) => {
+        const list = lanesAreaRef.current;
+        if (list && by !== 0) list.scrollTop += by;
+      };
+      const zoomAt = (by: number) => {
+        if (!rect) return;
         const mx = e.clientX - rect.left;
-        zoomTo(
-          mx,
-          pxToTick(mx),
-          pixelsPerTick * Math.exp(-(dx || dy) * ZOOM_SENSITIVITY)
-        );
-        return;
-      }
-      // Plain wheel pans the time axis (horizontal scroll, or vertical
-      // when the trackpad only reports dy).
+        zoomTo(mx, pxToTick(mx), pixelsPerTick * Math.exp(-by * ZOOM_SENSITIVITY));
+      };
       e.preventDefault();
       e.stopPropagation();
-      const panBy = dx !== 0 ? dx : dy;
-      setViewTickOffset((prev) =>
-        Math.max(0, prev + panBy / pixelsPerTick)
-      );
+      if (getEffectiveDevice() === "mouse") {
+        if (e.shiftKey || !overTimeline) scrollList(dy);
+        else zoomAt(Math.abs(dx) > Math.abs(dy) ? dx : dy);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey) {
+        zoomAt(dx || dy);
+        return;
+      }
+      scrollList(dy);
+      if (dx !== 0) {
+        setViewTickOffset((prev) => Math.max(0, prev + dx / pixelsPerTick));
+      }
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
@@ -954,7 +1414,16 @@ export function LayersEditor({
             { ...opts, slipsInTrim: drag.slipsInTrim }
           );
         }
-        if (next) onClipChange(drag.nodeId, next);
+        if (next) {
+          onClipChange(drag.nodeId, next, drag.gestureKey);
+          if (drag.startKeys) {
+            const delta =
+              next[drag.clipIndex].inTick - drag.startClips[drag.clipIndex].inTick;
+            for (const u of shiftBlocks(drag.nodeId, drag.startKeys, delta)) {
+              onAnimationChange(u.nodeId, u.paramName, u.next, drag.gestureKey);
+            }
+          }
+        }
         return;
       }
       if (drag.kind === "reorder") {
@@ -988,12 +1457,9 @@ export function LayersEditor({
           // Option/Alt held → stagger the selection across lanes; the
           // drag delta becomes the per-lane step.
           if (drag.stagger) {
+            const ordered = orderBasesByLane(drag.bases);
             applyKeyframeOp(
-              staggerKeyframesOp(
-                orderBasesByLane(drag.bases),
-                deltaTicks,
-                opts
-              ),
+              staggerKeyframesOp(ordered, deltaTicks, opts, staggerLaneOf(ordered)),
               drag.gestureKey
             );
           } else {
@@ -1054,18 +1520,13 @@ export function LayersEditor({
           for (const lane of layoutRef.current.lanes) {
             const cy = lane.laneTop + LANE_HEIGHT / 2;
             if (cy < y0 || cy > y1) continue;
-            const block = getAnimation(
-              lane.track.nodeId,
-              lane.track.paramName
-            );
-            for (const k of block?.keyframes ?? []) {
-              const px = tickToPx(k.tick);
-              if (px >= x0 && px <= x1) {
-                hits.push({
-                  nodeId: lane.track.nodeId,
-                  paramName: lane.track.paramName,
-                  tick: k.tick,
-                });
+            for (const paramName of lane.track.params) {
+              const block = getAnimation(lane.track.nodeId, paramName);
+              for (const k of block?.keyframes ?? []) {
+                const px = tickToPx(k.tick);
+                if (px >= x0 && px <= x1) {
+                  hits.push({ nodeId: lane.track.nodeId, paramName, tick: k.tick });
+                }
               }
             }
           }
@@ -1085,7 +1546,7 @@ export function LayersEditor({
       }
       if (drag.kind === "reorder") {
         if (!drag.moved) {
-          onSelectLayer(drag.nodeId);
+          selectRow(drag.nodeId, drag.selectMode);
         } else {
           // display is TOP→BOTTOM; build the new top→bottom order with
           // the dragged layer moved to overIndex, then hand back
@@ -1130,11 +1591,12 @@ export function LayersEditor({
     onScrub,
     onClipChange,
     onReorder,
-    onSelectLayer,
+    selectRow,
     onAnimationChange,
     getAnimation,
     applyKeyframeOp,
     orderBasesByLane,
+    staggerLaneOf,
     display,
     timeline.ticksPerFrame,
   ]);
@@ -1228,7 +1690,7 @@ export function LayersEditor({
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
-    onSelectLayer(nodeId);
+    selectRow(nodeId, rowSelectModeOf(e));
     // Select the clicked window (real clips only — a ghost has no
     // window to delete). Clear any keyframe selection.
     setSelectedClip(clipIndex >= 0 ? { nodeId, index: clipIndex } : null);
@@ -1239,6 +1701,16 @@ export function LayersEditor({
     // baseline; it's only written once the drag actually moves.
     const startClips =
       clips && clips.length > 0 ? clips : [defaultClip(inTick, outTick)];
+    // D5: a move of a single-window layer carries its own keys along.
+    let startKeys: Map<string, KeyframeAnimationBlock> | null = null;
+    if (mode === "move" && startClips.length === 1) {
+      startKeys = new Map();
+      for (const name of LAYER_OWN_PARAMS) {
+        const b = getAnimation(nodeId, name);
+        if (b && b.keyframes.length > 0) startKeys.set(name, b);
+      }
+      if (startKeys.size === 0) startKeys = null;
+    }
     setDrag({
       kind: "bar",
       nodeId,
@@ -1247,6 +1719,8 @@ export function LayersEditor({
       startMouseX: e.clientX,
       startClips,
       slipsInTrim: clipSlipsOnInTrim(layer?.data.defType ?? "layer"),
+      startKeys,
+      gestureKey: nextGestureKey("bar"),
     });
   };
 
@@ -1265,23 +1739,25 @@ export function LayersEditor({
     e.stopPropagation();
     e.preventDefault();
     setSelectedClip(null);
-    const key: SelectionKey = {
-      nodeId: track.nodeId,
-      paramName: track.paramName,
-      tick,
+    // Every member key at this tick (a grouped lane's diamond is several
+    // per-param keys); the shared keyframe ops then move them together.
+    const keys = memberKeysAt(track.nodeId, track.params, tick, getAnimation);
+    const ks = new Set(keys.map(selKey));
+    const allSelected = (sel: SelectionKey[]) => {
+      const have = new Set(sel.map(selKey));
+      return keys.every((key) => have.has(selKey(key)));
     };
-    const k = selKey(key);
     if (e.shiftKey) {
       setSelection((prev) =>
-        prev.some((s) => selKey(s) === k)
-          ? prev.filter((s) => selKey(s) !== k)
-          : [...prev, key]
+        allSelected(prev)
+          ? prev.filter((s) => !ks.has(selKey(s)))
+          : [...prev, ...keys.filter((key) => !prev.some((s) => selKey(s) === selKey(key)))]
       );
       return;
     }
     let sel = selectionRef.current;
-    if (!sel.some((s) => selKey(s) === k)) {
-      sel = [key];
+    if (!allSelected(sel)) {
+      sel = keys;
       setSelection(sel);
     }
     setDrag({
@@ -1312,11 +1788,9 @@ export function LayersEditor({
     e.stopPropagation();
     e.preventDefault();
     setSelectedClip(null);
-    const keys: SelectionKey[] = ticks.map((tick) => ({
-      nodeId: track.nodeId,
-      paramName: track.paramName,
-      tick,
-    }));
+    const keys: SelectionKey[] = ticks.flatMap((tick) =>
+      memberKeysAt(track.nodeId, track.params, tick, getAnimation)
+    );
     if (e.shiftKey) {
       setSelection((prev) => [
         ...prev,
@@ -1338,18 +1812,13 @@ export function LayersEditor({
   const openKfMenu = (e: React.MouseEvent, track: LayerTrack, tick: number) => {
     e.preventDefault();
     e.stopPropagation();
-    const key: SelectionKey = {
-      nodeId: track.nodeId,
-      paramName: track.paramName,
-      tick,
-    };
-    const k = selKey(key);
-    // Right-clicking an unselected key targets just it; otherwise the
-    // whole current selection.
-    const targets = selectionRef.current.some((s) => selKey(s) === k)
-      ? selectionRef.current
-      : [key];
-    if (!selectionRef.current.some((s) => selKey(s) === k)) setSelection([key]);
+    const keys = memberKeysAt(track.nodeId, track.params, tick, getAnimation);
+    const have = new Set(selectionRef.current.map(selKey));
+    const inSel = keys.some((key) => have.has(selKey(key)));
+    // Right-clicking an unselected key targets just it (every member at
+    // that tick, for a grouped lane); otherwise the whole selection.
+    const targets = inSel ? selectionRef.current : keys;
+    if (!inSel) setSelection(keys);
     const allScalar = targets.every((t) => {
       const def = getNodeDef(
         nodes.find((n) => n.id === t.nodeId)?.data.defType ?? ""
@@ -1392,6 +1861,8 @@ export function LayersEditor({
       }}
       onMouseLeave={() => setHoverLineX(null)}
       style={{
+        // Positioning context for the easing overlay (pinned top-right).
+        position: "relative",
         width: "100%",
         height: "100%",
         display: "flex",
@@ -1414,7 +1885,7 @@ export function LayersEditor({
           ref={addMenuRef}
           style={{
             position: "relative",
-            width: LABEL_WIDTH,
+            width: labelWidth,
             flexShrink: 0,
             // No right divider — the gutter below is a card with its own
             // frame, so a rule here would dangle above nothing.
@@ -1594,14 +2065,14 @@ export function LayersEditor({
             left: GUTTER_INSET,
             top: GUTTER_INSET,
             bottom: GUTTER_INSET,
-            width: GUTTER_CARD_WIDTH,
+            width: cardWidth,
             background: COLOR_GUTTER_BG,
             borderRadius: GUTTER_RADIUS,
             pointerEvents: "none",
           }}
         />
         {/* Frame-division grid over the LANE half only (the gutter card
-            owns everything left of LABEL_WIDTH). A fixed backdrop, like
+            owns everything left of labelWidth). A fixed backdrop, like
             the card fill: it sits outside the scroller so it doesn't move
             with the rows, and before it in the DOM so every row, clip bar
             and keyframe paints over it. */}
@@ -1609,7 +2080,7 @@ export function LayersEditor({
           aria-hidden
           style={{
             position: "absolute",
-            left: LABEL_WIDTH,
+            left: labelWidth,
             right: 0,
             top: GUTTER_INSET,
             bottom: GUTTER_INSET,
@@ -1650,9 +2121,9 @@ export function LayersEditor({
         )}
         {display.map((layer, i) => {
           const windows = windowsFor(layer);
-          const isSelected = layer.id === selectedId;
+          const isSelected = selectedRowSet.has(layer.id);
           const hidden = !!layer.data.bypassed;
-          const isExpanded = expanded.has(layer.id);
+          const isExpanded = revealed.has(layer.id);
           const tracks = isExpanded ? tracksFor(layer) : [];
           const reorderActive =
             drag.kind === "reorder" && drag.moved && drag.nodeId === layer.id;
@@ -1666,7 +2137,14 @@ export function LayersEditor({
                 // Translucent, not the old opaque #13131a: this row spans
                 // the gutter card, and an opaque fill would black out the
                 // card's left inset and frame wherever a row is selected.
-                background: isSelected ? "color-mix(in srgb, var(--tb-lift) 4.5%, transparent)" : "transparent",
+                // Selected rows read clearly (an accent wash + a bolder
+                // name), not the old 4.5% lift that was easy to miss.
+                // Still translucent: this row spans the gutter card.
+                background: isSelected
+                  ? "color-mix(in srgb, var(--tb-a-blue-500) 14%, transparent)"
+                  : hoverParentId === layer.id
+                    ? "color-mix(in srgb, var(--tb-a-blue-500) 7%, transparent)"
+                    : "transparent",
                 borderBottom: "1px solid var(--tb-n-2)",
               }}
             >
@@ -1674,14 +2152,17 @@ export function LayersEditor({
                   select / reorder; double-click dives in. */}
               <div
                 style={{
-                  width: LABEL_WIDTH,
+                  width: labelWidth,
                   flexShrink: 0,
                   display: "flex",
                   alignItems: "center",
                   gap: 4,
                   // The gutter card's inset is padding here; its right
-                  // edge is the card's own frame, so no divider rule.
+                  // edge is the card's own frame, so no divider rule. The
+                  // right pad keeps the Blend / Parent controls off that
+                  // frame (layer-pane.ts ROW_FIXED counts it).
                   paddingLeft: GUTTER_INSET + 4,
+                  paddingRight: 8,
                   cursor: "grab",
                   userSelect: "none",
                 }}
@@ -1693,6 +2174,7 @@ export function LayersEditor({
                     startMouseY: e.clientY,
                     overIndex: i,
                     moved: false,
+                    selectMode: rowSelectModeOf(e),
                   });
                 }}
                 onDoubleClick={() => onDiveLayer(layer.id)}
@@ -1703,12 +2185,7 @@ export function LayersEditor({
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setExpanded((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(layer.id)) next.delete(layer.id);
-                      else next.add(layer.id);
-                      return next;
-                    });
+                    setRevealed((prev) => toggleRevealAll(prev, layer.id));
                   }}
                   style={{
                     width: 14,
@@ -1760,6 +2237,7 @@ export function LayersEditor({
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                     fontSize: 10,
+                    fontWeight: isSelected ? 600 : 400,
                     // Dimmed to match the Tracks gutter — the card is a
                     // quiet surface, the lanes are the loud one.
                     color: hidden
@@ -1771,6 +2249,44 @@ export function LayersEditor({
                 >
                   {layer.data.name}
                 </span>
+                {showBlend && (
+                  <span style={{ marginLeft: 2, display: "inline-flex" }}>
+                    <LayerBlendSelect
+                      width={BLEND_SLOT - 6}
+                      value={(layer.data.params.blendMode as string) ?? "normal"}
+                      onChange={(mode) =>
+                        onParamChange!(layer.id, "blendMode", mode)
+                      }
+                    />
+                  </span>
+                )}
+                {showParent &&
+                  (() => {
+                    const parent = layerParentOf(nodes, edges, layer.id);
+                    // A non-layer source, or a layer outside this chain
+                    // (hand-wired across compositions), shows read-only.
+                    const external =
+                      parent &&
+                      (!parent.isLayer || !display.some((l) => l.id === parent.id))
+                        ? (nodes.find((n) => n.id === parent.id)?.data.name ??
+                          parent.id)
+                        : null;
+                    const options = parentOptionsByLayer.get(layer.id) ?? [];
+                    return (
+                      <span style={{ marginLeft: 2, display: "inline-flex" }}>
+                        <LayerParentSelect
+                          width={PARENT_SLOT - 6}
+                          value={parent && !external ? parent.id : null}
+                          external={external}
+                          options={options}
+                          onChange={(parentId, keepInPlace) =>
+                            onSetLayerParent!(layer.id, parentId, keepInPlace)
+                          }
+                          onHoverParent={setHoverParentId}
+                        />
+                      </span>
+                    );
+                  })()}
                 {readLayerTarget(layer.data.params) === "skia" && (
                   <span style={{ marginRight: 8, display: "inline-flex" }}>
                     <SkiaLayerBadge />
@@ -1783,7 +2299,7 @@ export function LayersEditor({
                   bar. */}
               <div
                 style={{ position: "relative", flex: 1, overflow: "hidden" }}
-                onPointerDown={() => onSelectLayer(layer.id)}
+                onPointerDown={(e) => selectRow(layer.id, rowSelectModeOf(e))}
                 onDoubleClick={() => onDiveLayer(layer.id)}
               >
                 {windows.map((w) => {
@@ -1965,13 +2481,16 @@ export function LayersEditor({
 
             {/* Keyframe lanes (twirl-down). */}
             {tracks.map((track) => {
-              const laneBlock = getAnimation(track.nodeId, track.paramName);
+              const laneBlock = mergeLaneBlocks(
+                track.params.map((p) => getAnimation(track.nodeId, p))
+              );
               return (
               <KeyframeLane
-                key={`${track.nodeId}:${track.paramName}`}
+                key={`${track.nodeId}:${track.params.join("+")}`}
                 track={track}
                 block={laneBlock}
                 tickToPx={tickToPx}
+                labelWidth={labelWidth}
                 selSet={selSet}
                 onToggleKey={() => toggleKeyAtPlayhead(track)}
                 onSeek={onScrub}
@@ -2038,7 +2557,7 @@ export function LayersEditor({
           <div
             style={{
               position: "absolute",
-              left: LABEL_WIDTH + tickToPx(selectionBox.minTick) - 4,
+              left: labelWidth + tickToPx(selectionBox.minTick) - 4,
               width:
                 tickToPx(selectionBox.maxTick) -
                 tickToPx(selectionBox.minTick) +
@@ -2128,7 +2647,7 @@ export function LayersEditor({
             leaf). */}
         <PlayheadLine
           tickToPx={tickToPx}
-          leftOffset={LABEL_WIDTH}
+          leftOffset={labelWidth}
           visibleWidth={lanesWidth}
         />
         </div>
@@ -2142,14 +2661,71 @@ export function LayersEditor({
             left: GUTTER_INSET,
             top: GUTTER_INSET,
             bottom: GUTTER_INSET,
-            width: GUTTER_CARD_WIDTH,
+            width: cardWidth,
             borderRadius: GUTTER_RADIUS,
             boxShadow: `inset 0 0 0 1px ${COLOR_GUTTER_BORDER}`,
             pointerEvents: "none",
             zIndex: 1,
           }}
         />
+        {/* Resize grip on the card's right edge: drag to widen / narrow
+            the label pane (optional columns drop as it narrows),
+            double-click to reset. */}
+        <div
+          title="Drag to resize · double-click to reset"
+          onPointerDown={startPaneResize}
+          onDoubleClick={resetPaneWidth}
+          style={{
+            position: "absolute",
+            left: GUTTER_INSET + cardWidth - 3,
+            top: GUTTER_INSET,
+            bottom: GUTTER_INSET,
+            width: 6,
+            cursor: "ew-resize",
+            touchAction: "none",
+            zIndex: 2,
+          }}
+        />
       </div>
+
+      {/* Easing overlay — pinned to the upper-right corner, under the
+          ruler (same placement as the Tracks editor). */}
+      {easingEditorOpen && easingModel && (
+        <div
+          style={{
+            position: "absolute",
+            top: RULER_HEIGHT + 6,
+            right: 8,
+            zIndex: 6,
+          }}
+        >
+          <EasingEditorOverlay
+            seed={easingModel.seed}
+            pairCount={easingModel.pairs.length}
+            mixed={easingModel.mixed}
+            emptyReason={easingModel.emptyReason}
+            maxHeight={
+              containerHeight > 0
+                ? Math.max(120, containerHeight - (RULER_HEIGHT + 6) - 8)
+                : undefined
+            }
+            onApply={(bezier, gestureKey) =>
+              applyEasingToPairs(easingModel.pairs, bezier, gestureKey)
+            }
+            onApplyPreset={(preset, gestureKey) =>
+              applyPresetToPairs(easingModel.pairs, preset, gestureKey)
+            }
+            onApplySpring={(spring, gestureKey) =>
+              applySpringToPairs(easingModel.pairs, spring, gestureKey)
+            }
+            onClose={() => onEasingEditorOpenChange?.(false)}
+            presets={savedEasings}
+            onSavePreset={onSaveEasing}
+            onRenamePreset={onRenameEasing}
+            onDeletePreset={onDeleteEasing}
+          />
+        </div>
+      )}
 
       {/* Right-click quick-easing menu for the selected keyframe(s). */}
       {kfMenu && (
@@ -2298,6 +2874,7 @@ function KeyframeLane({
   track,
   block,
   tickToPx,
+  labelWidth,
   selSet,
   onToggleKey,
   onSeek,
@@ -2309,6 +2886,7 @@ function KeyframeLane({
   track: LayerTrack;
   block: KeyframeAnimationBlock | undefined;
   tickToPx: (tick: number) => number;
+  labelWidth: number;
   selSet: Set<string>;
   onToggleKey: () => void;
   onSeek: (tick: number) => void;
@@ -2337,7 +2915,7 @@ function KeyframeLane({
     >
       <div
         style={{
-          width: LABEL_WIDTH,
+          width: labelWidth,
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
@@ -2445,12 +3023,8 @@ function KeyframeLane({
           );
         })}
         {(block?.keyframes ?? []).map((k) => {
-          const isSel = selSet.has(
-            selKey({
-              nodeId: track.nodeId,
-              paramName: track.paramName,
-              tick: k.tick,
-            })
+          const isSel = track.params.some((paramName) =>
+            selSet.has(selKey({ nodeId: track.nodeId, paramName, tick: k.tick }))
           );
           const x = tickToPx(k.tick);
           const isHover = !isSel && hoverTick === k.tick;

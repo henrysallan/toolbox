@@ -48,6 +48,12 @@
 // The returned `layerOf` maps every surviving node id to its nearest
 // enclosing layer (via the original parentId chains). The evaluator
 // uses it to put layer interiors on AE-style local time.
+//
+// Layer transforms (splitLayerTransforms, last step): a layer that uses
+// its transform gets an eval-only `layer-xform` node computing its world
+// transform. The layer's `transform` input and `aux:transform` output are
+// rerouted onto that node, which feeds back into the layer's hidden
+// `__xform` input, so transform paths never pass through the stack chain.
 
 import type { GraphEdge, GraphNode } from "./evaluator";
 import {
@@ -58,6 +64,9 @@ import {
   ITERATE_PARAM_PREFIX,
   ITERATE_PASSTHROUGH_PREFIX,
   LAYER_TYPE,
+  LAYER_XFORM_INPUT,
+  LAYER_XFORM_TYPE,
+  layerXformId,
   isZoneInput,
   isGroupInputWidgetType,
   isZoneShell,
@@ -66,6 +75,11 @@ import {
   readInputValues,
 } from "./groups";
 import { parseTargetHandleKind, REROUTE_TYPE } from "./graph-helpers";
+import {
+  isIdentityOp,
+  opFromParams,
+  TRANSFORM_TRS_PARAMS,
+} from "./transform-value";
 
 function isStructuralType(type: string): boolean {
   return (
@@ -603,7 +617,136 @@ export function flattenGraph(
     }
   }
 
-  return { nodes: patchedNodes, edges: outEdges, layerOf, iterateInteriors };
+  const split = splitLayerTransforms(patchedNodes, outEdges);
+  return { nodes: split.nodes, edges: split.edges, layerOf, iterateInteriors };
+}
+
+const LAYER_TRS_NAMES: ReadonlySet<string> = new Set(
+  TRANSFORM_TRS_PARAMS.map((p) => p.name)
+);
+
+function isLayerTrsParamHandle(handle: string): boolean {
+  const parsed = parseTargetHandleKind(handle);
+  return parsed?.kind === "param" && LAYER_TRS_NAMES.has(parsed.name);
+}
+
+// Synthesize a `layer-xform` node for every layer that uses its transform
+// — a transform wire in or out, a wired TRS param, a non-identity TRS, or
+// TRS keyframes — and reroute its transform edges onto it
+// (101526_layer-transforms-parenting.md §3):
+//
+//   X → (L, in:transform)          becomes X → (Lx, in:parent)
+//   X → (L, in:param:<trs>)        becomes X → (Lx, in:param:<trs>)
+//   (L, out:aux:transform) → Y     becomes (Lx, out:primary) → Y
+//   + (Lx, out:primary) → (L, in:__xform)
+//
+// Lx shares L's params/animation/exposedParams by reference (fingerprints
+// see the same objects) and has no clips or bypass, so a gated or hidden
+// parent keeps driving its children. Layers that don't use a transform are
+// left alone, so their flat graph is exactly what it was before layer
+// transforms existed.
+function splitLayerTransforms(
+  nodes: GraphNode[],
+  edges: GraphEdge[]
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const layers = nodes.filter((n) => n.type === LAYER_TYPE);
+  if (layers.length === 0) return { nodes, edges };
+  const layerIds = new Set(layers.map((n) => n.id));
+  const wired = new Set<string>();
+  for (const e of edges) {
+    if (
+      layerIds.has(e.target) &&
+      (e.targetHandle === "in:transform" ||
+        isLayerTrsParamHandle(e.targetHandle))
+    ) {
+      wired.add(e.target);
+    }
+    if (layerIds.has(e.source) && e.sourceHandle === "out:aux:transform") {
+      wired.add(e.source);
+    }
+  }
+  const usesTransform = (n: GraphNode): boolean => {
+    if (wired.has(n.id)) return true;
+    if (!isIdentityOp(opFromParams(n.params))) return true;
+    if (!n.animation) return false;
+    for (const name of LAYER_TRS_NAMES) {
+      const block = n.animation[name];
+      if (block?.animated && block.keyframes.length > 0) return true;
+    }
+    return false;
+  };
+  const splitLayers = layers.filter(usesTransform);
+  if (splitLayers.length === 0) return { nodes, edges };
+  const splitIds = new Set(splitLayers.map((n) => n.id));
+
+  // A parenting loop between layers (only a hand-mangled file — the UI
+  // refuses them) would be a cycle, and the evaluator's topo sort silently
+  // drops every node on or downstream of a cycle: a blank frame. Cut the
+  // parent link that closes each loop instead, so the file still renders.
+  const parentEdgeOf = new Map<string, GraphEdge>();
+  for (const e of edges) {
+    if (
+      splitIds.has(e.target) &&
+      e.targetHandle === "in:transform" &&
+      splitIds.has(e.source) &&
+      e.sourceHandle === "out:aux:transform"
+    ) {
+      parentEdgeOf.set(e.target, e);
+    }
+  }
+  const cutEdges = new Set<GraphEdge>();
+  const settled = new Set<string>();
+  for (const l of splitLayers) {
+    const onPath = new Set<string>();
+    let cur: string | undefined = l.id;
+    while (cur && !settled.has(cur)) {
+      onPath.add(cur);
+      const up = parentEdgeOf.get(cur);
+      if (!up) break;
+      if (onPath.has(up.source)) {
+        cutEdges.add(up);
+        break;
+      }
+      cur = up.source;
+    }
+    for (const id of onPath) settled.add(id);
+  }
+
+  const outEdges = (
+    cutEdges.size === 0 ? edges : edges.filter((e) => !cutEdges.has(e))
+  ).map((e) => {
+    let next = e;
+    if (splitIds.has(e.target)) {
+      if (e.targetHandle === "in:transform") {
+        next = { ...next, target: layerXformId(e.target), targetHandle: "in:parent" };
+      } else if (isLayerTrsParamHandle(e.targetHandle)) {
+        next = { ...next, target: layerXformId(e.target) };
+      }
+    }
+    if (splitIds.has(e.source) && e.sourceHandle === "out:aux:transform") {
+      next = { ...next, source: layerXformId(e.source), sourceHandle: "out:primary" };
+    }
+    return next;
+  });
+  const outNodes = nodes.slice();
+  for (const l of splitLayers) {
+    const xid = layerXformId(l.id);
+    outNodes.push({
+      id: xid,
+      type: LAYER_XFORM_TYPE,
+      params: l.params,
+      ...(l.animation ? { animation: l.animation } : {}),
+      ...(l.exposedParams ? { exposedParams: l.exposedParams } : {}),
+    });
+    outEdges.push({
+      id: `${xid}>${LAYER_XFORM_INPUT}`,
+      source: xid,
+      sourceHandle: "out:primary",
+      target: l.id,
+      targetHandle: `in:${LAYER_XFORM_INPUT}`,
+    });
+  }
+  return { nodes: outNodes, edges: outEdges };
 }
 
 // Pick which output socket of a group to preview: the first image/mask-typed

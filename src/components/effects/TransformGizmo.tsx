@@ -33,6 +33,13 @@ interface Props {
   // since the relevant "shape" is the canvas itself.
   boundsMin?: [number, number];
   boundsMax?: [number, number];
+  // Unset bounds default to the FRAME in node space — y from
+  // aspectUncorrectY(0) to aspectUncorrectY(1) — instead of the unit
+  // square, which on a non-square canvas spans past the frame. For the
+  // aspect-rigid image nodes (Transform's image mode, Image / Video
+  // Source, Image (Skia)): their canvas-sized image is exactly that box
+  // under the same authored TRS (101526_aspect-rigid-rotation.md).
+  frameBounds?: boolean;
   // Spline/points Transform: "local" reinterprets pivotX/Y as a fraction
   // of `boundsMin/Max` (matching compute). Default "global" = canvas coords.
   pivotSpace?: "global" | "local";
@@ -108,6 +115,7 @@ export default function TransformGizmo({
   onChange,
   boundsMin,
   boundsMax,
+  frameBounds = false,
   pivotSpace = "global",
   boxTranslate = false,
   snapEnabled = true,
@@ -152,11 +160,13 @@ export default function TransformGizmo({
     y: { kind: "top" | "center" | "bottom" | "guide"; lineUv: number } | null;
   }>({ x: null, y: null });
 
-  // Default bounds = full canvas. Spline mode overrides via props.
+  // Default bounds = full canvas (the frame for `frameBounds`, the unit
+  // square otherwise). Spline mode overrides via props.
+  const frameAspect = frameBounds && rect ? rect.width / rect.height : 1;
   const bMinX = boundsMin?.[0] ?? 0;
-  const bMinY = boundsMin?.[1] ?? 0;
+  const bMinY = boundsMin?.[1] ?? aspectUncorrectY(0, frameAspect);
   const bMaxX = boundsMax?.[0] ?? 1;
-  const bMaxY = boundsMax?.[1] ?? 1;
+  const bMaxY = boundsMax?.[1] ?? aspectUncorrectY(1, frameAspect);
   const bbox =
     bMaxX > bMinX && bMaxY > bMinY
       ? { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY }
@@ -311,10 +321,15 @@ export default function TransformGizmo({
               { kind: "center", delta: 0.5 - midX, lineUv: 0.5 },
               { kind: "right", delta: 1 - b.mxX, lineUv: 1 },
             ];
+            // The frame's top / bottom in node space (y is
+            // aspect-corrected about 0.5, so they're 0 / 1 only on a
+            // square canvas).
+            const topY = aspectUncorrectY(0, aspect);
+            const bottomY = aspectUncorrectY(1, aspect);
             const candidatesY: CandY[] = [
-              { kind: "top", delta: 0 - b.mnY, lineUv: 0 },
+              { kind: "top", delta: topY - b.mnY, lineUv: topY },
               { kind: "center", delta: 0.5 - midY, lineUv: 0.5 },
-              { kind: "bottom", delta: 1 - b.mxY, lineUv: 1 },
+              { kind: "bottom", delta: bottomY - b.mxY, lineUv: bottomY },
             ];
             // Ruler guides: the box's two edges and its centre each
             // compete for every guide on the axis, same rule as the

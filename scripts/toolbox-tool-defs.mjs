@@ -198,7 +198,9 @@ export const BRIDGED_TOOLS = [
       "interface — use this to mint ids without dumping params. " +
       "`params: \"all\"` keeps the full shape including catalog defaults " +
       "and full expression sources. Omit `scope` for the " +
-      "root composition (the layer chain); pass a group or layer id to see " +
+      "root composition (the layer chain; a parented layer carries " +
+      "`parentLayerId`, the layer whose aux:transform feeds its Parent " +
+      "input); pass a group or layer id to see " +
       "its interior. Repeat / For Each / Iterate members are listed in the " +
       "enclosing scope (each has `parent` = the zone shell id); you can " +
       "also pass a zone shell id as `scope`. Every result includes `rev` " +

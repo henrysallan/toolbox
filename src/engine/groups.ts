@@ -36,6 +36,20 @@ export const GROUP_OUTPUT_TYPE = "group-output";
 // hidden `content` input. See specdocs/archive/layers-groups-attributes.md §2.
 export const LAYER_TYPE = "layer";
 
+// A layer's transform (its TRS params composed over the `transform` parent
+// input) is computed by an eval-only `layer-xform` node the flatten pass
+// synthesizes per layer, NOT by the layer itself — otherwise a child
+// stacked below its parent would close a cycle (child → stack → parent →
+// transform → child). Flatten reroutes the layer's `transform` input and
+// `aux:transform` output onto that node and feeds its result back into
+// the layer's hidden `__xform` input for the compositor. Never saved.
+// Spec: specdocs/101526_layer-transforms-parenting.md §3.
+export const LAYER_XFORM_TYPE = "layer-xform";
+export const LAYER_XFORM_INPUT = "__xform";
+export function layerXformId(layerId: string): string {
+  return `${layerId}__xform`;
+}
+
 // An Iterate is the third structural variant, presented as a ZONE of
 // exactly two nodes (071926_iterate-zone-view.md rev 3):
 //

@@ -245,15 +245,21 @@ export function moveKeyframes(
 // offsets by one more `step`, preserving intra-lane spacing. The step is
 // frame-snapped so every offset is frame-aligned; each lane's offset is
 // clamped so its earliest selected key stops at 0.
+// `laneOf` gives each base its lane ordinal (0 = top) when one visual lane
+// holds several params — the Layers editor's grouped Position / Scale /
+// Anchor lanes — so a lane's members move together instead of fanning
+// apart. Default: every base is its own lane, in array order.
 export function staggerKeyframes(
   orderedBases: GroupBase[],
   stepTicks: number,
-  opts: KeyframeOpOptions
+  opts: KeyframeOpOptions,
+  laneOf?: (base: GroupBase, index: number) => number
 ): KeyframeOpResult {
   const step = Math.round(snapTickToFrame(stepTicks, opts.ticksPerFrame));
-  let laneIdx = -1;
+  let baseIdx = -1;
   return collectResult(orderedBases, (base) => {
-    laneIdx += 1;
+    baseIdx += 1;
+    const laneIdx = laneOf ? laneOf(base, baseIdx) : baseIdx;
     let min = Infinity;
     for (const t of base.selectedOriginalTicks) if (t < min) min = t;
     const offset = Math.max(step * laneIdx, isFinite(min) ? -min : 0);

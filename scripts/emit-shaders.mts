@@ -133,6 +133,39 @@ out.grainTile = GRAIN_TILE_FS;
 out.grainBlur = GRAIN_BLUR_FS;
 out.grainComposite = GRAIN_COMPOSITE_FS;
 
+// Paint (101526_paint-selection-transform.md M0): the unwired blit and the
+// wired input composite — pixel-tested against each other in check-shaders.
+{
+  const { PAINT_BLIT_FS, PAINT_COMPOSITE_FS } = await import(
+    "@/nodes/source/paint"
+  );
+  out.paintBlit = PAINT_BLIT_FS;
+  out.paintComposite = PAINT_COMPOSITE_FS;
+}
+
+// Layer transforms (101526_layer-transforms-parenting.md M1): the layer's
+// transformed-content blend — pixel-tested against `pairwise` in
+// check-shaders (identity ≡ pairwise, integer shifts ≡ a shifted layer).
+{
+  const { LAYER_BLEND_XFORM_FS } = await import("@/nodes/group/layer");
+  out.layerBlendXform = LAYER_BLEND_XFORM_FS;
+}
+
+// Aspect-rigid image TRS (101526_aspect-rigid-rotation.md): every shader
+// that conjugates its rotation by u_aspect — Transform's are above; the
+// rigid-rotation pixel test in check-shaders draws `transform`.
+{
+  const { FIT_FS } = await import("@/nodes/source/image-source");
+  const { VIDEO_FIT_FS } = await import("@/nodes/source/video");
+  const { TEXT_TRANSFORM_FS, TEXT_TRANSFORM_NOFLIP_FS } = await import(
+    "@/nodes/source/text"
+  );
+  out.imageSourceFit = FIT_FS;
+  out.videoSourceFit = VIDEO_FIT_FS;
+  out.textTransform = TEXT_TRANSFORM_FS;
+  out.textTransformNoflip = TEXT_TRANSFORM_NOFLIP_FS;
+}
+
 // Graph → GLSL node docs (091626_graph-to-glsl.md): every ```glsl-body fence
 // is a fused-shader snippet written against the GLSL Expression template.
 // Compile each one inside the template with the channels its comments

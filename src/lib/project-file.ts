@@ -38,6 +38,10 @@ import {
   PRECOMPRESSED_MIMES,
   sha256Hex,
 } from "./asset-envelope";
+import {
+  cloneMediaParamHolders,
+  mediaParamHolders,
+} from "./project-library-format";
 
 // Bump when the container layout changes in a non-back-compatible way.
 // The reader refuses files with a HIGHER formatVersion than it knows.
@@ -99,12 +103,10 @@ export async function writeProjectFile(
   // stays untouched — structuredClone walked the whole tree, copying the
   // multi-MB data-URL strings along with it. The envelope objects
   // themselves are copied via `{ ...val }` below before being edited.
-  const graph: SavedProject = {
-    ...opts.graph,
-    nodes: opts.graph.nodes.map((n) => ({ ...n, params: { ...n.params } })),
-  };
+  // Holders = the nodes plus the project asset library's media.
+  const graph: SavedProject = cloneMediaParamHolders(opts.graph);
 
-  for (const node of graph.nodes) {
+  for (const node of mediaParamHolders(graph)) {
     for (const [key, val] of Object.entries(node.params)) {
       if (isInlineAsset(val)) {
         const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
@@ -219,7 +221,7 @@ export async function readProjectFile(
   }
   const assetById = new Map(manifest.assets.map((a) => [a.id, a]));
 
-  for (const node of graph.nodes) {
+  for (const node of mediaParamHolders(graph)) {
     for (const [key, val] of Object.entries(node.params)) {
       if (!isAssetRef(val)) continue;
       const meta = assetById.get(val.asset);

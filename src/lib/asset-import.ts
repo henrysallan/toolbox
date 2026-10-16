@@ -1,8 +1,10 @@
 // Asset Library import pipeline (specdocs/090326_asset-library.md §3): the
 // one place that turns a picked file or a node's live param value into a
-// library row — kind classification, bytes, thumbnail, then the store op.
+// library entry — kind classification, bytes, thumbnail, then the store op.
 // Pure lib: no graph access, no React. EffectsApp's "Add to Assets" and
-// the panel's Upload / OS-drop both land here.
+// the panel's Upload / OS-drop both land here. Every entry point takes a
+// `target`: "server" (the per-user library, state/user-assets.ts) or
+// "project" (the open project's own, state/project-library.ts).
 
 import type {
   ExrImageParamValue,
@@ -21,15 +23,48 @@ import {
   getCloudUploadState,
   maybeUploadCloudMedia,
 } from "@/lib/cloud-media-upload";
+import type { CloudMediaRef } from "@/lib/cloud-media";
 import { getImageOriginal } from "@/lib/image-bytes";
 import { svgFromSubpaths } from "@/lib/svg-write";
+import {
+  addProjectImage,
+  addProjectPreset,
+  addProjectSvg,
+  addProjectVideo,
+  inlineFragmentMedia,
+  projectAssetBlob,
+  type LibraryAddResult,
+  type ProjectAsset,
+} from "@/state/project-library";
+import {
+  getUserNodePresets,
+  upsertUserNodePreset,
+  type UserNodePreset,
+} from "@/state/node-presets";
+import {
+  userAssetFilename,
+  userAssetThumbUrl,
+  userAssetUrl,
+} from "@/lib/supabase/user-assets";
 import {
   addImageAsset,
   addSvgAsset,
   addVideoAsset,
   imageExtForMime,
   type AddAssetResult,
+  type UserAssetRow,
 } from "@/state/user-assets";
+
+export type { LibraryAddResult } from "@/state/project-library";
+
+/** Which of the panel's two libraries an import lands in. */
+export type LibraryTarget = "project" | "server";
+
+function fromServer(res: AddAssetResult): LibraryAddResult {
+  return res.ok
+    ? { ok: true, name: res.row.name, duplicate: res.duplicate }
+    : res;
+}
 
 export type LibraryFileKind = "image" | "svg" | "video";
 
@@ -109,8 +144,9 @@ export async function importImageBlob(
     thumbCanvas?: HTMLCanvasElement | null;
     width?: number | null;
     height?: number | null;
-  } = {}
-): Promise<AddAssetResult> {
+  } = {},
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   let bytes = blob;
   let mime = blob.type || mimeFromName(opts.filename ?? "");
   let width = opts.width ?? null;
@@ -143,12 +179,26 @@ export async function importImageBlob(
       mime = "image/png";
     }
   }
+  if (target === "project") {
+    return addProjectImage({
+      bytes,
+      mime,
+      ext: imageExtForMime(mime) ?? "png",
+      name,
+      width,
+      height,
+      thumbCanvas,
+    });
+  }
   const thumb = await storageThumb(thumbCanvas);
-  return addImageAsset({ bytes, mime, name, width, height, thumb });
+  return fromServer(await addImageAsset({ bytes, mime, name, width, height, thumb }));
 }
 
-export function importImageFile(file: File): Promise<AddAssetResult> {
-  return importImageBlob(file, stripExt(file.name), { filename: file.name });
+export function importImageFile(
+  file: File,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
+  return importImageBlob(file, stripExt(file.name), { filename: file.name }, target);
 }
 
 /**
@@ -160,25 +210,28 @@ export function importImageFile(file: File): Promise<AddAssetResult> {
 export async function importImageSourceValue(
   value: ImageBitmap | ExrImageParamValue,
   name: string,
-  exrThumb?: () => HTMLCanvasElement | null
-): Promise<AddAssetResult> {
+  exrThumb?: () => HTMLCanvasElement | null,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   if (value instanceof ImageBitmap) {
     const original = getImageOriginal(value);
     const thumbCanvas = thumbFromBitmap(value);
     if (original && imageExtForMime(original.type)) {
-      return importImageBlob(original, name, {
-        thumbCanvas,
-        width: value.width,
-        height: value.height,
-      });
+      return importImageBlob(
+        original,
+        name,
+        { thumbCanvas, width: value.width, height: value.height },
+        target
+      );
     }
     const png = await bitmapToPngBlob(value);
     if (!png) return { ok: false, error: "PNG encode failed." };
-    return importImageBlob(png, name, {
-      thumbCanvas,
-      width: value.width,
-      height: value.height,
-    });
+    return importImageBlob(
+      png,
+      name,
+      { thumbCanvas, width: value.width, height: value.height },
+      target
+    );
   }
   // EXR
   const blob =
@@ -191,11 +244,12 @@ export async function importImageSourceValue(
   } catch {
     thumbCanvas = null;
   }
-  return importImageBlob(blob, name, {
-    thumbCanvas,
-    width: value.width,
-    height: value.height,
-  });
+  return importImageBlob(
+    blob,
+    name,
+    { thumbCanvas, width: value.width, height: value.height },
+    target
+  );
 }
 
 // --- SVG ---------------------------------------------------------------------
@@ -203,8 +257,9 @@ export async function importImageSourceValue(
 /** SVG markup → library (validated by the real parser first). */
 export async function importSvgText(
   text: string,
-  name: string
-): Promise<AddAssetResult> {
+  name: string,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   let parsed: SvgFileParamValue;
   try {
     const { parseSvg } = await import("@/lib/svg-parse");
@@ -215,14 +270,27 @@ export async function importSvgText(
       error: err instanceof Error ? err.message : `Couldn't parse "${name}".`,
     };
   }
-  const thumb = await storageThumb(
-    thumbFromSpline(parsed.subpaths, parsed.aspect)
-  );
-  return addSvgAsset({ text, name, aspect: parsed.aspect, thumb });
+  return addSvg(text, name, parsed, target);
 }
 
-export async function importSvgFile(file: File): Promise<AddAssetResult> {
-  return importSvgText(await file.text(), stripExt(file.name));
+async function addSvg(
+  text: string,
+  name: string,
+  parsed: SvgFileParamValue,
+  target: LibraryTarget
+): Promise<LibraryAddResult> {
+  const thumbCanvas = thumbFromSpline(parsed.subpaths, parsed.aspect);
+  if (target === "project")
+    return addProjectSvg({ text, name, aspect: parsed.aspect, thumbCanvas });
+  const thumb = await storageThumb(thumbCanvas);
+  return fromServer(await addSvgAsset({ text, name, aspect: parsed.aspect, thumb }));
+}
+
+export async function importSvgFile(
+  file: File,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
+  return importSvgText(await file.text(), stripExt(file.name), target);
 }
 
 /**
@@ -232,11 +300,11 @@ export async function importSvgFile(file: File): Promise<AddAssetResult> {
  */
 export async function importSvgSourceValue(
   value: SvgFileParamValue,
-  name: string
-): Promise<AddAssetResult> {
+  name: string,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   const text = svgFromSubpaths(value.subpaths, value.aspect, name);
-  const thumb = await storageThumb(thumbFromSpline(value.subpaths, value.aspect));
-  return addSvgAsset({ text, name, aspect: value.aspect, thumb });
+  return addSvg(text, name, value, target);
 }
 
 // --- video --------------------------------------------------------------------
@@ -256,8 +324,9 @@ function explainMissingRef(filename: string | undefined, size?: number): string 
 /** A picked/dropped video file → R2 (entitled) → library. */
 export async function importVideoFile(
   file: File,
-  opts: { cloudMedia: boolean }
-): Promise<AddAssetResult> {
+  opts: { cloudMedia: boolean },
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   if (!opts.cloudMedia) return { ok: false, error: VIDEO_NEEDS_CLOUD };
   await maybeUploadCloudMedia(file, "video");
   const ref = getCloudMediaRef(file.name, file.size);
@@ -278,16 +347,37 @@ export async function importVideoFile(
   } finally {
     URL.revokeObjectURL(url);
   }
-  const thumb = await storageThumb(frame?.canvas ?? null);
-  return addVideoAsset({
-    ref,
-    name: stripExt(file.name),
-    size: file.size,
-    duration: frame?.duration ?? null,
-    width: frame?.width ?? null,
-    height: frame?.height ?? null,
-    thumb,
-  });
+  return addVideo(
+    {
+      ref,
+      filename: file.name,
+      name: stripExt(file.name),
+      size: file.size,
+      duration: frame?.duration ?? null,
+      width: frame?.width ?? null,
+      height: frame?.height ?? null,
+    },
+    frame?.canvas ?? null,
+    target
+  );
+}
+
+async function addVideo(
+  input: {
+    ref: CloudMediaRef;
+    filename: string;
+    name: string;
+    size: number;
+    duration: number | null;
+    width: number | null;
+    height: number | null;
+  },
+  thumbCanvas: HTMLCanvasElement | null,
+  target: LibraryTarget
+): Promise<LibraryAddResult> {
+  if (target === "project") return addProjectVideo({ ...input, thumbCanvas });
+  const thumb = await storageThumb(thumbCanvas);
+  return fromServer(await addVideoAsset({ ...input, thumb }));
 }
 
 /**
@@ -297,44 +387,49 @@ export async function importVideoFile(
  */
 export async function importVideoSourceValue(
   value: VideoFileParamValue,
-  name: string
-): Promise<AddAssetResult> {
+  name: string,
+  target: LibraryTarget = "server"
+): Promise<LibraryAddResult> {
   const ref = getCloudMediaRef(value.filename, value.size);
   if (!ref)
     return { ok: false, error: explainMissingRef(value.filename, value.size) };
   const frame = await thumbFromVideoUrl(value.url);
-  const thumb = await storageThumb(frame?.canvas ?? null);
-  return addVideoAsset({
-    ref,
-    name,
-    size: value.size ?? 0,
-    duration: Number.isFinite(value.duration) ? value.duration : null,
-    width: value.width || null,
-    height: value.height || null,
-    thumb,
-  });
+  return addVideo(
+    {
+      ref,
+      filename: value.filename ?? `${name}.${ref.ext}`,
+      name,
+      size: value.size ?? 0,
+      duration: Number.isFinite(value.duration) ? value.duration : null,
+      width: value.width || null,
+      height: value.height || null,
+    },
+    frame?.canvas ?? null,
+    target
+  );
 }
 
 // --- batch ---------------------------------------------------------------------
 
 export interface ImportOutcome {
   name: string;
-  result: AddAssetResult;
+  result: LibraryAddResult;
 }
 
 /** Upload Asset… / OS drop: sequential (uploads are heavy), never throws. */
 export async function importFilesToLibrary(
   files: File[],
-  opts: { cloudMedia: boolean }
+  opts: { cloudMedia: boolean; target: LibraryTarget }
 ): Promise<ImportOutcome[]> {
   const out: ImportOutcome[] = [];
   for (const file of files) {
     const kind = classifyLibraryFile(file);
-    let result: AddAssetResult;
+    let result: LibraryAddResult;
     try {
-      if (kind === "image") result = await importImageFile(file);
-      else if (kind === "svg") result = await importSvgFile(file);
-      else if (kind === "video") result = await importVideoFile(file, opts);
+      if (kind === "image") result = await importImageFile(file, opts.target);
+      else if (kind === "svg") result = await importSvgFile(file, opts.target);
+      else if (kind === "video")
+        result = await importVideoFile(file, opts, opts.target);
       else
         result = {
           ok: false,
@@ -349,4 +444,118 @@ export async function importFilesToLibrary(
     out.push({ name: file.name, result });
   }
   return out;
+}
+
+// --- copy between libraries -------------------------------------------------------
+//
+// A card's Copy to Project / Copy to Server. Media re-runs the target's own
+// add pipeline (fresh thumbnail, the target's dedup); a thumbnail that can't
+// be regenerated (EXR, video) is carried over from the source card.
+
+async function thumbCanvasFromUrl(
+  url: string | null | undefined
+): Promise<HTMLCanvasElement | null> {
+  if (!url) return null;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return (await thumbFromBlob(await resp.blob()))?.canvas ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Server library row → this project's library. */
+export async function copyServerAssetToProject(
+  row: UserAssetRow
+): Promise<LibraryAddResult> {
+  const filename = userAssetFilename(row);
+  if (row.kind === "video") {
+    if (!row.owner)
+      return { ok: false, error: "That video asset has no cloud reference." };
+    return addProjectVideo({
+      ref: { hash: row.hash, ext: row.ext, owner: row.owner },
+      filename,
+      name: row.name,
+      size: row.size,
+      duration: row.duration,
+      width: row.width,
+      height: row.height,
+      thumbCanvas: await thumbCanvasFromUrl(userAssetThumbUrl(row)),
+    });
+  }
+  const url = userAssetUrl(row);
+  if (!url) return { ok: false, error: "Couldn't resolve that asset." };
+  const resp = await fetch(url);
+  if (!resp.ok)
+    return { ok: false, error: `Couldn't fetch "${row.name}" (${resp.status}).` };
+  const blob = new Blob([await resp.blob()], { type: row.mime });
+  if (row.kind === "svg") return importSvgText(await blob.text(), row.name, "project");
+  return importImageBlob(
+    blob,
+    row.name,
+    {
+      filename,
+      width: row.width,
+      height: row.height,
+      thumbCanvas:
+        row.mime === "image/x-exr"
+          ? await thumbCanvasFromUrl(userAssetThumbUrl(row))
+          : undefined,
+    },
+    "project"
+  );
+}
+
+/** Server node preset → this project's library. */
+export function copyServerPresetToProject(p: UserNodePreset): LibraryAddResult {
+  return addProjectPreset({ name: p.name, fragment: p.fragment, thumb: p.thumbnail });
+}
+
+/** This project's library item → the Server library. */
+export async function copyProjectAssetToServer(
+  item: ProjectAsset
+): Promise<LibraryAddResult> {
+  if (item.fragment) {
+    const lower = item.name.toLowerCase();
+    if (getUserNodePresets().some((p) => p.name.toLowerCase() === lower))
+      return { ok: true, name: item.name, duplicate: true };
+    upsertUserNodePreset(
+      item.name,
+      await inlineFragmentMedia(item.fragment),
+      item.thumb
+    );
+    return { ok: true, name: item.name, duplicate: false };
+  }
+  if (item.video) {
+    return addVideo(
+      {
+        ref: { hash: item.video.hash, ext: item.video.ext, owner: item.video.owner },
+        filename: item.video.filename,
+        name: item.name,
+        size: item.video.size,
+        duration: item.duration,
+        width: item.width,
+        height: item.height,
+      },
+      await thumbCanvasFromUrl(item.thumb),
+      "server"
+    );
+  }
+  if (!item.media) return { ok: false, error: "Couldn't resolve that asset." };
+  const blob = await projectAssetBlob(item);
+  if (item.kind === "svg") return importSvgText(await blob.text(), item.name, "server");
+  const mime = item.media.mime || blob.type;
+  return importImageBlob(
+    blob,
+    item.name,
+    {
+      filename: item.media.filename,
+      width: item.width,
+      height: item.height,
+      thumbCanvas:
+        mime === "image/x-exr" ? await thumbCanvasFromUrl(item.thumb) : undefined,
+    },
+    "server"
+  );
 }

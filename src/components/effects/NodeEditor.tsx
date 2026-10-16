@@ -168,13 +168,17 @@ interface Props {
   // hidden for structural chrome (reroutes, frames, layer shells,
   // group/iterate boundary nodes).
   onSaveNodeAsPreset?: (nodeId: string) => void;
-  // Right-click → "Add to Assets": copies an Image / SVG / Video Source's
-  // media into the user's project-agnostic asset library
-  // (090326_asset-library.md §3.1). NodeEditor gates by defType; the
-  // parent decides availability (empty param, un-entitled video) via the
-  // reason callback, which renders the row disabled with that hint.
-  onAddNodeToAssets?: (nodeId: string) => void;
-  addToAssetsDisabledReason?: (nodeId: string) => string | undefined;
+  // Right-click → "Add to Assets ▸ Project / Server": copies an Image /
+  // SVG / Video Source's media into the open project's own asset library
+  // or the user's project-agnostic one (090326_asset-library.md §3.1).
+  // NodeEditor gates by defType; the parent decides availability per
+  // library (empty param, signed out, un-entitled video) via the reason
+  // callback, which renders that submenu row disabled with the hint.
+  onAddNodeToAssets?: (nodeId: string, target: "project" | "server") => void;
+  addToAssetsDisabledReason?: (
+    nodeId: string,
+    target: "project" | "server"
+  ) => string | undefined;
   onDuplicateSelection?: () => void;
   // Shift+M: wrap the currently selected image/mask-output nodes in a
   // new Merge node, wiring them in as base + layers. Parent owns the
@@ -3540,10 +3544,13 @@ function NodeEditor({
               d?.defType !== "video-source"
             )
               return {};
-            const reason = addToAssetsDisabledReason?.(contextMenu.nodeId);
-            return reason
-              ? { addToAssetsDisabled: reason }
-              : { onAddToAssets: () => onAddNodeToAssets(contextMenu.nodeId) };
+            const row = (target: "project" | "server") => {
+              const reason = addToAssetsDisabledReason?.(contextMenu.nodeId, target);
+              return reason
+                ? { title: reason }
+                : { onClick: () => onAddNodeToAssets(contextMenu.nodeId, target) };
+            };
+            return { addToAssets: { project: row("project"), server: row("server") } };
           })()}
           onDetach={
             onDetachNode
@@ -3608,8 +3615,7 @@ function NodeContextMenu({
   onDuplicate,
   onCombine,
   onSaveAsPreset,
-  onAddToAssets,
-  addToAssetsDisabled,
+  addToAssets,
   onDetach,
   onEditWithAI,
   onMakeEditable,
@@ -3655,8 +3661,9 @@ function NodeContextMenu({
   onSaveAsPreset?: () => void;
   // Media source nodes only (gating at the call site). Either the handler
   // (enabled) or a reason (rendered disabled, reason as tooltip).
-  onAddToAssets?: () => void;
-  addToAssetsDisabled?: string;
+  // Add to Assets ▸ Project / Server — a row without onClick renders
+  // disabled with its title as the hint.
+  addToAssets?: Record<"project" | "server", { onClick?: () => void; title?: string }>;
   onDetach?: () => void;
   onEditWithAI?: () => void;
   onMakeEditable?: () => void;
@@ -3701,6 +3708,8 @@ function NodeContextMenu({
     onClick?: () => void;
     // Tooltip — carries the disabled reason for Add to Assets.
     title?: string;
+    // One level of nesting: a ▸ row whose rows fly out to the right.
+    submenu?: Array<{ label: string; onClick?: () => void; title?: string }>;
   }> = [
     ...(onEditWithAI ? [{ label: "✦ Edit with AI", onClick: onEditWithAI }] : []),
     // Only offered on nodes with a spline-typed output (gating at the call
@@ -3742,14 +3751,16 @@ function NodeContextMenu({
     ...(onSaveAsPreset
       ? [{ label: "Save as Preset…", onClick: onSaveAsPreset }]
       : []),
-    // Media source nodes: copy the media into the asset library. A
-    // reason without a handler renders the row disabled with the hint.
-    ...(onAddToAssets || addToAssetsDisabled
+    // Media source nodes: copy the media into one of the two asset
+    // libraries. A reason without a handler renders that row disabled.
+    ...(addToAssets
       ? [
           {
             label: "Add to Assets",
-            onClick: onAddToAssets,
-            title: addToAssetsDisabled,
+            submenu: [
+              { label: "Project", ...addToAssets.project },
+              { label: "Server", ...addToAssets.server },
+            ],
           },
         ]
       : []),
@@ -3926,6 +3937,16 @@ function NodeContextMenu({
         </div>
       )}
       {items.map((it, i) => {
+        if (it.submenu) {
+          return (
+            <ContextSubmenuRow
+              key={i}
+              label={it.label}
+              rows={it.submenu}
+              onClose={onClose}
+            />
+          );
+        }
         const disabled = !it.onClick;
         return (
           <button
@@ -3980,6 +4001,107 @@ function NodeContextMenu({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// A context-menu row with a ▸ that opens its rows in a flyout to the right
+// on hover (Add to Assets ▸ Project / Server). Rows without onClick render
+// disabled, their title carrying the reason.
+function ContextSubmenuRow({
+  label,
+  rows,
+  onClose,
+}: {
+  label: string;
+  rows: Array<{ label: string; onClick?: () => void; title?: string }>;
+  onClose: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rowStyle = (disabled: boolean): React.CSSProperties => ({
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    padding: "4px 10px",
+    background: "transparent",
+    border: "none",
+    color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
+    textAlign: "left",
+    fontFamily: "inherit",
+    fontSize: "inherit",
+    cursor: disabled ? "not-allowed" : "default",
+    borderRadius: 3,
+  });
+  const allDisabled = rows.every((r) => !r.onClick);
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        style={{
+          ...rowStyle(allDisabled),
+          cursor: "default",
+          background: open ? "var(--tb-a-blue-900)" : "transparent",
+        }}
+      >
+        <span>{label}</span>
+        <span style={{ fontSize: 9, color: "var(--tb-n-11)" }}>▸</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            left: "100%",
+            top: -4,
+            minWidth: 140,
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
+            borderRadius: 4,
+            boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+            padding: 4,
+          }}
+        >
+          {rows.map((r) => {
+            const disabled = !r.onClick;
+            return (
+              <button
+                key={r.label}
+                type="button"
+                disabled={disabled}
+                title={r.title}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (disabled) return;
+                  r.onClick?.();
+                  onClose();
+                }}
+                onMouseEnter={(e) => {
+                  if (!disabled)
+                    (e.currentTarget as HTMLButtonElement).style.background =
+                      "var(--tb-a-blue-900)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "transparent";
+                }}
+                style={rowStyle(disabled)}
+              >
+                {r.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

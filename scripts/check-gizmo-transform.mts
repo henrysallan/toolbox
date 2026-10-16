@@ -129,7 +129,12 @@ check(
   const local = translateOp(0.1);
   const parent: TransformValue = { kind: "transform", ops: [translateOp(0.2)] };
   const composed = composeTransform(parent, local);
-  check("compose appends local after parent ops", composed.ops.length === 2);
+  check(
+    "compose puts local before parent ops",
+    composed.ops.length === 2 &&
+      close(composed.ops[0].translateX, 0.1) &&
+      close(composed.ops[1].translateX, 0.2)
+  );
   const src = squareAt(0.5, 0.5, 0.1);
   const out = applyTransformToSpline(src, composed);
   const c = centerOf(out);
@@ -149,6 +154,78 @@ check(
   check(
     "identity local is dropped on compose",
     composed.ops.length === 1 && close(composed.ops[0].translateX, 0.2)
+  );
+}
+
+// Non-commuting parents — the pure-translate cases above pass in either
+// order. A child offset must follow its parent's rotation and scale
+// (world = parent ∘ local, local first). Regression for the pre-2026-10-15
+// order, which appended local AFTER the parent's ops.
+{
+  const rot90: TransformOp = { ...identityOp, rotateDeg: 90 };
+  const parent = composeTransform(undefined, rot90);
+  const world = composeTransform(parent, translateOp(0.25));
+  const m = composeOpsToAffine(world.ops);
+  const x = m.a * 0.5 + m.b * 0.5 + m.tx;
+  const y = m.c * 0.5 + m.d * 0.5 + m.ty;
+  check(
+    "rotating parent carries the child's offset (affine)",
+    close(x, 0.5) && close(y, 0.75),
+    `got (${x}, ${y})`
+  );
+  const c = centerOf(applyTransformToSpline(squareAt(0.5, 0.5, 0.1), world));
+  check(
+    "rotating parent carries the child's offset (spline)",
+    close(c.x, 0.5) && close(c.y, 0.75),
+    `got (${c.x}, ${c.y})`
+  );
+  const p = applyTransformToPoints(
+    pointsFromArray([{ pos: [0.5, 0.5], rotation: 0, scale: [1, 1] }]),
+    world
+  );
+  check(
+    "rotating parent carries the child's offset (points)",
+    close(p.positions[0], 0.5) && close(p.positions[1], 0.75),
+    `got (${p.positions[0]}, ${p.positions[1]})`
+  );
+}
+
+{
+  const parent = composeTransform(undefined, {
+    ...identityOp,
+    scaleX: 2,
+    scaleY: 2,
+  });
+  const world = composeTransform(parent, translateOp(0.1));
+  const c = centerOf(applyTransformToSpline(squareAt(0.5, 0.5, 0.1), world));
+  check(
+    "scaling parent scales the child's offset",
+    close(c.x, 0.7) && close(c.y, 0.5),
+    `got (${c.x}, ${c.y})`
+  );
+}
+
+{
+  // Three Gizmos: grandparent translate 0.1 → parent rotate 90 → child
+  // translate 0.25. Center → (0.75, 0.5) → (0.5, 0.75) → (0.6, 0.75).
+  const run = (params: Record<string, unknown>, parent?: TransformValue) =>
+    (
+      gizmoNode.compute({
+        inputs: parent ? { transform: parent } : {},
+        auxIn: {},
+        params,
+        ctx: dummyCtx,
+        nodeId: "g",
+      }) as NodeOutput
+    ).primary as TransformValue;
+  const g = run({ translateX: 0.1 });
+  const pr = run({ rotate: 90 }, g);
+  const ch = run({ translateX: 0.25 }, pr);
+  const c = centerOf(applyTransformToSpline(squareAt(0.5, 0.5, 0.1), ch));
+  check(
+    "three-level Gizmo chain composes child → parent → grandparent",
+    close(c.x, 0.6) && close(c.y, 0.75),
+    `got (${c.x}, ${c.y})`
   );
 }
 
@@ -265,10 +342,10 @@ check(
   }) as NodeOutput;
   const t = out.primary as TransformValue;
   check(
-    "Gizmo composes parent then local",
+    "Gizmo composes local then parent",
     t.ops.length === 2 &&
-      close(t.ops[0].translateX, 0.2) &&
-      close(t.ops[1].translateX, 0.1)
+      close(t.ops[0].translateX, 0.1) &&
+      close(t.ops[1].translateX, 0.2)
   );
 }
 

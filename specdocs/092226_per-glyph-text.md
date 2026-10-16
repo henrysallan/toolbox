@@ -145,7 +145,7 @@ position = (u', aspectUncorrectY(v', W/H))          canvas01, as at text.ts:1542
 - `group` = the line index.
 - `index` is implicit (array position), so glyph points must not be filtered or reordered before they reach Copy to Points.
 
-With these, copies exactly match a transformed primary on square canvases. On non-square canvases positions are still exact, but the primary's rotation happens in UV space and skews (`text.ts:728`), while copies rotate rigidly. That's a documented gotcha.
+With these, copies exactly match a transformed primary on any canvas. Since v13 the primary's rotation is rigid in pixels (101526_aspect-rigid-rotation.md; translate / pivot stay uv01), so it agrees with the copies on non-square canvases too. The exception is a `legacySkew` Text from a ≤v12 save: its primary still rotates in UV space and skews (`text.ts` `applyTransform`), while copies rotate rigidly.
 
 **Channels.** All are float with arity 1. Their names must appear as string literals in `text.ts`, because check-node-facts requires that (`node-facts-lib.mts:204-217`).
 
@@ -218,7 +218,7 @@ What's left is a small mismatch between the native run and per-glyph copies: lig
 | solid colour, alpha, stroke | yes (padding stops the stroke being clipped) |
 | kerning, letter spacing (±), leading, alignment, vAlign, box, wrap, case | yes, through point positions |
 | weight, italic, constant variable axes, uploaded fonts | yes (real italics need M0) |
-| the node's transform | yes: exact on square canvases, unskewed on non-square ones |
+| the node's transform | yes: exact on every canvas (a `legacySkew` primary still skews on non-square ones) |
 | linear and radial gradients | from M4 (§4.7) |
 | image fill | no. Gotcha: mask the fill image with `copy:out` instead. |
 | animators, maskDriven/perGlyph/cycle axes, `morph_mask` | no; they affect the primary only (existing gotcha) |
@@ -361,7 +361,7 @@ Milestones can land together in one "Land …" commit, or each as it finishes. T
   - Gotchas to add:
     - `glyphs` and `chars` describe the base style.
     - `index` is array position, so never filter glyph points.
-    - Rotation skews on non-square canvases.
+    - A `legacySkew` (≤v12) Text's primary rotation skews on non-square canvases; copies don't.
     - Copies don't form ligatures.
     - Image fill isn't carried.
   - Add the §6 preset and the TESTING.md bullets.

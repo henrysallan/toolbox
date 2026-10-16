@@ -21,12 +21,14 @@ import { skiaImageSourceOf } from "@/lib/skia-export/image-asset";
 import {
   TRANSFORM_TRS_PARAMS,
   bindTrsUniforms,
+  LEGACY_SKEW_PARAM,
+  trsAspect,
 } from "@/engine/transform-value";
 
 // u_hasUvIn: 0 = no UV field connected (use v_uv), 1 = UV texture, 2 = scalar
 // broadcast (whole frame samples the same point). Inverse TRS then fit math
 // run on the resolved UV so warps happen in output space before the aspect fit.
-const FIT_FS = `#version 300 es
+export const FIT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -36,6 +38,7 @@ uniform vec2 u_translate; // screen convention (Y down)
 uniform vec2 u_scale;
 uniform float u_angle;    // radians
 uniform vec2 u_pivot;     // screen convention (Y down)
+uniform float u_aspect;   // W / H rigid rotation; 1.0 = legacySkew per-axis
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -55,7 +58,9 @@ void main() {
   vec2 p = uv - pivot;
   float c = cos(u_angle);
   float s = sin(u_angle);
+  p.y /= u_aspect;
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p.y *= u_aspect;
   vec2 sc = u_scale;
   if (abs(sc.x) < 1e-4) sc.x = 1e-4;
   if (abs(sc.y) < 1e-4) sc.y = 1e-4;
@@ -130,12 +135,14 @@ export const imageSourceNode: NodeDefinition = {
     "Uploads an image and produces it as the canonical output. Accepts EXR files (single or multilayer, scene-linear HDR) with a layer picker.",
   facts: {
     space: {
-      "param:translateX": "uv01",
-      "param:translateY": "uv01",
-      "param:pivotX": "uv01",
-      "param:pivotY": "uv01",
+      "param:translateX": "canvas01",
+      "param:translateY": "canvas01",
+      "param:pivotX": "canvas01",
+      "param:pivotY": "canvas01",
     },
     gotchas: [
+      "Rotation is rigid in pixels on any canvas; translateY / pivotY are width-relative like shapes (on 16:9 the frame's top edge is pivotY ≈ 0.219).",
+      "legacySkew (set on ≤v12 saves) keeps the old per-axis TRS: it shears when W ≠ H and reads translateY / pivotY height-relative.",
       "translateX/Y, scaleX/Y, rotate and pivotX/Y apply as inverse TRS in output UV before the aspect fit, so cover's crop stays a movable window over the full-res source.",
       "fit=contain letterboxes with transparent alpha outside the image bounds; pixels outside the transformed unit square are also transparent.",
       "No file loaded emits fully transparent output, not black.",
@@ -184,6 +191,7 @@ export const imageSourceNode: NodeDefinition = {
     // on-canvas gizmo drives them. Inverse-sampled in output UV before
     // the aspect fit; primary only (the element aux is the untouched bitmap).
     ...TRANSFORM_TRS_PARAMS,
+    LEGACY_SKEW_PARAM,
   ],
   primaryOutput: "image",
   auxOutputs: [
@@ -386,7 +394,7 @@ export const imageSourceNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
-      bindTrsUniforms(gl2, prog, params);
+      bindTrsUniforms(gl2, prog, params, trsAspect(params, ctx.width, ctx.height));
 
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, boundUvTex);

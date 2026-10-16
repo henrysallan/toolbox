@@ -111,6 +111,11 @@ export interface GroupSpecNode {
   shaderError?: string;
   shaderPreludeLines?: number;
   shaderProblems?: string[];
+  // Root scope, layers only: the layer this one is parented to (its
+  // Parent / `in:transform` wire comes from that layer's
+  // `aux:transform`) — so agents needn't infer it from the edge list.
+  // 101526_layer-transforms-parenting.md §7.
+  parentLayerId?: string;
 }
 export interface GroupSpec {
   name: string;
@@ -403,6 +408,18 @@ export function graphToSpec(
     ? readGroupInterface(shell.data.params as Record<string, unknown>)
     : { inputs: [], outputs: [] };
   const shellValues = shell ? readInputValues(shell.data.params) : {};
+
+  if (!scopeId) {
+    for (const sn of specNodes) {
+      if (byId.get(sn.id)?.data.defType !== LAYER_TYPE) continue;
+      const parent = edges.find(
+        (e) => e.target === sn.id && e.targetHandle === "in:transform"
+      )?.source;
+      if (parent && byId.get(parent)?.data.defType === LAYER_TYPE) {
+        sn.parentLayerId = parent;
+      }
+    }
+  }
 
   return {
     name: scopeId ? (shell?.data.name ?? "Group") : "root",

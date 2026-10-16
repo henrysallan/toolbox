@@ -16,6 +16,7 @@
 import { isExrImageValue } from "@/engine/exr";
 import type { AssetIR } from "@/engine/skia/scene-ir";
 import type { SkiaImageSource } from "@/engine/types";
+import { isLegacySkew } from "@/engine/transform-value";
 import { getImageOriginal } from "@/lib/image-bytes";
 import { bitmapToPngDataUrl } from "@/lib/data-url";
 
@@ -134,13 +135,16 @@ export function isIdentityTrs(t: ImageTrs): boolean {
 // How Image Source's picture lands on a width × height canvas, as ONE
 // local matrix (image px → canvas px) for an ImageShader of the file:
 // fitted (cover / contain / fill, centred — React Native's fitRects), then
-// its TRS forward. Image Source INVERTS
-//   uv' = pivot + S⁻¹ · R(θ) · (uv − translate − pivot)       (Y-up uv)
-// so in Y-down canvas px the forward map is
-//   X' = P + T + L · (X − P),  L = diag(a, 1) · R(θ) · diag(1 / a, 1) · diag(sx, sy)
-// with a = width / height, P = pivot · size, T = translate · size: the
+// its TRS forward. Image Source's TRS is aspect-rigid
+// (101526_aspect-rigid-rotation.md), so in Y-down canvas px the forward
+// map is
+//   X' = P + T + L · (X − P),  L = diag(k, 1) · R(θ) · diag(1 / k, 1) · diag(sx, sy)
+// with k = 1, P = (pivotX · width, height / 2 + (pivotY − 0.5) · width) and
+// T = (translateX, translateY) · width: translate / pivot Y width-relative,
+// rotation rigid. A `legacySkew` mapping keeps the old per-axis TRS:
+// k = width / height, P = pivot · size, T = translate · size — the
 // rotation happens in per-axis canvas fractions and shears on a
-// non-square canvas, exactly as Image Source's does.
+// non-square canvas, exactly as a legacySkew Image Source does.
 //
 // The SkSL Shader's preview builds its iImage child with this function and
 // the export ships IMAGE_MATRIX_SOURCE, the same arithmetic in the same
@@ -159,6 +163,8 @@ export interface ImageMapping {
   rotate: number;
   pivotX: number;
   pivotY: number;
+  // A ≤v12 Image Source's per-axis TRS (absent = aspect-rigid).
+  legacySkew?: boolean;
 }
 
 export function imageLocalMatrix(img: ImageMapping, width: number, height: number): number[] {
@@ -170,19 +176,20 @@ export function imageLocalMatrix(img: ImageMapping, width: number, height: numbe
   else if (img.fit === "contain") s0 = s1 = Math.min(s0, s1);
   const fx = (width - iw * s0) / 2;
   const fy = (height - ih * s1) / 2;
-  const a = width / height;
+  const legacy = img.legacySkew === true;
+  const k = legacy ? width / height : 1;
   const r = (img.rotate * Math.PI) / 180;
   const c = Math.cos(r);
   const s = Math.sin(r);
-  // L = diag(a, 1) · R(r) · diag(1 / a, 1) · diag(scaleX, scaleY)
+  // L = diag(k, 1) · R(r) · diag(1 / k, 1) · diag(scaleX, scaleY)
   const l00 = c * img.scaleX;
-  const l01 = -s * a * img.scaleY;
-  const l10 = (s / a) * img.scaleX;
+  const l01 = -s * k * img.scaleY;
+  const l10 = (s / k) * img.scaleX;
   const l11 = c * img.scaleY;
   const px = img.pivotX * width;
-  const py = img.pivotY * height;
+  const py = legacy ? img.pivotY * height : height / 2 + (img.pivotY - 0.5) * width;
   const tx = px + img.translateX * width - (l00 * px + l01 * py);
-  const ty = py + img.translateY * height - (l10 * px + l11 * py);
+  const ty = py + img.translateY * (legacy ? height : width) - (l10 * px + l11 * py);
   // [L | t] · [diag(s0, s1) | (fx, fy)]
   return [l00 * s0, l01 * s1, l00 * fx + l01 * fy + tx, l10 * s0, l11 * s1, l10 * fx + l11 * fy + ty, 0, 0, 1];
 }
@@ -191,9 +198,10 @@ export function imageLocalMatrix(img: ImageMapping, width: number, height: numbe
 // check-skia-assets runs both).
 export const IMAGE_MATRIX_SOURCE = `// Where an image lands on a width × height canvas, as Image Source draws it:
 // fitted (cover / contain / fill, centered), then its translate / rotate /
-// scale about the pivot — in per-axis canvas fractions, so a rotation on a
-// non-square canvas shears exactly as it does in toolbox. Row-major 3×3:
-// image px → canvas px (the <ImageShader>'s local matrix).
+// scale about the pivot — rigid in pixels, translate / pivot Y
+// width-relative; a legacySkew image rotates in per-axis canvas fractions
+// and shears on a non-square canvas, exactly as it does in toolbox.
+// Row-major 3×3: image px → canvas px (the <ImageShader>'s local matrix).
 export function imageMatrix(img: ExportImage, width: number, height: number): number[] {
   const iw = img.width;
   const ih = img.height;
@@ -203,19 +211,20 @@ export function imageMatrix(img: ExportImage, width: number, height: number): nu
   else if (img.fit === "contain") s0 = s1 = Math.min(s0, s1);
   const fx = (width - iw * s0) / 2;
   const fy = (height - ih * s1) / 2;
-  const a = width / height;
+  const legacy = img.legacySkew === true;
+  const k = legacy ? width / height : 1;
   const r = (img.rotate * Math.PI) / 180;
   const c = Math.cos(r);
   const s = Math.sin(r);
-  // L = diag(a, 1) · R(r) · diag(1 / a, 1) · diag(scaleX, scaleY)
+  // L = diag(k, 1) · R(r) · diag(1 / k, 1) · diag(scaleX, scaleY)
   const l00 = c * img.scaleX;
-  const l01 = -s * a * img.scaleY;
-  const l10 = (s / a) * img.scaleX;
+  const l01 = -s * k * img.scaleY;
+  const l10 = (s / k) * img.scaleX;
   const l11 = c * img.scaleY;
   const px = img.pivotX * width;
-  const py = img.pivotY * height;
+  const py = legacy ? img.pivotY * height : height / 2 + (img.pivotY - 0.5) * width;
   const tx = px + img.translateX * width - (l00 * px + l01 * py);
-  const ty = py + img.translateY * height - (l10 * px + l11 * py);
+  const ty = py + img.translateY * (legacy ? height : width) - (l10 * px + l11 * py);
   // [L | t] · [diag(s0, s1) | (fx, fy)]
   return [l00 * s0, l01 * s1, l00 * fx + l01 * fy + tx, l10 * s0, l11 * s1, l10 * fx + l11 * fy + ty, 0, 0, 1];
 }
@@ -248,6 +257,7 @@ export function skiaImageSourceOf(
       asset: a.asset,
       fit: rnImageFit(fit),
       ...trs,
+      ...(isLegacySkew(params) ? { legacySkew: true } : {}),
       // Outside the image: transparent where Image Source letterboxes or its
       // TRS leaves the unit square; else the edge texel (a cover / stretch
       // image fills the canvas; the engine texture clamps).
@@ -268,6 +278,7 @@ export function mappingOf(s: SkiaImageSource): ImageMapping {
     rotate: s.rotate,
     pivotX: s.pivotX,
     pivotY: s.pivotY,
+    ...(s.legacySkew ? { legacySkew: true } : {}),
   };
 }
 
@@ -284,6 +295,7 @@ export const IMAGE_SOURCE_PARAMS = [
   "rotate",
   "pivotX",
   "pivotY",
+  "legacySkew",
   "exr_layer",
   "exr_unpremultiply",
 ] as const;

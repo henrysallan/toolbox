@@ -337,3 +337,38 @@ the main window; the kind chip can't retire the last viewport.
 - The R2 spec's M3 storage panel (usage, per-asset delete with reference
   scan) — natural to host in this panel later.
 - MCP / AI Recipe exposure of library assets.
+
+## Addendum (2026-10-16) — Project / Server libraries, list view
+
+Owner request: distinguish libraries, with a project-specific one as the
+default. Decisions (owner Q&A, same day):
+
+1. **Two libraries, one panel.** The header's former **Assets ▾** menu is
+   now the library selector, labelled with the one showing — **Project**
+   (default) or **Server** (everything above: `user_assets` + node
+   presets). Upload Asset… / Refresh moved under the selector's divider
+   (Refresh is Server-only). The *In project* / *Folder* sections show
+   under Project only.
+2. **Project = its own saved list**, empty in a new project
+   (`state/project-library.ts`), persisted as the additive
+   `SavedProject.assetLibrary` (shape: `lib/project-library-format.ts`).
+   Image/SVG bytes ride as ordinary asset envelopes under
+   `params.media`; both containers walk `mediaParamHolders()` (nodes +
+   library items + preset-fragment nodes), so library media is
+   extracted, deduped with node media, kept alive by the prune and
+   resolved/re-inlined on load with no container-specific code. Video
+   entries are cloud-media refs (no bytes); presets carry a fragment.
+   Edits mark the project dirty (not undo history), like saved easings.
+   Covered by `check-persistence` §7.
+3. **Node menu: Add to Assets ▸ Project / Server** (submenu). Project
+   needs no sign-in except for video (a cloud-media ref either way).
+4. **Card menu gains Copy to Project / Copy to Server** — re-runs the
+   target's add pipeline (its own dedup and thumbnail).
+5. **Grid / list toggle** in the header, remembered per browser
+   (`toolbox.assets.view`).
+6. **Card menu: Layer From Asset** (first row, both libraries) — a new
+   layer on top of the active composition's stack holding the asset,
+   wired into the layer's Group Output, whatever scope the node editor
+   shows (`placeSourceNode` / `insertPresetFragmentAt` with `asLayer`).
+   A preset wires its last top-level image output nothing inside
+   consumes.

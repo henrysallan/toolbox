@@ -15,7 +15,7 @@
 // automatically. See specdocs/archive/071426_cloud-asset-storage.md.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { SavedNode, SavedProject } from "@/lib/project";
+import type { SavedProject } from "@/lib/project";
 import {
   dataUrlToBytes,
   isAssetRef,
@@ -24,6 +24,11 @@ import {
   PRECOMPRESSED_MIMES,
   sha256Hex,
 } from "@/lib/asset-envelope";
+import {
+  cloneMediaParamHolders,
+  mediaParamHolders,
+  type MediaParamHolder,
+} from "@/lib/project-library-format";
 
 export const PROJECT_ASSETS_BUCKET = "project-assets";
 
@@ -45,11 +50,9 @@ function assetPath(loc: AssetLocator, hash: string, ext: string): string {
 
 // Shallow-clone the graph down to the param records we rewrite, leaving the
 // caller's in-memory graph untouched (same discipline as writeProjectFile).
+// Holders = the nodes plus the project asset library's media.
 function cloneForRewrite(graph: SavedProject): SavedProject {
-  return {
-    ...graph,
-    nodes: graph.nodes.map((n) => ({ ...n, params: { ...n.params } })),
-  };
+  return cloneMediaParamHolders(graph);
 }
 
 // List every object filename under a project's prefix (paginated).
@@ -127,11 +130,12 @@ export async function uploadGraphAssets(
     // sha256 of the bytes), so count those for the hash-stage denominator —
     // a per-node count over the whole graph would sit still on media-free
     // nodes and then jump.
+    const holders = mediaParamHolders(out);
     const mediaNodes = new Set(
-      out.nodes.filter((n) => Object.values(n.params).some(isInlineAsset))
+      holders.filter((n) => Object.values(n.params).some(isInlineAsset))
     );
     let hashed = 0;
-    for (const node of out.nodes) {
+    for (const node of holders) {
       const hasMedia = mediaNodes.has(node);
       if (hasMedia) {
         onProgress?.({ stage: "hash", done: hashed, total: mediaNodes.size });
@@ -191,7 +195,7 @@ export async function uploadGraphAssets(
 // Rewrite one node's inline-asset params to refs, accumulating unique
 // assets into `pending` and their filenames into `keep`.
 async function rewriteNodeToRefs(
-  node: SavedNode,
+  node: MediaParamHolder,
   pending: Map<string, { bytes: Uint8Array; ext: string; mime: string }>,
   keep: Set<string>
 ): Promise<void> {
@@ -242,9 +246,15 @@ export function resolveAssetRefs(
   graph: SavedProject,
   loc: AssetLocator
 ): SavedProject {
-  let touched = false;
-  const rewriteNode = (node: SavedNode): SavedNode => {
-    let params: Record<string, unknown> | null = null;
+  // Nodes and the project asset library's media alike: rewrite a clone in
+  // place, only when some holder carries a ref (a ≤v8 inline graph passes
+  // through as the same object).
+  if (
+    !mediaParamHolders(graph).some((h) => Object.values(h.params).some(isAssetRef))
+  )
+    return graph;
+  const out = cloneMediaParamHolders(graph);
+  for (const node of mediaParamHolders(out)) {
     for (const [key, val] of Object.entries(node.params)) {
       if (!isAssetRef(val)) continue;
       const ext = typeof val.ext === "string" ? val.ext : "bin";
@@ -262,15 +272,10 @@ export function resolveAssetRefs(
       // inert on a successful load. See 072226 audit #1b.
       const restored: Record<string, unknown> = { ...val };
       restored.dataUrl = data.publicUrl;
-      if (!params) params = { ...node.params };
-      params[key] = restored;
+      node.params[key] = restored;
     }
-    if (!params) return node;
-    touched = true;
-    return { ...node, params };
-  };
-  const nodes = graph.nodes.map(rewriteNode);
-  return touched ? { ...graph, nodes } : graph;
+  }
+  return out;
 }
 
 // Remove every object under a project's prefix (project delete). Best-effort

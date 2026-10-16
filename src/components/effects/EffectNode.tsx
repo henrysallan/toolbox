@@ -55,6 +55,7 @@ import { useAudioAudible } from "@/state/audio-audibility";
 import { LAYER_TYPE, VIRTUAL_SOCKET } from "@/engine/groups";
 import { readLayerTarget } from "@/engine/skia/layer-target";
 import SkiaLayerBadge from "./SkiaLayerBadge";
+import LayerBlendSelect from "./LayerBlendSelect";
 import { mergeLayersParam, type MergeLayer } from "@/nodes/effect/merge";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
@@ -1913,6 +1914,37 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           }}
         >
           <RenderQueueButton id={id} />
+        </div>
+      )}
+
+      {/* Layer: blend mode on the bottom edge, so it's reachable from
+          the node editor without opening the param panel
+          (101526_layer-transforms-parenting.md §6). Same control as the
+          Layers editor row; writes through effect-node-param like the
+          header enum. */}
+      {data.defType === LAYER_TYPE && (
+        <div
+          className="nodrag"
+          style={{
+            padding: "3px 8px 4px",
+            borderTop: "1px solid var(--tb-t-navy-d-4)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 10, color: "var(--tb-n-11)" }}>Blend</span>
+          <LayerBlendSelect
+            width={110}
+            value={(data.params.blendMode as string) ?? "normal"}
+            onChange={(mode) =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-param", {
+                  detail: { id, name: "blendMode", value: mode },
+                })
+              )
+            }
+          />
         </div>
       )}
 

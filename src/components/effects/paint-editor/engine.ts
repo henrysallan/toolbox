@@ -9,9 +9,21 @@
 // it self-overlaps, and mid-stroke feedback shows exactly what commit will
 // produce. Blur mutates the target directly per stamp (progressive, like the
 // Photoshop blur tool). All coordinates are canvas pixels.
+//
+// Erase strokes on a Paint node with an image wired also MIRROR into the
+// input knockout mask (101526_paint-selection-transform.md §1): the same
+// scratch stamps composite source-over onto the knockout canvas, so erasing
+// removes strokes and hides the input under them in one stroke. Every
+// session tracks the bbox it touched, so undo records only that region.
+//
+// With a selection active (101526 §2), the stroke is CLIPPED to its mask:
+// paint/erase composite scratch ∩ mask (so the knockout mirror is clipped
+// too), and blur masks each stamp by the selection as well as the tip.
 
 import type { BrushSettingsValue } from "@/engine/types";
+import type { PaintSurfaceSnapshot } from "@/state/history";
 import { getStamp } from "./brushes";
+import { floodRegion } from "./selection";
 
 export type StrokeMode = "paint" | "erase" | "blur";
 
@@ -23,6 +35,12 @@ export interface StrokeConfig {
   // True for pen pointers — mouse/touch report a constant pressure, so the
   // pressure modulations only engage when real pressure exists.
   pressureCapable: boolean;
+  // Erase mode only: the input knockout canvas to mirror the stroke into
+  // (alpha added where the stroke erases). Ignored for paint/blur.
+  knockout?: HTMLCanvasElement | null;
+  // Selection mask to clip the stroke to (alpha = how much paint lands);
+  // null/undefined = no selection, the whole canvas is paintable.
+  clip?: HTMLCanvasElement | null;
 }
 
 export class StrokeSession {
@@ -36,6 +54,17 @@ export class StrokeSession {
   private readonly scratchCtx: CanvasRenderingContext2D | null;
   // Scratch region for the blur tool's sample→blur→mask cycle.
   private blurTmp: HTMLCanvasElement | null = null;
+  // scratch ∩ clip, rebuilt per live frame when a selection is active.
+  private clipped: HTMLCanvasElement | null = null;
+  // Erase-mirror target + its pixels at stroke start (null when unused).
+  private readonly ko: HTMLCanvasElement | null;
+  private readonly koCtx: CanvasRenderingContext2D | null;
+  private readonly koBase: HTMLCanvasElement | null;
+  // Bbox of every pixel this stroke touched (canvas px, unclamped).
+  private minX = Infinity;
+  private minY = Infinity;
+  private maxX = -Infinity;
+  private maxY = -Infinity;
 
   // Smoothed pointer state + arc-length stamping cursor.
   private sx = 0;
@@ -61,6 +90,40 @@ export class StrokeSession {
       this.scratch.height = target.height;
       this.scratchCtx = this.scratch.getContext("2d");
     }
+    const ko = cfg.mode === "erase" ? (cfg.knockout ?? null) : null;
+    this.ko = ko;
+    this.koCtx = ko?.getContext("2d") ?? null;
+    this.koBase = ko && this.koCtx ? cloneCanvas(ko) : null;
+  }
+
+  // Pre-stroke pixels of every surface this stroke changed, cropped to the
+  // touched bbox — the undo entry. Empty when nothing was stamped.
+  undoSurfaces(): PaintSurfaceSnapshot[] {
+    const w = this.target.width;
+    const h = this.target.height;
+    const x0 = Math.max(0, Math.floor(this.minX));
+    const y0 = Math.max(0, Math.floor(this.minY));
+    const x1 = Math.min(w, Math.ceil(this.maxX));
+    const y1 = Math.min(h, Math.ceil(this.maxY));
+    if (x1 <= x0 || y1 <= y0) return [];
+    const crop = (src: HTMLCanvasElement, canvas: HTMLCanvasElement) => {
+      const imageData = src
+        .getContext("2d")
+        ?.getImageData(x0, y0, x1 - x0, y1 - y0);
+      return imageData ? [{ canvas, x: x0, y: y0, imageData }] : [];
+    };
+    return [
+      ...crop(this.base, this.target),
+      ...(this.ko && this.koBase ? crop(this.koBase, this.ko) : []),
+    ];
+  }
+
+  private touch(x: number, y: number, w: number, h: number) {
+    // 1px pad covers the stamp's antialiased edge.
+    this.minX = Math.min(this.minX, x - 1);
+    this.minY = Math.min(this.minY, y - 1);
+    this.maxX = Math.max(this.maxX, x + w + 1);
+    this.maxY = Math.max(this.maxY, y + h + 1);
   }
 
   down(x: number, y: number, pressure: number) {
@@ -129,6 +192,7 @@ export class StrokeSession {
   // rAF loop (before it snapshots for the pipeline) and once at end().
   renderLive() {
     if (!this.scratch) return; // blur mutates the target directly
+    const stamps = this.clippedScratch(this.scratch);
     const ctx = this.targetCtx;
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
@@ -139,8 +203,44 @@ export class StrokeSession {
     if (this.cfg.mode === "erase") {
       ctx.globalCompositeOperation = "destination-out";
     }
-    ctx.drawImage(this.scratch, 0, 0);
+    ctx.drawImage(stamps, 0, 0);
     ctx.restore();
+    const ko = this.ko;
+    const kctx = this.koCtx;
+    if (ko && kctx && this.koBase) {
+      // Knockout = base + the erase stamps ADDED (white tips), at the same
+      // opacity, so the input fades exactly as far as the strokes do.
+      kctx.save();
+      kctx.globalCompositeOperation = "source-over";
+      kctx.globalAlpha = 1;
+      kctx.clearRect(0, 0, ko.width, ko.height);
+      kctx.drawImage(this.koBase, 0, 0);
+      kctx.globalAlpha = this.cfg.brush.opacity;
+      kctx.drawImage(stamps, 0, 0);
+      kctx.restore();
+    }
+  }
+
+  // The stamp layer as it should land: the scratch itself, or scratch ∩ the
+  // selection mask.
+  private clippedScratch(scratch: HTMLCanvasElement): HTMLCanvasElement {
+    const clip = this.cfg.clip;
+    if (!clip) return scratch;
+    if (!this.clipped) {
+      this.clipped = document.createElement("canvas");
+      this.clipped.width = scratch.width;
+      this.clipped.height = scratch.height;
+    }
+    const c = this.clipped;
+    const cctx = c.getContext("2d");
+    if (!cctx) return scratch;
+    cctx.globalCompositeOperation = "source-over";
+    cctx.clearRect(0, 0, c.width, c.height);
+    cctx.drawImage(scratch, 0, 0);
+    cctx.globalCompositeOperation = "destination-in";
+    cctx.drawImage(clip, 0, 0, c.width, c.height);
+    cctx.globalCompositeOperation = "source-over";
+    return c;
   }
 
   end() {
@@ -174,6 +274,7 @@ export class StrokeSession {
     // Erase tips are alpha-only; color is irrelevant under destination-out.
     const tint = this.cfg.mode === "erase" ? "#ffffff" : this.cfg.color;
     const stamp = getStamp(d, this.cfg.brush.hardness, tint);
+    this.touch(x - d / 2, y - d / 2, d, d);
     ctx.globalAlpha = this.alpha(pressure);
     ctx.drawImage(stamp, x - d / 2, y - d / 2, d, d);
     ctx.globalAlpha = 1;
@@ -194,6 +295,7 @@ export class StrokeSession {
     if (!tctx) return;
     const rx = Math.round(x - s / 2);
     const ry = Math.round(y - s / 2);
+    this.touch(rx, ry, s, s);
     tctx.clearRect(0, 0, s, s);
     tctx.filter = `blur(${radius}px)`;
     tctx.drawImage(this.target, rx, ry, s, s, 0, 0, s, s);
@@ -206,6 +308,11 @@ export class StrokeSession {
       Math.ceil(d),
       Math.ceil(d)
     );
+    const clip = this.cfg.clip;
+    if (clip) {
+      // Same region of the selection mask, so the blur only lands inside it.
+      tctx.drawImage(clip, rx, ry, s, s, 0, 0, s, s);
+    }
     tctx.globalCompositeOperation = "source-over";
     this.targetCtx.globalAlpha = alpha;
     this.targetCtx.drawImage(tmp, rx, ry);
@@ -221,88 +328,37 @@ export function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   return c;
 }
 
-// Contiguous scanline flood fill with tolerance (0..1, on max RGBA channel
-// distance). Returns false when the seed is out of bounds. Alpha
-// participates in matching — filling "empty" transparent regions of the
-// paint canvas is the common case.
+// Flood fill with tolerance (0..1, on max RGBA channel distance) — the
+// region comes from floodRegion (selection.ts). `sample` is the RGBA the
+// region is matched against: by default the canvas itself; the overlay
+// passes the COMPOSITE (input + strokes) so a fill follows what you see
+// (101526 M4). Matched pixels become the fill color, opaque. Returns false
+// when the seed is out of bounds. Alpha participates in matching — filling
+// "empty" transparent regions of the paint canvas is the common case.
 export function floodFill(
   canvas: HTMLCanvasElement,
   seedX: number,
   seedY: number,
   fillHex: string,
-  tolerance: number
+  tolerance: number,
+  sample?: ArrayLike<number>
 ): boolean {
   const w = canvas.width;
   const h = canvas.height;
-  const x0 = Math.floor(seedX);
-  const y0 = Math.floor(seedY);
-  if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) return false;
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
   const img = ctx.getImageData(0, 0, w, h);
   const px = img.data;
-
+  const region = floodRegion(sample ?? px, w, h, seedX, seedY, tolerance, true);
+  if (!region) return false;
   const [fr, fg, fb] = hexToRgb255(fillHex);
-  const seedIdx = (y0 * w + x0) * 4;
-  const sr = px[seedIdx];
-  const sg = px[seedIdx + 1];
-  const sb = px[seedIdx + 2];
-  const sa = px[seedIdx + 3];
-  // Seed already the fill color → nothing to do (also prevents the visited
-  // test below from looping forever, since filled pixels would still match).
-  if (sr === fr && sg === fg && sb === fb && sa === 255) return true;
-
-  const tol = Math.max(0, Math.min(1, tolerance)) * 255;
-  const matches = (i: number) =>
-    Math.abs(px[i] - sr) <= tol &&
-    Math.abs(px[i + 1] - sg) <= tol &&
-    Math.abs(px[i + 2] - sb) <= tol &&
-    Math.abs(px[i + 3] - sa) <= tol;
-  const visited = new Uint8Array(w * h);
-  const stack: number[] = [y0 * w + x0];
-
-  while (stack.length) {
-    const at = stack.pop()!;
-    const y = Math.floor(at / w);
-    // Walk to the left edge of this run.
-    let x = at % w;
-    while (x > 0 && !visited[y * w + x - 1] && matches((y * w + x - 1) * 4)) {
-      x--;
-    }
-    let spanUp = false;
-    let spanDown = false;
-    // Fill the run rightward, seeding the rows above/below at match edges.
-    while (x < w) {
-      const o = y * w + x;
-      if (visited[o] || !matches(o * 4)) break;
-      visited[o] = 1;
-      const i = o * 4;
-      px[i] = fr;
-      px[i + 1] = fg;
-      px[i + 2] = fb;
-      px[i + 3] = 255;
-      if (y > 0) {
-        const up = o - w;
-        const m = !visited[up] && matches(up * 4);
-        if (m && !spanUp) {
-          stack.push(up);
-          spanUp = true;
-        } else if (!m) {
-          spanUp = false;
-        }
-      }
-      if (y < h - 1) {
-        const down = o + w;
-        const m = !visited[down] && matches(down * 4);
-        if (m && !spanDown) {
-          stack.push(down);
-          spanDown = true;
-        } else if (!m) {
-          spanDown = false;
-        }
-      }
-      x++;
-    }
+  for (let o = 0; o < region.length; o++) {
+    if (!region[o]) continue;
+    const i = o * 4;
+    px[i] = fr;
+    px[i + 1] = fg;
+    px[i + 2] = fb;
+    px[i + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   return true;

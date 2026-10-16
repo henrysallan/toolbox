@@ -47,6 +47,8 @@ import {
 import {
   TRANSFORM_TRS_PARAMS,
   bindTrsUniforms,
+  LEGACY_SKEW_PARAM,
+  trsAspect,
 } from "@/engine/transform-value";
 
 // Video source. Each frame: optionally sync the <video> element's clock to
@@ -55,7 +57,7 @@ import {
 // whatever the video decoded (usually opaque); contain letterboxes with
 // transparent alpha. Flip-Y on sample because <video> sits in DOM y-down
 // but the pipeline expects y-up.
-const FS = `#version 300 es
+export const VIDEO_FIT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -65,6 +67,7 @@ uniform vec2 u_translate; // screen convention (Y down)
 uniform vec2 u_scale;
 uniform float u_angle;    // radians
 uniform vec2 u_pivot;     // screen convention (Y down)
+uniform float u_aspect;   // W / H rigid rotation; 1.0 = legacySkew per-axis
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -83,7 +86,9 @@ void main() {
   vec2 p = uv - pivot;
   float c = cos(u_angle);
   float s = sin(u_angle);
+  p.y /= u_aspect;
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p.y *= u_aspect;
   vec2 sc = u_scale;
   if (abs(sc.x) < 1e-4) sc.x = 1e-4;
   if (abs(sc.y) < 1e-4) sc.y = 1e-4;
@@ -520,17 +525,18 @@ export const videoNode: NodeDefinition = {
     "Load a video file and render its current frame. Sync the clock to scene time for deterministic playback (good for exports), or let it play on its own.",
   facts: {
     space: {
-      "param:translateX": "uv01",
-      "param:translateY": "uv01",
-      "param:pivotX": "uv01",
-      "param:pivotY": "uv01",
+      "param:translateX": "canvas01",
+      "param:translateY": "canvas01",
+      "param:pivotX": "canvas01",
+      "param:pivotY": "canvas01",
     },
     reads: ["time"],
     gotchas: [
+      "TRS inverse-samples before the fit, transparent outside the moved frame; rotation rigid in pixels, translateY / pivotY width-relative like shapes (16:9 frame top = pivotY ≈ 0.219).",
+      "legacySkew (set on ≤v12 saves) keeps the old per-axis TRS: it shears when W ≠ H and reads translateY / pivotY height-relative.",
       "sync_to_scene_time drives currentTime to time*speed+start_offset (looped or clamped to duration); off, the element free-runs and only tracks scene play/pause.",
       "source_kind=sequence maps scene time to a frame index via seq_fps and forward-fills gaps between numbered frames; exr_layer/exr_unpremultiply apply only to EXR sequences.",
       "The video's own audio track stays muted unless this node's audio aux output is wired into Output's audio socket; volume only matters when audible.",
-      "translateX/Y, scaleX/Y, rotate and pivotX/Y apply as inverse TRS in output UV before the fit; pixels outside the transformed unit square are transparent.",
       "fit=contain letterboxes with transparent alpha outside the video bounds, not opaque black.",
       "Offline export always pauses and hard-seeks to the exact frame and waits for the decode to settle before capture, regardless of playbackRate soft-sync used live.",
       "One <video> element has one currentTime, so this node is not retimeable; a wrapping Time Offset passes scene time through unshifted instead of retiming it.",
@@ -620,6 +626,7 @@ export const videoNode: NodeDefinition = {
     // Standard TRS block — same names as Transform / Image Source so the
     // on-canvas gizmo drives them. Inverse-sampled in output UV before fit.
     ...TRANSFORM_TRS_PARAMS,
+    LEGACY_SKEW_PARAM,
     {
       name: "sync_to_scene_time",
       label: "Sync to scene time",
@@ -937,7 +944,7 @@ export const videoNode: NodeDefinition = {
         }
       }
 
-      const progSeq = ctx.getShader("video-source/fit", FS);
+      const progSeq = ctx.getShader("video-source/fit", VIDEO_FIT_FS);
       const curTex = s.tex;
       ctx.drawFullscreen(progSeq, output, (gl2) => {
         gl2.activeTexture(gl2.TEXTURE0);
@@ -949,7 +956,7 @@ export const videoNode: NodeDefinition = {
           invScale[1]
         );
         gl2.uniform1f(gl2.getUniformLocation(progSeq, "u_letterbox"), letterbox);
-        bindTrsUniforms(gl2, progSeq, params);
+        bindTrsUniforms(gl2, progSeq, params, trsAspect(params, ctx.width, ctx.height));
         gl2.activeTexture(gl2.TEXTURE1);
         gl2.bindTexture(gl2.TEXTURE_2D, uvInTexSeq);
         gl2.uniform1i(gl2.getUniformLocation(progSeq, "u_uvIn"), 1);
@@ -1264,7 +1271,7 @@ export const videoNode: NodeDefinition = {
       }
     }
 
-    const prog = ctx.getShader("video-source/fit", FS);
+    const prog = ctx.getShader("video-source/fit", VIDEO_FIT_FS);
     ctx.drawFullscreen(prog, output, (gl2) => {
       gl2.activeTexture(gl2.TEXTURE0);
       gl2.bindTexture(gl2.TEXTURE_2D, drawTex);
@@ -1275,7 +1282,7 @@ export const videoNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
-      bindTrsUniforms(gl2, prog, params);
+      bindTrsUniforms(gl2, prog, params, trsAspect(params, ctx.width, ctx.height));
 
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, uvInTex);

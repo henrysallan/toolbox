@@ -316,7 +316,7 @@ const layerMask = (i: number) => src(root.id, `in:mask:${rootLayers[i].id}`);
   check("…decoded bitmap passed through", ip.file === fakeBitmap && ip.fit === "stretch");
   // FILL: 100² image in a 200×100 box at (100, 0) → 200×200 centred on
   // (200, 50) in frame px.
-  check("…FILL placement", near(ip.scaleX as number, 200 / 400) && near(ip.scaleY as number, 200 / 300) && near(ip.translateX as number, 200 / 400 - 0.5) && near(ip.translateY as number, 50 / 300 - 0.5), JSON.stringify({ sx: ip.scaleX, sy: ip.scaleY, tx: ip.translateX, ty: ip.translateY }));
+  check("…FILL placement", near(ip.scaleX as number, 200 / 400) && near(ip.scaleY as number, 200 / 300) && near(ip.translateX as number, 200 / 400 - 0.5) && near(ip.translateY as number, (50 - 150) / 400), JSON.stringify({ sx: ip.scaleX, sy: ip.scaleY, tx: ip.translateX, ty: ip.translateY }));
   check("…paint opacity on the layer", near(rootLayers[9].opacity, 0.8));
 }
 
