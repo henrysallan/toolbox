@@ -375,7 +375,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 **Native toolbox bugs found by the ports (outside this work):**
 - ~~Displace `wrap=mirror` flips the whole image.~~ Fixed 2026-10-16: Displace and Displace (Skia) (`tbx.displace@2`) reflect only the out-of-range samples; check-skia-gather runs both wrap functions on CanvasKit. Polar Coords (GL + Skia) and Advect Image still use the old flipping formula.
 - ~~Trim Path cuts by segment parameter, not arc length (F8).~~ Fixed 2026-10-16: a `measure` param (arc length / segment); new nodes cut by exact arc length (`engine/cubic-arc-length.ts`), saves without the param keep the segment measure byte-for-byte (check-trim-path's legacy fixture); Trim Path (Skia) refuses segment mode. Pending: a `migrateLoadedParams` pin in `project.ts` so old saves SHOW "segment" in the panel.
-- The Text node blurs fractional translates (F8). Fix built and measured 2026-10-16 (edge contrast at +0.5 px 0.49 → 0.96), parked on branch `parked/text-subpixel` until `src/nodes/source/text.ts` is free of another session's uncommitted work.
+- ~~The Text node blurs fractional translates (F8).~~ Fixed 2026-10-16 (§3.4b, "Fractional translates"): the sub-pixel part is drawn into the raster, the pass moves by whole pixels (edge contrast at +0.5 px 0.49 → 0.96); vertical fractions snap to the pixel row like Skia (owner's choice).
 - ~~Noise's CPU `value` aux doesn't match the GL image for value/phasor noise at seed ≥ 1 or w ≠ 0 (F1).~~ Fixed 2026-10-16: an emulated-fp32 CPU port where it is exact (perlin / simplex / value at w = 0, small coordinates), otherwise a 1×1 GPU evaluation of NOISE_FS (sync readback only while `value` is wired); all 11 algorithms ≤ 4.9e-4 of the image (curl ≤ 9.7e-4); check-skia-noise §5.
 - ~~Circle's "equal radii are round only on a square canvas" gotcha is wrong (F7).~~ Corrected 2026-10-16: both radii are fractions of canvas width, round on any canvas.
 
@@ -1102,7 +1102,7 @@ Open:
 Text (Skia) now mirrors the Text node's layout options one for one, and
 its fonts are the ones an export can ship. Gate: `check:skia-text`. Pixel
 proof vs the Text node: `compare:skia` on `scripts/fixtures/skia/text-graph.ts`
-(24 pairs). RN web proof: `parity:skia -- --bundle text`
+(29 pairs). RN web proof: `parity:skia -- --bundle text`
 (`skia-harness/src/bundle-text`, `?bundle=text`).
 
 **Text IR, additive** (`scene-ir.ts` `text`):
@@ -1232,6 +1232,29 @@ Every MATCH pair's interior (`edge-band.cjs`) is 0/255 apart from b_multiply
 (1/255). The rest is the anti-aliased edge band, where Chromium (CoreText)
 lays 8–15 % more ink than CanvasKit (FreeType). Wave 2's paint pairs t1–t4
 still MATCH.
+
+**Fractional translates** (the F8 bug in §2c, fixed 2026-10-16). The Text
+node rasterized at the untranslated position, and its transform pass
+resampled the raster (LINEAR) by the whole translate, so a fractional one
+blended neighbouring texels. Now `textTranslateSplit` (text.ts) splits a
+pure translate in two. The sub-pixel part, on a 1/64 px grid, is drawn into
+the raster through a context transform. The pass moves the raster by whole
+pixels, sampling texel centres. Rotated or scaled text keeps phase 0, since
+the pass resamples it anyway. Measured with `compare:skia` on the five
+`sp_*` pairs (512²); edge contrast is the mean of each inked row's largest
+|Δα| between neighbours:
+
+| | before | after |
+|---|---|---|
+| sp_x025 / sp_x050 / sp_y050 / sp_xy / sp_inter14 | OFF / CLOSE / OFF / OFF / OFF, 98.63–98.93 % identical | MATCH, 99.15–99.20 % (interior 0/255, box ≤ 1 px) |
+| Geist 64 px edge contrast at x + 0.25 / 0.5 / 0.75 px (integer 0.954) | 0.717 / 0.488 / 0.719 | 0.952 / 0.957 / 0.956 |
+| Inter 14 px edge contrast at x + 0.5 px (integer 0.982) | 0.499 | 0.977 |
+
+- Both rasterizers place glyphs at sub-pixel x and snap a horizontal line's baseline to the pixel row. A fractional translateY therefore lands on whole pixels, as Text (Skia) draws it; it used to slide there, blurred.
+- Whole-pixel, rotated and scaled renders are byte-identical to before, and so are the 24 older pairs.
+- Image fill: the composite shifts the fill image by the same phase. Window-fit interiors are byte-identical; cover fit loses a double resample.
+- Cost: a sub-pixel move now redraws the raster. Measured: one line at 1080p, 1.3 ms per eval vs 0.7 for a whole-pixel move.
+- Gate: `check:skia-text` §2b (a recording 2D context and GL around the node's compute).
 
 **Gate numbers:**
 - The IR's baselines equal the Text node's `drawTextBlock` over 324 combos (≤ 1e-9 px).

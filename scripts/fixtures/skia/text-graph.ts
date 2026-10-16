@@ -14,6 +14,8 @@
 //            automatic opsz (32 here) drew it 8.2 % narrower
 //   a_left / a_center / a_right   three unwrapped lines in a box
 //   v_top / v_middle / v_bottom   vertical alignment, leading 1.5, translated box
+//   sp_x025 / sp_x050 / sp_y050 / sp_xy / sp_inter14
+//            fractional translates (x, y, both; Inter 14 px)
 //   l_090 / l_120 / l_160         wrapped, leading 0.9 / 1.2 / 1.6
 //   w_208 / w_320 / w_464         wrap widths (px of 512) with mixed align / vAlign
 //   ls_px / ls_pct                letter spacing in px; in % (wrapped)
@@ -145,11 +147,21 @@ export function textGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   for (const a of ["left", "center", "right"]) {
     pair(`a_${a}`, { text: "Align\nthree short lines\nof text", font_size: 40, alignment: a, boxWidth: 0.8, boxHeight: 0.8 }, geist);
   }
-  // ---- vertical alignment, translated box (whole-px moves: the Text node
-  //      resamples its raster for a translate, which blurs a fractional one) ----
+  // ---- vertical alignment, translated box ----
   for (const v of ["top", "middle", "bottom"]) {
     pair(`v_${v}`, { text: "Anchored\nblock", font_size: 48, vAlign: v, leading: 1.5, boxWidth: 0.9, boxHeight: 0.7, translateX: 16 / 512, translateY: -24 / 512, color: "#ffd166" }, geist);
   }
+  // ---- fractional translates (px of 512). The Text node draws the sub-pixel
+  //      part into its raster and moves it by whole pixels; it used to
+  //      resample the raster by the fraction, which blurred the glyphs
+  //      (+0.5 px halved every edge's contrast). Both rasterizers place x at
+  //      sub-pixel steps and snap a horizontal run's baseline to the pixel row. ----
+  const tr = (x: number, y: number) => ({ translateX: x / 512, translateY: y / 512 });
+  pair("sp_x025", tr(16.25, -24), geist);
+  pair("sp_x050", tr(16.5, -24), geist);
+  pair("sp_y050", tr(16, -24.5), geist);
+  pair("sp_xy", tr(-40.375, 23.625), geist);
+  pair("sp_inter14", { font_size: 14, text: "The quick brown fox jumps over the lazy dog, 0123456789", ...tr(7.5, -3.25) });
   // ---- leading on wrapped text ----
   const para = "Paragraphs wrap inside the text box, and every line sits leading times the size below the last.";
   for (const [tag, l] of [["090", 0.9], ["120", 1.2], ["160", 1.6]] as const) {

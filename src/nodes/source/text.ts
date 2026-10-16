@@ -175,6 +175,7 @@ uniform int u_fit;             // 0 window, 1 contain, 2 cover
 uniform vec2 u_uvMin;          // text box in canvas UV (Y-up)
 uniform vec2 u_uvSize;
 uniform vec2 u_fitScale;
+uniform vec2 u_phase;          // the raster's sub-pixel phase, canvas UV (Y-up)
 out vec4 outColor;
 
 vec4 over(vec4 s, vec4 d) {
@@ -189,11 +190,13 @@ void main() {
   vec2 m = vec2(v_uv.x, 1.0 - v_uv.y);   // sample row-0-top canvases
   float cov = texture(u_cov, m).a;
 
+  // The fill rides the glyphs' sub-pixel phase, as it rides the translate.
+  vec2 at = v_uv - u_phase;
   vec2 uv;
   if (u_fit == 0) {
-    uv = v_uv;
+    uv = at;
   } else {
-    vec2 local = (v_uv - u_uvMin) / max(u_uvSize, vec2(1e-6));
+    vec2 local = (at - u_uvMin) / max(u_uvSize, vec2(1e-6));
     uv = (local - 0.5) * u_fitScale + 0.5;
   }
   vec4 img = texture(u_fillImage, uv);
@@ -299,9 +302,45 @@ export function computeRasterSig(
     pf: params.path_flip,
     // Variable-font axes — included so a slider drag re-rasterizes.
     v: params.font_variations,
+    // The translate's sub-pixel phase is drawn into the raster
+    // (textTranslateSplit); whole-pixel moves only re-run the pass.
+    ph: textTranslateSplit(params, W, H).phase,
     W,
     H,
   });
+}
+
+// A pure translate splits in two: the whole pixels move the raster in the
+// transform pass, the sub-pixel rest is drawn INTO the raster. The canvas
+// rasterizer then places the glyphs at their fractional position (its own
+// sub-pixel positioning and coverage), and the pass samples texel centres,
+// which copies them exactly. Resampling a whole translate instead blended
+// neighbouring texels: + 0.5 px halved every edge's contrast (blur).
+// Rotated or scaled text is resampled anyway, so it keeps phase 0 (its
+// raster and pixels are unchanged). The phase is quantized to 1/64 px, so
+// float noise on a whole-pixel translate re-uses the phase-0 raster; the
+// ≤ 1/128 px rest rides the pass. `phase` is canvas px (y down, as the
+// raster is drawn); `shift` is the pass's translate, uv01 like translateX/Y.
+export const TEXT_PHASE_STEP = 1 / 64;
+export function textTranslateSplit(
+  params: Record<string, unknown>,
+  W: number,
+  H: number
+): { phase: [number, number]; shift: [number, number] } {
+  const tx = (params.translateX as number) ?? 0;
+  const ty = (params.translateY as number) ?? 0;
+  const pureTranslate =
+    ((params.scaleX as number) ?? 1) === 1 &&
+    ((params.scaleY as number) ?? 1) === 1 &&
+    ((params.rotate as number) ?? 0) === 0;
+  if (!pureTranslate) return { phase: [0, 0], shift: [tx, ty] };
+  const frac = (px: number) => {
+    const f = Math.round((px - Math.round(px)) / TEXT_PHASE_STEP) * TEXT_PHASE_STEP;
+    return f === 0 ? 0 : f; // no −0 in the sig
+  };
+  const fx = frac(tx * W);
+  const fy = frac(ty * H);
+  return { phase: [fx, fy], shift: [tx - fx / W, ty - fy / H] };
 }
 
 function computePostSig(params: Record<string, unknown>): string {
@@ -519,9 +558,17 @@ function renderTextLayer(
   // Path mode owns layout — no word-wrap (it flattens to one along-path run).
   const wrap = params.wrap === true && !pathLayout;
   const lines = wrapStyledLines(canvas, c2d, style, wrap ? boxW : undefined);
+  // The translate's sub-pixel phase, drawn here (textTranslateSplit). A
+  // context transform, so the box, path, gradient and per-glyph animator
+  // layouts all move together while mask / field sampling stays in canvas
+  // space; restored, since element.render reuses this context.
+  const [phaseX, phaseY] = textTranslateSplit(params, W, H).phase;
+  c2d.save();
+  c2d.translate(phaseX, phaseY);
   drawTextBlock(
     canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY, anim, pathLayout
   );
+  c2d.restore();
 
   const gl = ctx.gl;
   gl.bindTexture(gl.TEXTURE_2D, targetTex);
@@ -678,6 +725,12 @@ function compositeImageFill(
       fitU ? fitU.fitScale[0] : 1,
       fitU ? fitU.fitScale[1] : 1
     );
+    const [phaseX, phaseY] = textTranslateSplit(params, ctx.width, ctx.height).phase;
+    g.uniform2f(
+      g.getUniformLocation(prog, "u_phase"),
+      phaseX / ctx.width,
+      -phaseY / ctx.height
+    );
   });
   return state.composite.texture;
 }
@@ -692,8 +745,13 @@ function applyTransform(
   srcTex: WebGLTexture = state.rasterTex,
   flip = true
 ): void {
-  const translateX = (params.translateX as number) ?? 0;
-  const translateY = (params.translateY as number) ?? 0;
+  // The raster already holds the translate's sub-pixel phase
+  // (textTranslateSplit): this pass moves it by the rest.
+  const [translateX, translateY] = textTranslateSplit(
+    params,
+    ctx.width,
+    ctx.height
+  ).shift;
   const scaleX = Math.max(0.0001, (params.scaleX as number) ?? 1);
   const scaleY = Math.max(0.0001, (params.scaleY as number) ?? 1);
   const rotate = (params.rotate as number) ?? 0;

@@ -13,6 +13,10 @@
 //   2. layout: the IR Text (Skia) emits puts every line's baseline exactly
 //      where the Text node's drawTextBlock does, for every align × vAlign ×
 //      leading × line count × box / translate × units;
+//   2b. the Text node draws a fractional translate's sub-pixel part into
+//      its raster and moves the raster by whole pixels (it used to resample
+//      the whole translate, which blurred the glyphs); whole-pixel, rotated
+//      and scaled text keep their old raster and pass;
 //   3. the renderer means what the IR says: lines drawn one by one at
 //      SkParagraph's own pitch are the paragraph drawn whole, pixel for
 //      pixel; a fractional lineHeight lands each line exactly; every anchor
@@ -424,6 +428,188 @@ function nameTable(buf: Buffer): Record<number, string> {
   check("textCase is applied (title) and tagged as derived from text + textCase", cased.text.v === "Title Case Words" && cased.text.deps?.map((d) => d.param).join() === "text,textCase");
   const roboto = compute({ font_family: "Roboto" });
   check("an unshippable family reports why on the drawing (the canvas lists it, the export refuses)", !!roboto.problems?.some((p) => /Roboto/.test(p)));
+}
+
+// ---- 2b. the Text node draws a fractional translate, it doesn't resample it ----------------------
+
+{
+  // The Text node's raster and transform pass, run on a recording canvas 2D
+  // context and GL: where the glyphs are drawn (the context transform at
+  // each fillText) and how far the pass moves them (u_translate). Before,
+  // the raster ignored the translate and the pass resampled it whole, so a
+  // fractional one blended neighbouring texels (+0.5 px halved every edge's
+  // contrast; the sp_* pairs in text-graph.ts went CLOSE / OFF against Text
+  // (Skia), which draws at the sub-pixel position).
+  const { textNode: textDef, textTranslateSplit, computeRasterSig, TEXT_PHASE_STEP } = await import("@/nodes/source/text");
+  const draws: { text: string; e: number; f: number; linear: boolean }[] = [];
+  let passes: { shader: string; u: Record<string, number[]> }[] = [];
+  let u: Record<string, number[]> = {};
+  const c2d = (() => {
+    let m = [1, 0, 0, 1, 0, 0];
+    const stack: number[][] = [];
+    const grad = { addColorStop() {} };
+    return {
+      font: "",
+      fontStretch: "",
+      textAlign: "left",
+      textBaseline: "alphabetic",
+      letterSpacing: "0px",
+      fillStyle: "#000",
+      strokeStyle: "#000",
+      lineWidth: 1,
+      lineJoin: "miter",
+      miterLimit: 10,
+      globalAlpha: 1,
+      save: () => void stack.push([...m]),
+      restore: () => void (m = stack.pop() ?? [1, 0, 0, 1, 0, 0]),
+      translate: (x: number, y: number) => void (m = [m[0], m[1], m[2], m[3], m[4] + m[0] * x + m[2] * y, m[5] + m[1] * x + m[3] * y]),
+      rotate: (a: number) => {
+        const [c, s] = [Math.cos(a), Math.sin(a)];
+        m = [m[0] * c + m[2] * s, m[1] * c + m[3] * s, m[2] * c - m[0] * s, m[3] * c - m[1] * s, m[4], m[5]];
+      },
+      scale: (x: number, y: number) => void (m = [m[0] * x, m[1] * x, m[2] * y, m[3] * y, m[4], m[5]]),
+      clearRect() {},
+      fillText: (text: string) => void draws.push({ text, e: m[4], f: m[5], linear: m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 }),
+      strokeText() {},
+      measureText: (s: string) => ({ width: 10 * Array.from(s).length }),
+      createLinearGradient: () => grad,
+      createRadialGradient: () => grad,
+    };
+  })();
+  const el = { width: 0, height: 0, style: { fontVariationSettings: "", setProperty() {} }, setAttribute() {}, getContext: () => c2d, remove() {} };
+  const g = globalThis as { document?: unknown };
+  const hadDocument = "document" in g;
+  const prevDocument = g.document;
+  g.document = { createElement: () => el, body: { appendChild() {} } };
+  const gl = new Proxy({} as Record<string, unknown>, {
+    get: (_t, k: string) =>
+      k === "getUniformLocation"
+        ? (_p: unknown, name: string) => name
+        : /^uniform[1-4][fi]$/.test(k)
+          ? (loc: string, ...v: number[]) => void (u[loc] = v)
+          : /^[A-Z0-9_]+$/.test(k)
+            ? 0
+            : () => ({}),
+  });
+  const ctxFor = (W: number, H: number) => ({
+    gl,
+    width: W,
+    height: H,
+    time: 0,
+    frame: 0,
+    offline: false,
+    state: {} as Record<string, unknown>,
+    allocImage: () => ({ kind: "image", texture: {}, width: W, height: H }),
+    allocMask: () => ({ kind: "mask", texture: {}, width: W, height: H }),
+    releaseTexture() {},
+    clearTarget() {},
+    getShader: (name: string) => name,
+    drawFullscreen: (shader: string, _target: unknown, setup: (g2: unknown) => void) => {
+      u = {};
+      setup(gl);
+      passes.push({ shader, u });
+    },
+  });
+  const defaults = Object.fromEntries(textDef.params.map((p) => [p.name, p.default]));
+  // Arial is a system family: ready at once, no font loading.
+  const run = (ctx: ReturnType<typeof ctxFor>, params: Record<string, unknown>, inputs: Record<string, unknown> = {}) => {
+    draws.length = 0;
+    passes = [];
+    (textDef.compute as unknown as (a: unknown) => unknown)({
+      inputs,
+      params: { ...defaults, text: "Sub\npixel", font_family: "Arial", ...params },
+      ctx,
+      nodeId: "t",
+      consumedOutputs: new Set(["primary"]),
+    });
+    const pass = passes.find((p) => p.shader.startsWith("text/transform"));
+    return { draws: [...draws], pass, composite: passes.find((p) => p.shader === "text/composite") };
+  };
+  const W = 512;
+  const H = 384;
+  const near = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps;
+  const px = (r: ReturnType<typeof run>) => [r.pass!.u.u_translate[0] * W, r.pass!.u.u_translate[1] * H];
+
+  const ctx = ctxFor(W, H);
+  const a = run(ctx, { translateX: 16.5 / W, translateY: -24.25 / H });
+  const [ax, ay] = px(a);
+  check(
+    "Text: a fractional translate's sub-pixel part is drawn into the raster (every glyph at the phase), and the pass moves it by whole pixels",
+    a.draws.length === 2 && a.draws.every((d) => d.linear && d.e === -0.5 && d.f === -0.25) && near(ax, 17, 1e-6) && near(ay, -24, 1e-6),
+    JSON.stringify({ draws: a.draws, pass: [ax, ay] })
+  );
+  const b = run(ctx, { translateX: 18.5 / W, translateY: -21.25 / H });
+  const [bx, by] = px(b);
+  check(
+    "…a whole-pixel move keeps the raster (no redraw) and only moves the pass",
+    b.draws.length === 0 && near(bx, 19, 1e-6) && near(by, -21, 1e-6),
+    JSON.stringify({ draws: b.draws.length, pass: [bx, by] })
+  );
+  const c = run(ctx, { translateX: 18.75 / W, translateY: -21.25 / H });
+  check("…a sub-pixel move redraws at the new phase", c.draws.length === 2 && c.draws.every((d) => d.e === -0.25 && d.f === -0.25) && near(px(c)[0], 19, 1e-6), JSON.stringify(c.draws));
+
+  const whole = run(ctxFor(W, H), { translateX: 16 / W, translateY: -24 / H });
+  check(
+    "…a whole-pixel translate is unchanged: the raster at phase 0, the pass at the translate",
+    whole.draws.every((d) => d.linear && d.e === 0 && d.f === 0) && whole.pass!.u.u_translate[0] === 16 / W && whole.pass!.u.u_translate[1] === -24 / H,
+    JSON.stringify({ draws: whole.draws, u: whole.pass!.u.u_translate })
+  );
+  for (const [what, p] of [
+    ["rotated text", { rotate: 15 }],
+    ["scaled text", { scaleX: 1.5, scaleY: 1.5 }],
+    ["text scaled on one axis", { scaleY: 0.75 }],
+  ] as const) {
+    const r = run(ctxFor(W, H), { translateX: 16.5 / W, translateY: -24.25 / H, ...p });
+    check(
+      `…${what} keeps phase 0 and the whole translate in the pass (it's resampled anyway: pixels unchanged)`,
+      r.draws.length === 2 && r.draws.every((d) => d.e === 0 && d.f === 0) && near(px(r)[0], 16.5, 1e-6) && near(px(r)[1], -24.25, 1e-6),
+      JSON.stringify({ draws: r.draws, pass: px(r) })
+    );
+  }
+  // Image fill: the coverage raster takes the phase, and the composite
+  // shifts the fill image by it too, so the fill rides the glyphs as before.
+  const fill = run(ctxFor(W, H), { translateX: 16.5 / W, translateY: -24.25 / H, fillMode: "image" }, { fill: { kind: "image", texture: {}, width: W, height: H } });
+  const ph = fill.composite?.u.u_phase ?? [];
+  check(
+    "…image fill: the coverage is drawn at the phase, the composite shifts the fill by it (canvas UV, Y-up) and the pass moves by whole pixels",
+    fill.draws.length > 0 && fill.draws.every((d) => d.e === -0.5 && d.f === -0.25) && near(ph[0], -0.5 / W, 1e-9) && near(ph[1], 0.25 / H, 1e-9) && fill.pass?.shader === "text/transform-noflip" && near(px(fill)[0], 17, 1e-6),
+    JSON.stringify({ draws: fill.draws, phase: ph, pass: fill.pass && px(fill) })
+  );
+
+  // The split itself, over a sweep of translates and canvas sizes.
+  let worst = 0;
+  let worstAt = "";
+  let bad = "";
+  for (const [w, h] of [[512, 512], [1920, 1080], [1081, 607], [3840, 2160]])
+    for (let i = -400; i <= 400; i++) {
+      const params = { translateX: (i * 0.0137) / 3, translateY: -(i * 0.0071) / 7 };
+      const { phase, shift } = textTranslateSplit(params, w, h);
+      for (const [k, t, d] of [[0, params.translateX, w], [1, params.translateY, h]] as const) {
+        const rest = shift[k] * d;
+        const err = Math.abs(phase[k] + rest - t * d);
+        const off = Math.abs(rest - Math.round(rest));
+        if (Math.max(err, off) > worst) {
+          worst = Math.max(err, off);
+          worstAt = `${w}×${h} t=${t}: phase ${phase[k]} + shift ${rest} px`;
+        }
+        if (Math.abs(phase[k]) > 0.5 || !Number.isInteger(phase[k] / TEXT_PHASE_STEP) || Object.is(phase[k], -0)) bad ||= `${w}×${h} t=${t}: phase ${phase[k]}`;
+      }
+    }
+  check(
+    `textTranslateSplit: phase + shift is the translate, the shift is whole px within half a phase step (worst ${worst.toExponential(2)} px), |phase| ≤ 0.5 on the 1/64 px grid`,
+    worst <= TEXT_PHASE_STEP / 2 + 1e-9 && !bad,
+    bad || worstAt
+  );
+  const sig = (p: Record<string, unknown>) => computeRasterSig({ ...defaults, ...p }, "Arial", 1920, 1080);
+  check(
+    "…float noise on a whole-pixel translate is phase 0 (0.1 × 1920 = 192.00000000000003 reuses the untranslated raster); a sub-pixel change re-keys the raster",
+    textTranslateSplit({ translateX: 0.1, translateY: 0.3 }, 1920, 1080).phase.every((v) => v === 0) &&
+      sig({ translateX: 0.1, translateY: 0.3 }) === sig({}) &&
+      sig({ translateX: 0.1 + 0.5 / 1920 }) !== sig({}) &&
+      sig({ translateX: 0.1 + 0.5 / 1920, rotate: 15 }) === sig({ rotate: 15 })
+  );
+  if (hadDocument) g.document = prevDocument;
+  else delete g.document;
 }
 
 // ---- 3. the renderer means what the IR says -----------------------------------------------------
