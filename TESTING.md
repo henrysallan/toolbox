@@ -540,6 +540,24 @@ that pair). Offline node tests should push each input through
   a generator with its bundled raster on still evaluates without GL, and
   that an upstream compute that throws refuses the export instead of
   shipping an empty path.
+- `check-trim-path` — Trim Path's windows, wraps, seam stitching and
+  per-subpath sources, plus the `measure` param (2026-10-16): arc length
+  (`engine/cubic-arc-length.ts`, ≤ 1e-11 of a segment's control-polygon
+  length vs a dense reference over 126 cubics incl. cusps) and the legacy
+  segment measure, which `scripts/fixtures/trim-path-legacy.json` (19 cases
+  recorded from the pre-fix compute) holds byte-for-byte. Old saves load
+  pinned to `measure: "segment"` (`migrateLoadedParams`) and keep it on
+  re-save; new nodes (`makeInstanceNode`, recipes, MCP) get arc length.
+- `check-skia-noise` §5 — Noise's `value` aux against its GL image: the
+  emulated-fp32 CPU port (with `dot()` fused like the GPUs) where it is
+  exact, and the 1×1 NOISE_FS readback path everywhere else (which
+  algorithm × seed × w takes which path, uniforms, decode, gating,
+  fallback). Its real-GL proof is `env -u ELECTRON_RUN_AS_NODE npx
+  electron scripts/noise-value-gl.cjs [--gl swiftshader] [--bench]
+  [--write-golden]`, which records `scripts/fixtures/noise-value-golden.json`.
+  Trap: GPU `sin()` is implementation-defined (Metal ≤ 2 ulp, SwiftShader
+  thousands), so a sin-hash can't be reproduced on the CPU — that is why
+  those cases read the GPU.
 - `check-skia-paint` — the paint / modifier / text family (Stroke, Fill,
   Trim Path, Round Corners, Dash, Gradient Fill, Text (Skia)) against
   `scripts/fixtures/skia/paint-graph.ts`. Every Skia Canvas there
@@ -742,12 +760,16 @@ that pair). Offline node tests should push each input through
   declared above them; the bundle type-checks in skia-harness; and
   `skia-harness/src/bundle-atlas` is today's export (`npx tsx
   scripts/export-skia.mts --fixture atlas --out skia-harness/src/bundle-atlas`).
-  Traps: the GL Copy to Points' image mode writes PREMULTIPLIED rgb into
-  its straight-alpha output and bilinear-samples a straight texture, so
-  its anti-aliased edges come out dark — compare vs GL with an opaque
-  instance (`gl_opq`) for pixels, or `--premul-a` plus `edge-band.cjs`
-  for coverage; content-centre anchors can sit a readback texel apart
-  (see above), so pixel comparisons use canvas-centre anchors.
+  GL image mode (§7, on a GL that records its calls): the taps are
+  premultiplied before filtering, the copies composite premultiplied into a
+  scratch texture and one pass unpremultiplies into the output. Before
+  2026-10-16 the node wrote PREMULTIPLIED rgb into its straight-alpha output
+  and bilinear-sampled the straight texture, so anti-aliased edges came out
+  dark (0.50× rgb on an identity copy). Its pixels are compare:skia's:
+  `--a atlas:gl_id --b atlas:inst_skc` (0/255) and `--a atlas:gl_gridc --b
+  atlas:ska_gridc_skc` (MATCH, edge band ≤ 2/255), no `--premul-a`. Trap:
+  content-centre anchors can sit a readback texel apart (see above), so
+  pixel comparisons use canvas-centre anchors.
 - `check-skia-assets` — images + assets in React Native Skia exports
   (101326_skia-target.md §3.8 items 2–3, Wave 3 lane I). The one URL →
   bytes seam (`engine/skia/asset-bytes.ts`: registered schemes — lane B's
@@ -1040,7 +1062,8 @@ that pair). Offline node tests should push each input through
     own raster) anti-aliases in coarse coverage steps, CanvasKit finely.
     `--premul-a` divides side A's alpha back out of its rgb before scoring
     (and in `f<N>-a.png`) — for a side that stores premultiplied colour in
-    a straight image, which the GL Copy to Points' image mode does.
+    a straight image (the GL Copy to Points' image mode did until
+    2026-10-16; no fixture pair needs it now).
   - `npm run parity:skia [-- --write-golden]` — toolbox vs the exported
     bundle on RN Skia's web target (needs `npm --prefix skia-harness run
     export:web`); `--write-golden` also writes toolbox's frames to
