@@ -374,10 +374,10 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 
 **Native toolbox bugs found by the ports (outside this work):**
 - ~~Displace `wrap=mirror` flips the whole image.~~ Fixed 2026-10-16: Displace and Displace (Skia) (`tbx.displace@2`) reflect only the out-of-range samples; check-skia-gather runs both wrap functions on CanvasKit. Polar Coords (GL + Skia) and Advect Image still use the old flipping formula.
-- Trim Path cuts by segment parameter, not arc length (F8).
-- The Text node blurs fractional translates (F8).
-- Noise's CPU `value` aux doesn't match the GL image for value/phasor noise at seed ≥ 1 or w ≠ 0 (F1).
-- Circle's "equal radii are round only on a square canvas" gotcha is wrong (F7).
+- ~~Trim Path cuts by segment parameter, not arc length (F8).~~ Fixed 2026-10-16: a `measure` param (arc length / segment); new nodes cut by exact arc length (`engine/cubic-arc-length.ts`), saves without the param keep the segment measure byte-for-byte (check-trim-path's legacy fixture); Trim Path (Skia) refuses segment mode. Pending: a `migrateLoadedParams` pin in `project.ts` so old saves SHOW "segment" in the panel.
+- The Text node blurs fractional translates (F8). Fix built and measured 2026-10-16 (edge contrast at +0.5 px 0.49 → 0.96), parked on branch `parked/text-subpixel` until `src/nodes/source/text.ts` is free of another session's uncommitted work.
+- ~~Noise's CPU `value` aux doesn't match the GL image for value/phasor noise at seed ≥ 1 or w ≠ 0 (F1).~~ Fixed 2026-10-16: an emulated-fp32 CPU port where it is exact (perlin / simplex / value at w = 0, small coordinates), otherwise a 1×1 GPU evaluation of NOISE_FS (sync readback only while `value` is wired); all 11 algorithms ≤ 4.9e-4 of the image (curl ≤ 9.7e-4); check-skia-noise §5.
+- ~~Circle's "equal radii are round only on a square canvas" gotcha is wrong (F7).~~ Corrected 2026-10-16: both radii are fractions of canvas width, round on any canvas.
 
 **Carried to M3/M4:**
 - Font and image assets aren't copied into exported bundles yet.
@@ -475,7 +475,7 @@ At ebf3489 there are **14 parity slots**, and all match toolbox on every frame:
 - **Liquid Glass:** refused; a Frost-only subset is possible.
 - **Kuwahara r > 24 and Bevel outer / inner / pillow** stay refused. They need dedicated ports, not splitting.
 - **Bloom draws its content levels + 1 times.** An image-filter Blend graph would draw it once.
-- **GL bugs found** (outside this work): Copy to Points image mode darkened AA edges (fixed 2026-10-16, §3.4a); Lens Flare's "transparent background" description is wrong (it writes alpha 1).
+- **GL bugs found** (outside this work): Copy to Points image mode darkened AA edges (fixed 2026-10-16, §3.4a); Lens Flare's "transparent background" description (corrected 2026-10-16: the flare on opaque black).
 
 ### Lane C: carried polish (2026-10-14)
 
