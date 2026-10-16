@@ -195,7 +195,7 @@ export const lensFlareNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Lens flare: chromatic ghosts + halo ring + anamorphic streak. Outputs the FLARE LAYER ONLY (transparent background) — composite back over the source with a Merge (additive) so you can pre-blur / tint between if you want.",
+    "Lens flare: chromatic ghosts + halo ring + anamorphic streak. Outputs the FLARE LAYER ONLY, on opaque black (alpha 1 everywhere) — composite back over the source with a Merge in add or screen mode (black adds nothing) so you can pre-blur / tint between if you want.",
   facts: {
     space: {
       "param:ghost_dispersal": "uv01",

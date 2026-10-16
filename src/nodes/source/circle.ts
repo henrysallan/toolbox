@@ -74,7 +74,7 @@ export const circleNode: NodeDefinition = {
     },
     gotchas: [
       "radiusX and radiusY are linked by default (dragging one moves the other in lockstep); unlink them in the param panel to author an independent ellipse.",
-      "Equal radiusX/radiusY only renders as a true circle on a square canvas, since y is scaled by W/H at raster time like every canvas01 distance.",
+      "Equal radiusX/radiusY are a true circle on ANY canvas: raster scales y by W/H, so both radii are fractions of canvas WIDTH (0.5 spans the width; on landscape it overflows top/bottom).",
       "stroke_thickness is pixels by default; switching stroke_units to % makes it a fraction of canvas width instead.",
       "trim_offset is unbounded mod 1, so keyframing it past ±1 keeps orbiting the outline rather than clamping.",
     ],
