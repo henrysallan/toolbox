@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Built artifacts and vendored bundles — not ours to lint.
     "src/export-template/dist/**",
+    "src/export-template/dist-single/**",
     "src/export-template/node_modules/**",
     "public/export-template/**",
     "electron/vendor/**",
