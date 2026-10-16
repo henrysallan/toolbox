@@ -1,215 +1,264 @@
-// CPU implementations of the noise algorithms in nodes/source/perlin-noise.ts.
-// They exist so the Noise node can produce a `value` aux output (a scalar
-// noise sample at a single vec2 position) without round-tripping through a
-// 1×1 framebuffer readback. The image branch still runs on the GPU.
+// CPU implementations of the noise algorithms in nodes/source/perlin-noise.ts
+// (NOISE_FS). The Noise node's `value` aux (one scalar at a vec2 position)
+// evaluates here only where that is exact on any GPU (`noiseValueOnCpu`),
+// and runs NOISE_FS itself, 1×1, everywhere else (perlin-noise.ts).
+// Measured with scripts/noise-value-gl.cjs (Apple M5 Pro / Metal and
+// SwiftShader, 2026-10-16).
 //
-// snoise / cnoise / vnoise are line-by-line ports of the GLSL functions in
-// the shader file, so that what the image displays at a given UV equals
-// what `value` returns when sampled at that same UV.
+// Everything below runs in EMULATED fp32: every operation is rounded with
+// Math.fround in the shader's own order. The shader computes in fp32, and
+// the hashes amplify rounding — value noise's hash12 ends in
+// fract((x + y) · z) with the product ~1e4, so at |p| ≈ 100 (any seed ≥ 1:
+// the seed offset is seed × (127.1, 311.7)) doubles miss the GPU's hash by
+// up to 0.9 of the noise range. GLSL dot() is an fma chain on both GPUs
+// measured (`dot2` / `dot3`); with that, perlin / simplex / value match
+// SwiftShader's image to its half-float readback at every seed to 1000.
 //
-// The other algorithms in the GLSL (opensimplex / opensimplex2 / os2s /
-// super-simplex / perlin-deriv / flow / curl) are not ported here; the
-// value path falls back to simplex when one of those is selected. Phasor
-// IS ported (below) so the value aux matches the image at the same UV.
+// Two things a CPU port cannot pin down:
+//  - fract(sin(x) · 43758.5453). GPU sin() is implementation-defined —
+//    Metal's is within 2 ulp of the correctly rounded value, SwiftShader's
+//    thousands of ulp off — and × 43758 turns one ulp into a different hash
+//    (why Voronoi moved to pcg3d). NOISE_FS sin-hashes the W slice offsets
+//    (`hashOffset`, any w ≠ 0) and every lattice cell of opensimplex /
+//    opensimplex2 / opensimplex2s / super-simplex / perlin-deriv / flow /
+//    curl / phasor.
+//  - Contraction. Metal fuses an explicit a·b + c (the seed offset
+//    `u_offset + u_seed · 127.1` among them), SwiftShader does not, and at
+//    |p| in the thousands one ulp of p is a visible step: Metal vs this
+//    port reads 1.8e-3 at seed 7 and 0.1 at seed 1000. Hence the
+//    magnitude guard in `noiseValueOnCpu`.
+// `phasorNoise` and the sin-hashed `hashOffset` stay as the fallback for a
+// context without float render targets (and the Skia gates' reference),
+// right only where the GPU's sin rounds like Math.sin.
 
+const f = Math.fround;
+
+// GLSL fract on an fp32 x.
+function fract32(x: number): number {
+  return f(x - Math.floor(x));
+}
+
+// fma(a, b, c) in fp32: a · b is exact in a double, so one rounding of
+// the sum (then fround) — double rounding only on exact ties.
+function fma32(a: number, b: number, c: number): number {
+  return f(a * b + c);
+}
+
+// GLSL dot(): Metal and SwiftShader (ANGLE) both lower it to an fma chain,
+// dot(a, b) = fma(a.z, b.z, fma(a.y, b.y, a.x · b.x)) — bit-exact on 8000
+// hash12 lattice points, where the separately rounded sum misses 24 %.
+// Explicit a·b + c is left unfused: Metal fuses it, SwiftShader does not,
+// and no hash amplifies it.
+function dot2(ax: number, ay: number, bx: number, by: number): number {
+  return fma32(ay, by, f(ax * bx));
+}
+function dot3(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
+  return fma32(az, bz, fma32(ay, by, f(ax * bx)));
+}
+
+// GLSL mix(x, y, a), as x + (y − x) · a.
+function mix32(x: number, y: number, a: number): number {
+  return f(x + f(f(y - x) * a));
+}
+
+const INV289 = f(1 / 289);
+
+// mod289v2/v3/v4: x − floor(x · (1/289)) · 289.
 function mod289(x: number): number {
-  return x - Math.floor(x * (1 / 289)) * 289;
+  return f(x - f(Math.floor(f(x * INV289)) * 289));
 }
 
+// permute3/4: mod289(((x · 34) + 1) · x).
 function permute(x: number): number {
-  return mod289((x * 34 + 1) * x);
+  return mod289(f(f(f(x * 34) + 1) * x));
 }
+
+const SC0 = f(0.211324865405187);
+const SC1 = f(0.366025403784439);
+const SC2 = f(-0.577350269189626);
+const SC3 = f(0.024390243902439);
+const NORM_A = f(1.79284291400159);
+const NORM_B = f(0.85373472095314);
 
 // Ashima snoise — 2D simplex noise, returns ~[-1, 1].
 export function snoise(vx: number, vy: number): number {
-  const C0 = 0.211324865405187;
-  const C1 = 0.366025403784439;
-  const C2 = -0.577350269189626;
-  const C3 = 0.024390243902439;
-
-  const dotVc = (vx + vy) * C1;
-  let ix = Math.floor(vx + dotVc);
-  let iy = Math.floor(vy + dotVc);
-  const dotI = (ix + iy) * C0;
-  const x0x = vx - ix + dotI;
-  const x0y = vy - iy + dotI;
+  vx = f(vx);
+  vy = f(vy);
+  // i = floor(v + dot(v, C.yy))
+  const dv = dot2(vx, vy, SC1, SC1);
+  let ix = Math.floor(f(vx + dv));
+  let iy = Math.floor(f(vy + dv));
+  // x0 = v - i + dot(i, C.xx)
+  const di = dot2(ix, iy, SC0, SC0);
+  const x0x = f(f(vx - ix) + di);
+  const x0y = f(f(vy - iy) + di);
   const i1x = x0x > x0y ? 1 : 0;
   const i1y = x0x > x0y ? 0 : 1;
-  const x12_0x = x0x + C0 - i1x;
-  const x12_0y = x0y + C0 - i1y;
-  const x12_1x = x0x + C2;
-  const x12_1y = x0y + C2;
+  // x12 = x0.xyxy + C.xxzz; x12.xy -= i1
+  const x12_0x = f(f(x0x + SC0) - i1x);
+  const x12_0y = f(f(x0y + SC0) - i1y);
+  const x12_1x = f(x0x + SC2);
+  const x12_1y = f(x0y + SC2);
   ix = mod289(ix);
   iy = mod289(iy);
-  const py0 = permute(iy);
-  const py1 = permute(iy + i1y);
-  const py2 = permute(iy + 1);
-  const p0 = permute(py0 + ix);
-  const p1 = permute(py1 + ix + i1x);
-  const p2 = permute(py2 + ix + 1);
+  // p = permute(permute(i.y + vec3(0, i1.y, 1)) + i.x + vec3(0, i1.x, 1))
+  const p0 = permute(f(permute(iy) + ix));
+  const p1 = permute(f(f(permute(f(iy + i1y)) + ix) + i1x));
+  const p2 = permute(f(f(permute(f(iy + 1)) + ix) + 1));
 
-  let m0 = Math.max(0, 0.5 - (x0x * x0x + x0y * x0y));
-  let m1 = Math.max(0, 0.5 - (x12_0x * x12_0x + x12_0y * x12_0y));
-  let m2 = Math.max(0, 0.5 - (x12_1x * x12_1x + x12_1y * x12_1y));
-  m0 *= m0;
-  m0 *= m0;
-  m1 *= m1;
-  m1 *= m1;
-  m2 *= m2;
-  m2 *= m2;
+  let m0 = Math.max(f(0.5 - dot2(x0x, x0y, x0x, x0y)), 0);
+  let m1 = Math.max(f(0.5 - dot2(x12_0x, x12_0y, x12_0x, x12_0y)), 0);
+  let m2 = Math.max(f(0.5 - dot2(x12_1x, x12_1y, x12_1x, x12_1y)), 0);
+  m0 = f(m0 * m0);
+  m0 = f(m0 * m0);
+  m1 = f(m1 * m1);
+  m1 = f(m1 * m1);
+  m2 = f(m2 * m2);
+  m2 = f(m2 * m2);
 
-  const xv0 = 2 * (p0 * C3 - Math.floor(p0 * C3)) - 1;
-  const xv1 = 2 * (p1 * C3 - Math.floor(p1 * C3)) - 1;
-  const xv2 = 2 * (p2 * C3 - Math.floor(p2 * C3)) - 1;
-  const h0 = Math.abs(xv0) - 0.5;
-  const h1 = Math.abs(xv1) - 0.5;
-  const h2 = Math.abs(xv2) - 0.5;
-  const a00 = xv0 - Math.floor(xv0 + 0.5);
-  const a01 = xv1 - Math.floor(xv1 + 0.5);
-  const a02 = xv2 - Math.floor(xv2 + 0.5);
+  // x = 2 · fract(p · C.www) − 1; h = |x| − 0.5; a0 = x − floor(x + 0.5)
+  const xv0 = f(f(2 * fract32(f(p0 * SC3))) - 1);
+  const xv1 = f(f(2 * fract32(f(p1 * SC3))) - 1);
+  const xv2 = f(f(2 * fract32(f(p2 * SC3))) - 1);
+  const h0 = f(Math.abs(xv0) - 0.5);
+  const h1 = f(Math.abs(xv1) - 0.5);
+  const h2 = f(Math.abs(xv2) - 0.5);
+  const a00 = f(xv0 - Math.floor(f(xv0 + 0.5)));
+  const a01 = f(xv1 - Math.floor(f(xv1 + 0.5)));
+  const a02 = f(xv2 - Math.floor(f(xv2 + 0.5)));
 
-  m0 *= 1.79284291400159 - 0.85373472095314 * (a00 * a00 + h0 * h0);
-  m1 *= 1.79284291400159 - 0.85373472095314 * (a01 * a01 + h1 * h1);
-  m2 *= 1.79284291400159 - 0.85373472095314 * (a02 * a02 + h2 * h2);
+  m0 = f(m0 * f(NORM_A - f(NORM_B * f(f(a00 * a00) + f(h0 * h0)))));
+  m1 = f(m1 * f(NORM_A - f(NORM_B * f(f(a01 * a01) + f(h1 * h1)))));
+  m2 = f(m2 * f(NORM_A - f(NORM_B * f(f(a02 * a02) + f(h2 * h2)))));
 
-  const g0 = a00 * x0x + h0 * x0y;
-  const g1 = a01 * x12_0x + h1 * x12_0y;
-  const g2 = a02 * x12_1x + h2 * x12_1y;
-  return 130.0 * (m0 * g0 + m1 * g1 + m2 * g2);
+  const g0 = f(f(a00 * x0x) + f(h0 * x0y));
+  const g1 = f(f(a01 * x12_0x) + f(h1 * x12_0y));
+  const g2 = f(f(a02 * x12_1x) + f(h2 * x12_1y));
+  return f(130 * dot3(m0, m1, m2, g0, g1, g2));
 }
 
-// Permute used by cnoise — 2D Perlin (Ashima cnoise). The shader uses
-// mod(Pi, 289.0); JS modulo on negatives gives wrong sign, so wrap
-// explicitly.
-function mod289Pos(x: number): number {
-  const r = x % 289;
-  return r < 0 ? r + 289 : r;
-}
-function permute289(x: number): number {
-  return mod289Pos((x * 34 + 1) * x);
+// GLSL mod(x, 289.0) = x − 289 · floor(x / 289).
+function mod289div(x: number): number {
+  return f(x - f(289 * Math.floor(f(x / 289))));
 }
 
+// fade2: t³ (t (6t − 15) + 10).
 function fade(t: number): number {
-  return t * t * t * (t * (t * 6 - 15) + 10);
+  return f(f(f(t * t) * t) * f(f(t * f(f(t * 6) - 15)) + 10));
 }
 
-// Improved Perlin (cnoise), returns ~[-1, 1].
+const INV41 = f(1 / 41);
+
+// Improved Perlin (Ashima cnoise), returns ~[-1, 1].
 export function cnoise(Px: number, Py: number): number {
-  const Pi0x = Math.floor(Px);
-  const Pi0y = Math.floor(Py);
-  const Pi1x = Pi0x + 1;
-  const Pi1y = Pi0y + 1;
-  const Pf0x = Px - Pi0x;
-  const Pf0y = Py - Pi0y;
-  const Pf1x = Pf0x - 1;
-  const Pf1y = Pf0y - 1;
-  const i00 = mod289Pos(Pi0x);
-  const i01 = mod289Pos(Pi0y);
-  const i10 = mod289Pos(Pi1x);
-  const i11 = mod289Pos(Pi1y);
+  Px = f(Px);
+  Py = f(Py);
+  // Pi = mod(floor(P.xyxy) + (0, 0, 1, 1), 289); Pf = fract(P.xyxy) − (0, 0, 1, 1)
+  const fx0 = Math.floor(Px);
+  const fy0 = Math.floor(Py);
+  const i00 = mod289div(fx0);
+  const i01 = mod289div(fy0);
+  const i10 = mod289div(f(fx0 + 1));
+  const i11 = mod289div(f(fy0 + 1));
+  const Pf0x = fract32(Px);
+  const Pf0y = fract32(Py);
+  const Pf1x = f(Pf0x - 1);
+  const Pf1y = f(Pf0y - 1);
 
-  // ix = (Pi.x, Pi.z, Pi.x, Pi.z) = (i00, i10, i00, i10)
-  // iy = (Pi.y, Pi.y, Pi.w, Pi.w) = (i01, i01, i11, i11)
-  const ii0 = permute289(permute289(i00) + i01);
-  const ii1 = permute289(permute289(i10) + i01);
-  const ii2 = permute289(permute289(i00) + i11);
-  const ii3 = permute289(permute289(i10) + i11);
+  // ix = Pi.xzxz, iy = Pi.yyww; ii = permute(permute(ix) + iy)
+  const ii0 = permute(f(permute(i00) + i01));
+  const ii1 = permute(f(permute(i10) + i01));
+  const ii2 = permute(f(permute(i00) + i11));
+  const ii3 = permute(f(permute(i10) + i11));
 
-  const inv41 = 1 / 41;
-  const gx0a = 2 * (ii0 * inv41 - Math.floor(ii0 * inv41)) - 1;
-  const gx1a = 2 * (ii1 * inv41 - Math.floor(ii1 * inv41)) - 1;
-  const gx2a = 2 * (ii2 * inv41 - Math.floor(ii2 * inv41)) - 1;
-  const gx3a = 2 * (ii3 * inv41 - Math.floor(ii3 * inv41)) - 1;
-  const gy0 = Math.abs(gx0a) - 0.5;
-  const gy1 = Math.abs(gx1a) - 0.5;
-  const gy2 = Math.abs(gx2a) - 0.5;
-  const gy3 = Math.abs(gx3a) - 0.5;
-  // gx -= floor(gx + 0.5)
-  const gx0 = gx0a - Math.floor(gx0a + 0.5);
-  const gx1 = gx1a - Math.floor(gx1a + 0.5);
-  const gx2 = gx2a - Math.floor(gx2a + 0.5);
-  const gx3 = gx3a - Math.floor(gx3a + 0.5);
-  const n0 = 1.79284291400159 - 0.85373472095314 * (gx0 * gx0 + gy0 * gy0);
-  const n1 = 1.79284291400159 - 0.85373472095314 * (gx1 * gx1 + gy1 * gy1);
-  const n2 = 1.79284291400159 - 0.85373472095314 * (gx2 * gx2 + gy2 * gy2);
-  const n3 = 1.79284291400159 - 0.85373472095314 * (gx3 * gx3 + gy3 * gy3);
+  // gx = 2 · fract(ii / 41) − 1; gy = |gx| − 0.5; gx −= floor(gx + 0.5)
+  const gxa = [ii0, ii1, ii2, ii3].map((v) => f(f(2 * fract32(f(v * INV41))) - 1));
+  const gy = gxa.map((v) => f(Math.abs(v) - 0.5));
+  const gx = gxa.map((v) => f(v - Math.floor(f(v + 0.5))));
+  // g00 = (gx.x, gy.x), g10 = (gx.y, gy.y), g01 = (gx.z, gy.z), g11 = (gx.w, gy.w);
+  // norm = (dot(g00), dot(g01), dot(g10), dot(g11)) — g01 is index 2, g10 index 1.
+  const nrm = (k: number) => f(NORM_A - f(NORM_B * dot2(gx[k], gy[k], gx[k], gy[k])));
+  const n00s = nrm(0);
+  const n10s = nrm(1);
+  const n01s = nrm(2);
+  const n11s = nrm(3);
+  const g00x = f(gx[0] * n00s);
+  const g00y = f(gy[0] * n00s);
+  const g10x = f(gx[1] * n10s);
+  const g10y = f(gy[1] * n10s);
+  const g01x = f(gx[2] * n01s);
+  const g01y = f(gy[2] * n01s);
+  const g11x = f(gx[3] * n11s);
+  const g11y = f(gy[3] * n11s);
 
-  const g00x = gx0 * n0;
-  const g00y = gy0 * n0;
-  const g10x = gx1 * n1;
-  const g10y = gy1 * n1;
-  const g01x = gx2 * n2;
-  const g01y = gy2 * n2;
-  const g11x = gx3 * n3;
-  const g11y = gy3 * n3;
+  // fx = Pf.xzxz, fy = Pf.yyww
+  const n00 = dot2(g00x, g00y, Pf0x, Pf0y);
+  const n10 = dot2(g10x, g10y, Pf1x, Pf0y);
+  const n01 = dot2(g01x, g01y, Pf0x, Pf1y);
+  const n11 = dot2(g11x, g11y, Pf1x, Pf1y);
 
-  const n00 = g00x * Pf0x + g00y * Pf0y;
-  const n10 = g10x * Pf1x + g10y * Pf0y;
-  const n01 = g01x * Pf0x + g01y * Pf1y;
-  const n11 = g11x * Pf1x + g11y * Pf1y;
-
-  const fx = fade(Pf0x);
-  const fy = fade(Pf0y);
-  const nx0 = n00 + (n10 - n00) * fx;
-  const nx1 = n01 + (n11 - n01) * fx;
-  return 2.3 * (nx0 + (nx1 - nx0) * fy);
+  const ux = fade(Pf0x);
+  const uy = fade(Pf0y);
+  const nx0 = mix32(n00, n10, ux);
+  const nx1 = mix32(n01, n11, ux);
+  return f(2.3 * mix32(nx0, nx1, uy));
 }
 
-// Hash for value-noise (Dave_Hoskins-style). Match the GLSL hash12 line by line;
-// note that p3.z aliases p3.x because the shader does `vec3(p.xyx)`.
+const H12_K = f(0.1031);
+const H12_ADD = f(33.33);
+
+// hash12 (Dave_Hoskins): p3 = fract(p.xyx · 0.1031); p3 += dot(p3, p3.yzx + 33.33);
+// fract((p3.x + p3.y) · p3.z). p3.z aliases p3.x (vec3(p.xyx)).
 function hash12(px: number, py: number): number {
-  const sx = px * 0.1031;
-  const sy = py * 0.1031;
-  let p3x = sx - Math.floor(sx);
-  let p3y = sy - Math.floor(sy);
-  let p3z = sx - Math.floor(sx);
-  const d =
-    p3x * (p3y + 33.33) + p3y * (p3z + 33.33) + p3z * (p3x + 33.33);
-  p3x += d;
-  p3y += d;
-  p3z += d;
-  const v = (p3x + p3y) * p3z;
-  return v - Math.floor(v);
+  let p3x = fract32(f(px * H12_K));
+  let p3y = fract32(f(py * H12_K));
+  let p3z = p3x;
+  const d = dot3(p3x, p3y, p3z, f(p3y + H12_ADD), f(p3z + H12_ADD), f(p3x + H12_ADD));
+  p3x = f(p3x + d);
+  p3y = f(p3y + d);
+  p3z = f(p3z + d);
+  return fract32(f(f(p3x + p3y) * p3z));
 }
 
 // Cubic-interpolated value noise, returns ~[-1, 1].
 export function vnoise(Px: number, Py: number): number {
+  Px = f(Px);
+  Py = f(Py);
   const ix = Math.floor(Px);
   const iy = Math.floor(Py);
-  const fx = Px - ix;
-  const fy = Py - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
+  const fx = fract32(Px);
+  const fy = fract32(Py);
+  // u = f · f · (3 − 2f)
+  const ux = f(f(fx * fx) * f(3 - f(2 * fx)));
+  const uy = f(f(fy * fy) * f(3 - f(2 * fy)));
   const a = hash12(ix, iy);
-  const b = hash12(ix + 1, iy);
-  const c = hash12(ix, iy + 1);
-  const d = hash12(ix + 1, iy + 1);
-  const ab = a + (b - a) * ux;
-  const cd = c + (d - c) * ux;
-  return (ab + (cd - ab) * uy) * 2 - 1;
+  const b = hash12(f(ix + 1), iy);
+  const c = hash12(ix, f(iy + 1));
+  const d = hash12(f(ix + 1), f(iy + 1));
+  return f(f(mix32(mix32(a, b, ux), mix32(c, d, ux), uy) * 2) - 1);
 }
 
 export type NoiseFn = (px: number, py: number) => number;
 
-function fract(x: number): number {
-  return x - Math.floor(x);
+// fract(sin(x) · 43758.5453123) with sin rounded once: the GPU's own sin is
+// implementation-defined (see the header) — this matches it only where it
+// rounds like Math.sin.
+const SIN_K = f(43758.5453123);
+function sinHash(x: number): number {
+  return fract32(f(f(Math.sin(x)) * SIN_K));
 }
 
-function phasorHash22(px: number, py: number): [number, number] {
-  const hx = px * 127.1 + py * 311.7;
-  const hy = px * 269.5 + py * 183.3;
-  return [fract(Math.sin(hx) * 43758.5453123), fract(Math.sin(hy) * 43758.5453123)];
-}
+const PH_A = [f(127.1), f(311.7)];
+const PH_B = [f(269.5), f(183.3)];
+const PH_C = [f(419.2), f(371.9)];
+const PH_D = [f(183.3), f(251.7)];
+const PI32 = f(3.141592653589793);
+const TAU32 = f(6.283185307179586);
 
-function phasorHash22b(px: number, py: number): [number, number] {
-  const hx = px * 419.2 + py * 371.9;
-  const hy = px * 183.3 + py * 251.7;
-  return [fract(Math.sin(hx) * 43758.5453123), fract(Math.sin(hy) * 43758.5453123)];
-}
-
-// Tricard et al. phasor noise — line-by-line port of the GLSL `phasorNoise`.
+// Tricard et al. phasor noise — the GLSL `phasorNoise` in fp32.
 // `orientation` is radians; `frequency` is cycles per lattice cell;
 // `isotropy` 0 = all kernels share orientation, 1 = ±π random offset.
+// Sin-hashed: exact only where the GPU's sin rounds like Math.sin.
 export function phasorNoise(
   px: number,
   py: number,
@@ -217,36 +266,44 @@ export function phasorNoise(
   orientation: number,
   isotropy: number
 ): number {
-  const PI = 3.141592653589793;
-  const TAU = 6.283185307179586;
+  px = f(px);
+  py = f(py);
+  frequency = f(frequency);
+  orientation = f(orientation);
+  isotropy = f(isotropy);
   const ipx = Math.floor(px);
   const ipy = Math.floor(py);
-  const fpx = px - ipx;
-  const fpy = py - ipy;
+  const fpx = fract32(px);
+  const fpy = fract32(py);
+  const isoK = f(PI32 * isotropy);
   let accX = 0;
   let accY = 0;
   for (let j = -1; j <= 1; j++) {
     for (let i = -1; i <= 1; i++) {
-      const cellX = ipx + i;
-      const cellY = ipy + j;
-      const [h0x, h0y] = phasorHash22(cellX, cellY);
-      const [h1x, h1y] = phasorHash22b(cellX, cellY);
-      const rx = i + h0x - fpx;
-      const ry = j + h0y - fpy;
-      const d2 = rx * rx + ry * ry;
-      if (d2 >= 1) continue;
-      const w = (0.5 + 0.5 * Math.cos(PI * d2)) * Math.exp(-PI * d2);
-      const ori = orientation + PI * isotropy * (h1x * 2 - 1);
-      const dirX = Math.cos(ori);
-      const dirY = Math.sin(ori);
-      const ang = TAU * (frequency * (rx * dirX + ry * dirY) + h1y);
-      accX += w * Math.cos(ang);
-      accY += w * Math.sin(ang);
+      const cellX = f(ipx + i);
+      const cellY = f(ipy + j);
+      const h0x = sinHash(dot2(cellX, cellY, PH_A[0], PH_A[1]));
+      const h0y = sinHash(dot2(cellX, cellY, PH_B[0], PH_B[1]));
+      const h1x = sinHash(dot2(cellX, cellY, PH_C[0], PH_C[1]));
+      const h1y = sinHash(dot2(cellX, cellY, PH_D[0], PH_D[1]));
+      // r = g + h0 − fp
+      const rx = f(f(i + h0x) - fpx);
+      const ry = f(f(j + h0y) - fpy);
+      const d2 = dot2(rx, ry, rx, ry);
+      if (!(d2 < 1)) continue;
+      const pd2 = f(PI32 * d2);
+      const w = f(f(0.5 + f(0.5 * f(Math.cos(pd2)))) * f(Math.exp(-pd2)));
+      const ori = f(orientation + f(isoK * f(f(h1x * 2) - 1)));
+      const dirX = f(Math.cos(ori));
+      const dirY = f(Math.sin(ori));
+      const ang = f(TAU32 * f(f(frequency * dot2(rx, ry, dirX, dirY)) + h1y));
+      accX = f(accX + f(w * f(Math.cos(ang))));
+      accY = f(accY + f(w * f(Math.sin(ang))));
     }
   }
-  const mag = Math.hypot(accX, accY);
+  const mag = f(Math.sqrt(dot2(accX, accY, accX, accY)));
   if (mag < 1e-5) return 0;
-  return accX / mag;
+  return f(accX / mag);
 }
 
 export type PhasorParams = {
@@ -255,7 +312,7 @@ export type PhasorParams = {
   isotropy: number;
 };
 
-// fBm wrapper — same semantics as the GLSL `fbmAt`.
+// fBm — the GLSL `fbmAt` in fp32.
 function fbmAt(
   fn: NoiseFn,
   px: number,
@@ -268,26 +325,31 @@ function fbmAt(
   let amp = 1;
   let freq = 1;
   let maxAmp = 0;
-  for (let i = 0; i < octaves; i++) {
-    total += fn(px * freq, py * freq) * amp;
-    maxAmp += amp;
-    amp *= persistence;
-    freq *= lacunarity;
+  for (let i = 0; i < 8; i++) {
+    if (i >= octaves) break;
+    total = f(total + f(fn(f(px * freq), f(py * freq)) * amp));
+    maxAmp = f(maxAmp + amp);
+    amp = f(amp * persistence);
+    freq = f(freq * lacunarity);
   }
-  return total / Math.max(maxAmp, 1e-4);
+  return f(total / Math.max(maxAmp, f(0.0001)));
 }
 
-// Match the GLSL hashOffset for W-slice blending.
+const HO_A = f(12.9898);
+const HO_B = f(78.233);
+const HO_K = f(43758.5453);
+
+// The GLSL hashOffset for W-slice blending. Sin-hashed: on the GPU, slice
+// offsets come out as the GPU's sin rounds (Metal moves wi = ±1, ±2, ±3 by
+// ~2 lattice units from this) — the value aux evaluates w ≠ 0 there.
 function hashOffset(wi: number): [number, number] {
   if (wi === 0) return [0, 0];
-  const a = Math.sin(wi * 12.9898) * 43758.5453;
-  const b = Math.sin(wi * 78.233) * 43758.5453;
-  const fa = a - Math.floor(a);
-  const fb = b - Math.floor(b);
-  return [fa * 1000, fb * 1000];
+  const a = fract32(f(f(Math.sin(f(wi * HO_A))) * HO_K));
+  const b = fract32(f(f(Math.sin(f(wi * HO_B))) * HO_K));
+  return [f(a * 1000), f(b * 1000)];
 }
 
-// fBm with W-slice evolution. Mirrors the GLSL `fbm()` wrapper.
+// fBm with W-slice evolution — the GLSL `fbm()` wrapper in fp32.
 export function fbmWithW(
   fn: NoiseFn,
   px: number,
@@ -297,17 +359,76 @@ export function fbmWithW(
   persistence: number,
   lacunarity: number
 ): number {
+  px = f(px);
+  py = f(py);
+  w = f(w);
+  persistence = f(persistence);
+  lacunarity = f(lacunarity);
   const wi = Math.floor(w);
-  let wf = w - wi;
-  wf = wf * wf * (3 - 2 * wf);
+  let wf = f(w - wi);
+  wf = f(f(wf * wf) * f(3 - f(2 * wf)));
   const [o0x, o0y] = hashOffset(wi);
   if (wf === 0) {
-    return fbmAt(fn, px + o0x, py + o0y, octaves, persistence, lacunarity);
+    return fbmAt(fn, f(px + o0x), f(py + o0y), octaves, persistence, lacunarity);
   }
-  const [o1x, o1y] = hashOffset(wi + 1);
-  const a = fbmAt(fn, px + o0x, py + o0y, octaves, persistence, lacunarity);
-  const b = fbmAt(fn, px + o1x, py + o1y, octaves, persistence, lacunarity);
-  return a + (b - a) * wf;
+  const [o1x, o1y] = hashOffset(f(wi + 1));
+  const a = fbmAt(fn, f(px + o0x), f(py + o0y), octaves, persistence, lacunarity);
+  const b = fbmAt(fn, f(px + o1x), f(py + o1y), octaves, persistence, lacunarity);
+  return mix32(a, b, wf);
+}
+
+// NOISE_FS main()'s sample point for canvas uv (u, v), in fp32:
+//   p = (uv − 0.5) · scale;  p.y /= aspect;  p += offset + seedOffset + animOffset
+// with seedOffset = seed · (127.1, 311.7) and aspect = width / height.
+export function noiseSamplePoint(
+  u: number,
+  v: number,
+  o: {
+    width: number;
+    height: number;
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+    seed: number;
+    animOffsetX: number;
+    animOffsetY: number;
+  }
+): [number, number] {
+  const scale = f(o.scale);
+  const seed = f(o.seed);
+  const aspect = f(f(o.width) / f(o.height));
+  const ox = f(f(f(o.offsetX) + f(seed * PH_A[0])) + f(o.animOffsetX));
+  const oy = f(f(f(o.offsetY) + f(seed * PH_A[1])) + f(o.animOffsetY));
+  const px = f(f(f(u) - 0.5) * scale);
+  const py = f(f(f(f(v) - 0.5) * scale) / aspect);
+  return [f(px + ox), f(py + oy)];
+}
+
+// The algorithms with no sin hash, whose CPU port can be exact.
+export const NOISE_CPU_EXACT_TYPES: readonly string[] = ["perlin", "simplex", "value"];
+
+// Below this, |sample point| × the top octave's frequency keeps one ulp of
+// p under 2⁻¹¹ lattice units at the finest octave, so a GPU that rounds the
+// sample point differently (contraction) still lands within ~1e-3 of this
+// port. Seed 0 and 1 (at 4 octaves) pass; seed 7 does not.
+export const NOISE_CPU_MAX_EXTENT = 4096;
+
+// Whether the Noise node's `value` aux at fp32 sample point (sx, sy)
+// (`noiseSamplePoint`) evaluates on the CPU: a sin-free type, no W slice
+// offsets (w = 0; the looping evolution forces it), and small coordinates.
+// Everything else runs NOISE_FS on the GPU.
+export function noiseValueOnCpu(
+  type: string,
+  w: number,
+  sx: number,
+  sy: number,
+  octaves: number,
+  lacunarity: number
+): boolean {
+  if (f(w) !== 0 || !NOISE_CPU_EXACT_TYPES.includes(type)) return false;
+  let freq = 1;
+  for (let i = 1; i < octaves; i++) freq = f(freq * f(lacunarity));
+  return Math.max(Math.abs(sx), Math.abs(sy)) * freq < NOISE_CPU_MAX_EXTENT;
 }
 
 // ── Looping noise evolution ────────────────────────────────────────────
@@ -346,6 +467,10 @@ export function loopEvolutionOffset(
   return [rate * Math.cos(theta), rate * Math.sin(theta)];
 }
 
+// The CPU noise function for a type. Only perlin / simplex / value are
+// exact (NOISE_CPU_EXACT_TYPES); phasor is the sin-hashed fallback port;
+// the OS family / perlin-deriv / flow / curl have no CPU port and read as
+// simplex here — the Noise node evaluates them on the GPU instead.
 export function noiseFnFor(type: string, phasor?: PhasorParams): NoiseFn {
   switch (type) {
     case "perlin":
@@ -360,8 +485,6 @@ export function noiseFnFor(type: string, phasor?: PhasorParams): NoiseFn {
       const isotropy = phasor?.isotropy ?? 0.2;
       return (x, y) => phasorNoise(x, y, frequency, orientation, isotropy);
     }
-    // OS family / perlin-deriv / flow / curl — fall back to simplex on the
-    // value path (the GLSL implementations of those aren't ported to JS yet).
     default:
       return snoise;
   }

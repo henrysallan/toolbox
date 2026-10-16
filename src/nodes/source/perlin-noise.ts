@@ -1,9 +1,11 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
+  ImageValue,
   NodeDefinition,
   NoiseFieldValue,
   PositionNode,
   PositionValue,
+  RenderContext,
   ScalarFieldValue,
   UvValue,
 } from "@/engine/types";
@@ -16,6 +18,8 @@ import {
   loopEvolutionOffset,
   loopEvolutionPhase,
   noiseFnFor,
+  noiseSamplePoint,
+  noiseValueOnCpu,
 } from "@/engine/noise";
 
 // Helper: extract a PositionNode from a `position` socket value. Used
@@ -522,6 +526,61 @@ void main() {
   outColor = vec4(mix(u_colorA, u_colorB, t), u_alpha);
 }`;
 
+// The value aux's GPU evaluation: NOISE_FS drawn once into a 1×1 RGBA32F
+// target in its constant-UV mode (u_hasUvIn = 2) at `position`, keeping the
+// canvas size for the aspect divide. With colours 0 → 1 every channel is
+// t = clamp(0.5 + n · 0.5 · contrast), so at contrast 1/8 the noise reads
+// back as n = (t − 0.5) · 16, unclipped to |n| ≤ 8, at fp32 (the engine's
+// RGBA16F images would round n to ~5e-4). curl writes
+// clamp(v · contrast, −1, 1) · 0.5 + 0.5 into RG; R decodes the same way.
+export const VALUE_PROBE_CONTRAST = 0.125;
+
+const valueProbeKey = (nodeId: string) => `perlin-noise:${nodeId}:value-probe`;
+
+// null when float render targets are unavailable (the CPU port answers).
+function sampleValueOnGpu(
+  ctx: RenderContext,
+  nodeId: string,
+  prog: WebGLProgram,
+  setup: (gl: WebGL2RenderingContext) => void
+): number | null {
+  const gl = ctx.gl;
+  if (
+    typeof gl.getExtension !== "function" ||
+    !gl.getExtension("EXT_color_buffer_float")
+  ) {
+    return null;
+  }
+  const key = valueProbeKey(nodeId);
+  let tex = ctx.state[key] as WebGLTexture | undefined;
+  if (!tex) {
+    const t = gl.createTexture();
+    if (!t) return null;
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    ctx.state[key] = t;
+    tex = t;
+  }
+  const target: ImageValue = { kind: "image", texture: tex, width: 1, height: 1 };
+  try {
+    ctx.drawFullscreen(prog, target, setup);
+    const t = ctx.readImageToFloat32(target)[0];
+    return Number.isFinite(t) ? (t - 0.5) / (0.5 * VALUE_PROBE_CONTRAST) : null;
+  } catch {
+    return null;
+  }
+}
+
+function disposeValueProbe(ctx: RenderContext, nodeId: string) {
+  const key = valueProbeKey(nodeId);
+  const tex = ctx.state[key] as WebGLTexture | undefined;
+  if (!tex) return;
+  ctx.gl.deleteTexture(tex);
+  delete ctx.state[key];
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
   const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
@@ -582,7 +641,7 @@ export const perlinNoiseNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (CPU scalar sampled at the `position` input — single number per frame), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type. The `UV` input re-evaluates the noise at coordinates read from the wired value's R/G — wire another Noise (or any image) in for Blender-style domain warping/marbling.",
+    "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (the image's noise as one scalar, sampled at the `position` input), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type. The `UV` input re-evaluates the noise at coordinates read from the wired value's R/G — wire another Noise (or any image) in for Blender-style domain warping/marbling.",
   facts: {
     space: { "in:position": "uv01" },
     reads: ["time"],
@@ -590,7 +649,7 @@ export const perlinNoiseNode: NodeDefinition = {
       "field always samples simplex (SDF compiler only ports it); image and value respect type; field3d keeps perlin/value/simplex (perlin-deriv as perlin) and maps the rest to simplex.",
       "animated=true drives evolution from scene time on a closed loop between anim_start/anim_end frames, overriding the manual w slider.",
       "For type=flow, animated instead sweeps flow_time through one full 2*pi rotation over that loop; animated forces a recompute every tick.",
-      "value is CPU-sampled at `position` (default 0.5,0.5 = canvas center) through the exact same scale/offset/aspect transform the image shader applies, so it matches the rendered pixel at that UV.",
+      "value is the noise at `position` before contrast/colors, ignoring UV (curl: the vector x); off the CPU fast path (perlin/simplex/value, w=0, small coords) it costs a sync 1x1 GPU readback.",
       "The y sample is compressed by canvas aspect (width/height) before evaluating so noise cells stay square, so `scale` reads as cells-across-the-width regardless of aspect ratio.",
       "field3d is true 3D world-space noise (a different space from image/value/field): one world unit spans `scale` noise units, with w as evolution.",
       "Wiring an image into `UV` re-reads the sample position from its R/G channels instead of the canvas UV, for domain warping; a wired scalar broadcasts that one value to both axes.",
@@ -598,6 +657,9 @@ export const perlinNoiseNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  // The `value` aux's GPU evaluation (a sync readback) runs only while
+  // something consumes it, so wiring it must bust the cache.
+  gatesOutputs: true,
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },
     { name: "position", label: "Position", type: "vec2", required: false },
@@ -849,7 +911,7 @@ export const perlinNoiseNode: NodeDefinition = {
       name: "value",
       type: "scalar",
       description:
-        "Scalar noise sampled at the `position` input (defaults to (0.5, 0.5) — i.e. the center of the canvas — when unwired). Signed, roughly in [-1, 1].",
+        "Scalar noise sampled at the `position` input (defaults to (0.5, 0.5) — i.e. the center of the canvas — when unwired): the image's value there before contrast and colours (type=curl: the curl vector's x, the image's R). Signed, roughly in [-1, 1].",
     },
     {
       name: "field",
@@ -866,7 +928,7 @@ export const perlinNoiseNode: NodeDefinition = {
     },
   ],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
     const output = ctx.allocImage();
     const typeInt = noiseTypeToInt((params.type as string) ?? "simplex");
     const scale = (params.scale as number) ?? 4;
@@ -938,38 +1000,14 @@ export const perlinNoiseNode: NodeDefinition = {
       }
     }
 
-    // Value output — sample the noise on the CPU at the requested
-    // position. We mirror the exact same coordinate transform the
-    // shader applies to UVs: p = (uv - 0.5) * scale + offset + seed.
-    // That keeps "value at position P" equal to the rendered pixel
-    // at canvas UV P, modulo the contrast/color mapping.
-    const posIn = inputs.position;
-    const px = posIn?.kind === "vec2" ? posIn.value[0] : 0.5;
-    const py = posIn?.kind === "vec2" ? posIn.value[1] : 0.5;
-    const seedOffX = seed * 127.1;
-    const seedOffY = seed * 311.7;
-    // Mirror the shader's aspect correction so the CPU `value` output matches
-    // the rendered pixel at the same position.
-    const aspect = ctx.width / ctx.height;
-    const sx = (px - 0.5) * scale + offX + seedOffX;
-    const sy = ((py - 0.5) * scale) / aspect + offY + seedOffY;
-    const noiseFn = noiseFnFor((params.type as string) ?? "simplex", {
-      frequency: phasorFreq,
-      orientation: phasorOrient,
-      isotropy: phasorIsotropy,
-    });
-    const valueScalar = fbmWithW(
-      noiseFn,
-      sx + animOffX,
-      sy + animOffY,
-      effW,
-      octaves,
-      persistence,
-      lacunarity
-    );
-
     const prog = ctx.getShader("noise/fs", NOISE_FS);
-    ctx.drawFullscreen(prog, output, (gl) => {
+    // Every NOISE_FS uniform. `probe` = the value aux's 1×1 evaluation:
+    // the constant-UV mode at `position`, with a contrast and colour ramp
+    // that keep the raw noise readable (see sampleValueOnGpu).
+    const setUniforms = (
+      gl: WebGL2RenderingContext,
+      probe?: { u: number; v: number }
+    ) => {
       gl.uniform1i(gl.getUniformLocation(prog, "u_type"), typeInt);
       gl.uniform1f(gl.getUniformLocation(prog, "u_scale"), scale);
       gl.uniform1i(gl.getUniformLocation(prog, "u_octaves"), octaves);
@@ -980,7 +1018,10 @@ export const perlinNoiseNode: NodeDefinition = {
       gl.uniform1f(gl.getUniformLocation(prog, "u_lacunarity"), lacunarity);
       gl.uniform2f(gl.getUniformLocation(prog, "u_offset"), offX, offY);
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_contrast"), contrast);
+      gl.uniform1f(
+        gl.getUniformLocation(prog, "u_contrast"),
+        probe ? VALUE_PROBE_CONTRAST : contrast
+      );
       gl.uniform1f(gl.getUniformLocation(prog, "u_flowTime"), effFlow);
       gl.uniform1f(gl.getUniformLocation(prog, "u_phasorFreq"), phasorFreq);
       gl.uniform1f(gl.getUniformLocation(prog, "u_phasorOrient"), phasorOrient);
@@ -994,25 +1035,88 @@ export const perlinNoiseNode: NodeDefinition = {
         animOffX,
         animOffY
       );
-      gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), ar, ag, ab);
-      gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);
+      if (probe) {
+        gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), 0, 0, 0);
+        gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), 1, 1, 1);
+      } else {
+        gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), ar, ag, ab);
+        gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
+      }
+      gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), probe ? 1 : alpha);
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, uvInTex);
       gl.uniform1i(gl.getUniformLocation(prog, "u_uvIn"), 0);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_hasUvIn"), uvInMode);
+      gl.uniform1i(
+        gl.getUniformLocation(prog, "u_hasUvIn"),
+        probe ? 2 : uvInMode
+      );
       gl.uniform2f(
         gl.getUniformLocation(prog, "u_uvConst"),
-        uvConst[0],
-        uvConst[1]
+        probe ? probe.u : uvConst[0],
+        probe ? probe.v : uvConst[1]
       );
       gl.uniform2f(
         gl.getUniformLocation(prog, "u_canvasSize"),
         ctx.width,
         ctx.height
       );
+    };
+
+    // Value output — the noise at `position` (canvas uv01; default the
+    // centre), equal to the image's pixel there before contrast / colours.
+    // perlin / simplex / value at w = 0 and small coordinates evaluate on
+    // the CPU: an fp32 port of NOISE_FS that agrees with the image to its
+    // readback precision on any GPU. Everything else — the sin-hashed W
+    // slices and algorithms (GPU sin() is implementation-defined), and large
+    // coordinates, where GPUs round the sample point differently — runs
+    // NOISE_FS itself once, 1×1, at `position` and reads the pixel back: a
+    // sync readback, made only while `value` is consumed (`curl` reads the
+    // vector's x, the image's R). Without float render targets that falls
+    // back to the CPU port (approximate). engine/noise.ts has the details;
+    // scripts/noise-value-gl.cjs measures both paths on real GL.
+    const posIn = inputs.position;
+    const px = posIn?.kind === "vec2" ? posIn.value[0] : 0.5;
+    const py = posIn?.kind === "vec2" ? posIn.value[1] : 0.5;
+    const type = (params.type as string) ?? "simplex";
+    const [sx, sy] = noiseSamplePoint(px, py, {
+      width: ctx.width,
+      height: ctx.height,
+      scale,
+      offsetX: offX,
+      offsetY: offY,
+      seed,
+      animOffsetX: animOffX,
+      animOffsetY: animOffY,
     });
+    const wantValue = !consumedOutputs || consumedOutputs.has("aux:value");
+    let valueScalar: number | null = null;
+    if (
+      wantValue &&
+      !noiseValueOnCpu(type, effW, sx, sy, octaves, lacunarity)
+    ) {
+      valueScalar = sampleValueOnGpu(ctx, nodeId, prog, (gl) =>
+        setUniforms(gl, { u: px, v: py })
+      );
+    }
+    if (valueScalar === null) {
+      const noiseFn = noiseFnFor(type, {
+        frequency: phasorFreq,
+        orientation: phasorOrient,
+        isotropy: phasorIsotropy,
+      });
+      valueScalar = fbmWithW(
+        noiseFn,
+        sx,
+        sy,
+        effW,
+        octaves,
+        persistence,
+        lacunarity
+      );
+    }
+
+    ctx.drawFullscreen(prog, output, (gl) => setUniforms(gl));
 
     // Field output — a per-pixel scalar shader expression compiled
     // into the consuming SDF graph. Uses simplex regardless of the
@@ -1064,6 +1168,7 @@ export const perlinNoiseNode: NodeDefinition = {
 
   dispose(ctx, nodeId) {
     disposePlaceholderTex(ctx.gl, ctx.state, `perlin-noise:${nodeId}:zero`);
+    disposeValueProbe(ctx, nodeId);
   },
 
   // Recompute every frame only while looping; otherwise stay cached as

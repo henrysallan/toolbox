@@ -19,14 +19,23 @@
 //      static and looping, UV-wired, Lyapunov, Shape Cells, Texture
 //      Coordinate) with Animated Value / keyframed params go through
 //      checkExportable — no problems, every runtime program compiles with
-//      exactly its uniforms, the bundle type-checks in skia-harness.
+//      exactly its uniforms, the bundle type-checks in skia-harness;
+//   5. the native Noise node's `value` aux vs its own GL image (the bug the
+//      F1 port found, §2c): the fp32 CPU port against GL goldens recorded on
+//      Metal and SwiftShader (scripts/fixtures/noise-value-golden.json),
+//      which path every algorithm × seed 0 / 1 / 7 × w 0 / 0.3 takes, and the
+//      1×1 GPU evaluation's uniforms, decode, gating and fallback on a
+//      recording stub GL.
 //
 // The pixel proof against the GL nodes is compare:skia (Electron + GPU,
-// not in this gate): scripts/fixtures/skia/noise-graph.ts.
+// not in this gate): scripts/fixtures/skia/noise-graph.ts. For section 5
+// it is scripts/noise-value-gl.cjs (every case on real GL; --write-golden
+// re-records the goldens).
 //
 //   npx tsx scripts/check-skia-noise.mts
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -46,7 +55,9 @@ const { bindStatic } = await import("@/engine/skia/scene-ir");
 const { compileSksl, packUniforms } = await import("@/engine/skia/sksl-program");
 const { shaderReadsTime } = await import("@/nodes/skia/fill");
 const { makeColorRampSampler, COLOR_RAMP_INTERP_OPTIONS, COLOR_RAMP_SPACE_OPTIONS } = await import("@/engine/color-ramp");
-const { fbmWithW, noiseFnFor, loopEvolutionOffset } = await import("@/engine/noise");
+const { fbmWithW, noiseFnFor, loopEvolutionOffset, noiseSamplePoint, noiseValueOnCpu } = await import("@/engine/noise");
+const { VALUE_PROBE_CONTRAST } = await import("@/nodes/source/perlin-noise");
+const { coerceValue } = await import("@/engine/coerce");
 const { lyapunovExponent, sequenceFromParams } = await import("@/nodes/source/lyapunov");
 const { lyapunovSteps } = await import("@/nodes/skia/lyapunov");
 const { SKIA_NOISE_FUNCTION_IDS } = await import("@/nodes/skia/noise");
@@ -299,18 +310,20 @@ const TEXCOORD: ShaderExpr = { k: "call", fn: "tbx.texcoord@1", node: "tc", para
 
 // ---- 3. CPU references --------------------------------------------------------------------------
 {
-  // Noise (Skia) vs engine/noise.ts, for the algorithms it ports to JS
-  // that stay comparable in fp32: perlin and simplex hash with Ashima's
-  // permutation polynomial (exact integers in fp32) at any seed. Value
-  // noise's hash12 ends in fract((x + y) · z) with the product ~1e4, so at
-  // a few lattice points fp32 and doubles land on opposite sides of an
-  // integer (0.998 vs 0.0), and from |p| ≈ 100 (any seed ≥ 1) fp32 rounding
-  // alone moves most hashes by ~1e-2: value runs at seed 0 and is gated on
-  // the share of exact pixels (the GL node and the port, both fp32, MATCH
-  // in compare:skia at seed 3). Phasor's sin hash (and NOISE_FS's W slice offsets, also
-  // sin-hashed) diverge between fp32 and doubles at once, so phasor and
-  // w ≠ 0 are proven against the GL node instead (compare:skia, every
-  // pair drives w), and W is checked for consistency below.
+  // Noise (Skia) vs engine/noise.ts (an fp32 port of NOISE_FS, dot() fused
+  // the way GPUs lower it — section 5), for the algorithms it ports that
+  // stay comparable on CanvasKit's CPU raster: perlin and simplex hash with
+  // Ashima's permutation polynomial (exact integers in fp32) at any seed.
+  // Value noise's hash12 ends in fract((x + y) · z) with the product ~1e4,
+  // so one ulp of its dot() — fused on the GPU and in the port, not
+  // necessarily in CanvasKit's raster — moves a hash by up to 8e-3, and at a
+  // few lattice points the two land on opposite sides of an integer (0.998
+  // vs 0.0): value runs at seed 0 and is gated on the share of exact pixels
+  // (the GL node and the port MATCH in compare:skia at seed 3). Phasor's sin
+  // hash (and NOISE_FS's W slice offsets, also sin-hashed) depend on each
+  // implementation's sin(), so phasor and w ≠ 0 are proven against the GL
+  // node instead (compare:skia, every pair drives w), and W is checked for
+  // consistency below.
   interface Q { [k: string]: any }
   const cpuNoise = (q: Q, w: number, h: number, frame: number) => {
     const fn = noiseFnFor(q.type);
@@ -677,6 +690,228 @@ function portedInterpolations(): string[] {
       const scaled = g.name.startsWith("every algorithm, driven") ? /"scale":0\.01745329251994/.test(timeline) : true;
       check(`export (${g.name}): driven params ship as tracks${g.name.startsWith("every algorithm, driven") ? " (the phasor orientation scaled to radians)" : ""}`, /tracks?|keys/.test(timeline) && scaled);
     }
+  }
+}
+
+// ---- 5. the native Noise node's `value` aux vs its GL image --------------------------------------
+// The aux exists so CPU consumers see the noise the image shows. It
+// evaluates on the CPU (an fp32 port) only for perlin / simplex / value at
+// w = 0 and small coordinates, and otherwise runs NOISE_FS once, 1×1, at
+// `position` (engine/noise.ts `noiseValueOnCpu`, perlin-noise.ts). Real GL is
+// scripts/noise-value-gl.cjs (Electron); here the CPU port is held to the GL
+// values it recorded, and the GPU evaluation's plumbing to a stub GL that
+// records every draw's uniforms.
+{
+  const NV_TOL = 2e-3; // the goldens' own floor: RGBA16F, 4.9e-4 on Metal
+  const golden = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts", "fixtures", "noise-value-golden.json"), "utf8"));
+  const [GW, GH] = [golden.width as number, golden.height as number];
+  const [GX, GY] = golden.grid as [number, number];
+  const gridUv: [number, number][] = [];
+  for (let j = 0; j < GY; j++) {
+    for (let i = 0; i < GX; i++) gridUv.push([(Math.floor(((i + 0.5) * GW) / GX) + 0.5) / GW, (Math.floor(((j + 0.5) * GH) / GY) + 0.5) / GH]);
+  }
+  const noiseDef = getNodeDef("noise")!;
+  const f32 = Math.fround;
+
+  interface Draw {
+    target: { width: number; height: number };
+    u: Record<string, number[]>;
+  }
+  // A RenderContext over a GL stub that records each draw's uniforms. The
+  // probe's readback answers `probeT(uniforms)` (default: n = 0).
+  const stubCtx = (w: number, h: number, frame: number, opt: { floatTargets?: boolean; probeT?: (u: Record<string, number[]>) => number } = {}) => {
+    const draws: Draw[] = [];
+    let cur: Record<string, number[]> = {};
+    let ids = 0;
+    const deleted: unknown[] = [];
+    const gl: any = {
+      getExtension: (n: string) => (n === "EXT_color_buffer_float" && opt.floatTargets !== false ? {} : null),
+      createTexture: () => ({ id: ++ids }),
+      deleteTexture: (t: unknown) => deleted.push(t),
+      bindTexture() {},
+      texImage2D() {},
+      texParameteri() {},
+      activeTexture() {},
+      getUniformLocation: (_p: unknown, name: string) => name,
+      uniform1i: (l: string, a: number) => (cur[l] = [a]),
+      uniform1f: (l: string, a: number) => (cur[l] = [f32(a)]),
+      uniform2f: (l: string, a: number, b: number) => (cur[l] = [f32(a), f32(b)]),
+      uniform3f: (l: string, a: number, b: number, c: number) => (cur[l] = [f32(a), f32(b), f32(c)]),
+    };
+    const ctx: any = {
+      gl, width: w, height: h, time: frame / 60, frame: Math.floor(frame), tick: Math.round(frame * 1000), ticksPerFrame: 1000, fps: 60,
+      playing: false, offline: true, cursor: { x: 0.5, y: 0.5, active: false }, state: {},
+      allocImage: () => ({ kind: "image", texture: { id: ++ids }, width: w, height: h }),
+      releaseTexture() {},
+      getShader: () => ({}),
+      drawFullscreen(_p: unknown, target: any, setup?: (g: any) => void) {
+        cur = {};
+        setup?.(gl);
+        draws.push({ target, u: cur });
+      },
+      readImageToFloat32() {
+        const t = opt.probeT ? opt.probeT(draws[draws.length - 1].u) : 0.5;
+        return new Float32Array([t, t, t, 1]);
+      },
+    };
+    return { ctx, draws, deleted };
+  };
+  // The node's compute, `position` through the evaluator's coercion.
+  const runNoise = (params: Record<string, unknown>, u: number, v: number, s: ReturnType<typeof stubCtx>, consumed?: string[]) => {
+    const position = coerceValue({ kind: "vec2", value: [u, v] }, "vec2", s.ctx);
+    const out = noiseDef.compute({
+      inputs: { position },
+      auxIn: {},
+      params: { ...defaults("noise"), ...params },
+      ctx: s.ctx,
+      nodeId: "nv",
+      consumedOutputs: consumed ? new Set(consumed) : undefined,
+    }) as any;
+    return out.aux.value.value as number;
+  };
+  const effW = (q: Record<string, any>) => (q.animated ? 0 : q.w);
+  const animOff = (q: Record<string, any>, frame: number): [number, number] =>
+    q.animated && q.type !== "flow" ? loopEvolutionOffset(frame, q.anim_start, q.anim_end, q.anim_rate) : [0, 0];
+  const samplePoint = (q: Record<string, any>, u: number, v: number, frame: number) => {
+    const [ax, ay] = animOff(q, frame);
+    return noiseSamplePoint(u, v, { width: GW, height: GH, scale: q.scale, offsetX: q.offset_x, offsetY: q.offset_y, seed: q.seed, animOffsetX: ax, animOffsetY: ay });
+  };
+  const onCpu = (q: Record<string, any>, u: number, v: number, frame: number) => {
+    const [sx, sy] = samplePoint(q, u, v, frame);
+    return noiseValueOnCpu(q.type, effW(q), sx, sy, Math.max(1, Math.min(8, Math.round(q.octaves))), q.lacunarity);
+  };
+  const goldenError = (value: number, gl: number, clip: number) => (clip === 1 ? Math.max(0, gl - value) : clip === -1 ? Math.max(0, value - gl) : Math.abs(value - gl));
+
+  // 5a. The CPU path against every renderer's GL image.
+  const renderers = Object.keys(golden.renderers);
+  check("noise-value goldens: Metal and SwiftShader are both recorded", renderers.some((r) => /Metal/.test(r)) && renderers.some((r) => /SwiftShader/.test(r)), renderers.join(" | "));
+  for (const renderer of renderers) {
+    let n = 0;
+    let worst = 0;
+    let probes = 0;
+    const where: string[] = [];
+    for (const c of golden.renderers[renderer]) {
+      const q = { ...defaults("noise"), ...c.params };
+      const frame = c.frame ?? 0;
+      const clips = new Map<number, number>((c.clip ?? []) as [number, number][]);
+      gridUv.forEach(([u, v], i) => {
+        if (!onCpu(q, u, v, frame)) return;
+        const s = stubCtx(GW, GH, frame);
+        const value = runNoise(c.params, u, v, s);
+        probes += s.draws.length - 1;
+        const e = goldenError(value, c.gl[i], clips.get(i) ?? 0);
+        n++;
+        if (e > worst) worst = e;
+        if (e > NV_TOL && where.length < 4) where.push(`${c.name} @(${u.toFixed(4)}, ${v.toFixed(4)}): ${value.toFixed(5)} vs ${c.gl[i]}`);
+      });
+    }
+    const short = /SwiftShader/.test(renderer) ? "SwiftShader" : /Metal/.test(renderer) ? "Metal" : renderer;
+    check(`Noise value on the CPU path matches the ${short} GL image (${n} points, perlin / simplex / value, seeds 0–1, looping)`, n >= 300 && worst <= NV_TOL && probes === 0, `max |Δ| ${worst.toExponential(2)}${probes ? `, ${probes} probe draws` : ""}${where.length ? `; ${where.join("; ")}` : ""}`);
+  }
+
+  // 5b. The port itself is IEEE fp32: SwiftShader (no contraction) matches it
+  // at every seed and fBm setting at w = 0, including the points the node
+  // sends to the GPU. Metal's numbers show why those go there.
+  for (const renderer of renderers) {
+    const sw = /SwiftShader/.test(renderer);
+    let worst = 0;
+    let n = 0;
+    for (const c of golden.renderers[renderer]) {
+      const q = { ...defaults("noise"), ...c.params };
+      if (effW(q) !== 0) continue;
+      const frame = c.frame ?? 0;
+      const fn = noiseFnFor(q.type);
+      const oct = Math.max(1, Math.min(8, Math.round(q.octaves)));
+      const clips = new Map<number, number>((c.clip ?? []) as [number, number][]);
+      gridUv.forEach(([u, v], i) => {
+        const [sx, sy] = samplePoint(q, u, v, frame);
+        const value = fbmWithW(fn, sx, sy, 0, oct, q.persistence, q.lacunarity);
+        worst = Math.max(worst, goldenError(value, c.gl[i], clips.get(i) ?? 0));
+        n++;
+      });
+    }
+    if (sw) check(`the fp32 port matches SwiftShader at every recorded seed and fBm setting, w = 0 (${n} points, seeds 0 / 1 / 7, 6 octaves × lacunarity 2.3)`, n >= 700 && worst <= NV_TOL, `max |Δ| ${worst.toExponential(2)}`);
+    else info(`the fp32 port vs ${/Metal/.test(renderer) ? "Metal" : renderer} at every w = 0 point, both paths: max |Δ| ${worst.toExponential(2)} (contraction: why large coordinates take the GPU path)`);
+  }
+
+  // 5c. Which path each algorithm × seed × w takes (default fBm, the
+  // goldens' offsets, three positions).
+  const sinFree = new Set(["perlin", "simplex", "value"]);
+  const routed: string[] = [];
+  let combos = 0;
+  for (const type of NOISE_TYPES) {
+    for (const seed of [0, 1, 7]) {
+      for (const w of [0, 0.3]) {
+        for (const [u, v] of [[0.5, 0.5], [0.1, 0.9], [0.95, 0.05]] as [number, number][]) {
+          const params = { type, seed, w, offset_x: 0.31, offset_y: -0.17 };
+          const s = stubCtx(GW, GH, 0);
+          runNoise(params, u, v, s);
+          const gpu = s.draws.length === 2 && s.draws[0].target.width === 1 && s.draws[0].target.height === 1;
+          const wantGpu = !(sinFree.has(type) && w === 0 && seed <= 1);
+          combos++;
+          if (gpu !== wantGpu || (!gpu && s.draws.length !== 1)) routed.push(`${type} s${seed} w${w} @(${u}, ${v}): ${s.draws.length} draws`);
+        }
+      }
+    }
+  }
+  check(`value path per algorithm × seed 0 / 1 / 7 × w 0 / 0.3: CPU only for perlin / simplex / value at w = 0 and seeds 0–1, else one 1×1 NOISE_FS draw before the image (${combos} combos)`, routed.length === 0 && combos === 11 * 3 * 2 * 3, routed.slice(0, 6).join(" | "));
+
+  // 5d. The probe draw: constant-UV mode at `position`, the raw-noise ramp,
+  // every other uniform the image's own; the image keeps the user's look.
+  {
+    const params = { type: "phasor", seed: 7, w: 0.3, scale: 5.5, octaves: 5, offset_x: -1.2, offset_y: 0.4, contrast: 2.5, color_a: "#204060", color_b: "#ffcc00", alpha: 0.6, phasor_frequency: 3, phasor_orientation: 40, phasor_isotropy: 0.7 };
+    const s = stubCtx(160, 90, 0);
+    runNoise(params, 0.3, 0.8, s);
+    const [probe, image] = s.draws;
+    const raw = new Set(["u_hasUvIn", "u_uvConst", "u_contrast", "u_colorA", "u_colorB", "u_alpha"]);
+    const same = Object.keys(image?.u ?? {}).filter((k) => !raw.has(k) && JSON.stringify(probe?.u[k]) !== JSON.stringify(image.u[k]));
+    const eq = (a: number[] | undefined, b: number[]) => !!a && a.length === b.length && a.every((x, i) => x === f32(b[i]));
+    check(
+      "the probe evaluates NOISE_FS at `position` (u_hasUvIn 2, u_uvConst = position, canvas-size aspect) with contrast 1/8 and a 0 → 1 ramp; every other uniform is the image's",
+      !!probe && !!image && eq(probe.u.u_hasUvIn, [2]) && eq(probe.u.u_uvConst, [0.3, 0.8]) && eq(probe.u.u_contrast, [VALUE_PROBE_CONTRAST]) && eq(probe.u.u_colorA, [0, 0, 0]) && eq(probe.u.u_colorB, [1, 1, 1]) && eq(probe.u.u_alpha, [1]) && eq(probe.u.u_canvasSize, [160, 90]) && same.length === 0,
+      same.join()
+    );
+    check(
+      "the image draw keeps the user's contrast, colours, alpha and UV mode (the GL image is unchanged)",
+      !!image && image.target.width === 160 && eq(image.u.u_contrast, [2.5]) && eq(image.u.u_alpha, [0.6]) && eq(image.u.u_hasUvIn, [0]) && eq(image.u.u_colorB, hexRgb("#ffcc00")) && eq(image.u.u_w, [0.3]) && eq(image.u.u_seed, [7])
+    );
+    const loop = stubCtx(GW, GH, 37.5);
+    runNoise({ type: "value", seed: 7, w: 2.5, animated: true, anim_start: 10, anim_end: 130, anim_rate: 1.7 }, 0.4, 0.6, loop);
+    const [ax, ay] = loopEvolutionOffset(37.5, 10, 130, 1.7);
+    check("a looping probe rides the image's evolution (u_w forced to 0, u_animOffset from loopEvolutionOffset)", loop.draws.length === 2 && eq(loop.draws[0].u.u_w, [0]) && eq(loop.draws[0].u.u_animOffset, [ax, ay]));
+  }
+
+  // 5e. Decode: the probe pixel t = 0.5 + n · contrast / 2 back to n (curl: R).
+  {
+    const ns = [-1.7, -0.42, 0, 0.0031, 0.73, 2.4];
+    const bad: string[] = [];
+    for (const type of ["phasor", "curl", "opensimplex2s"]) {
+      for (const n of ns) {
+        const s = stubCtx(GW, GH, 0, { probeT: () => f32(0.5 + n * 0.5 * VALUE_PROBE_CONTRAST) });
+        const value = runNoise({ type, seed: 3 }, 0.5, 0.5, s);
+        if (Math.abs(value - n) > 1e-6) bad.push(`${type} ${n} → ${value}`);
+      }
+    }
+    check("the probe pixel decodes back to the signed noise (|n| ≤ 8 unclipped, ≤ 1e-6)", bad.length === 0, bad.join(" | "));
+  }
+
+  // 5f. Gating, fallback, dispose.
+  {
+    const q = { type: "flow", seed: 1, w: 0.3, flow_time: 1.3 };
+    const off = stubCtx(GW, GH, 0);
+    const offValue = runNoise(q, 0.5, 0.5, off, ["primary"]);
+    const on = stubCtx(GW, GH, 0);
+    runNoise(q, 0.5, 0.5, on, ["primary", "aux:value"]);
+    check("noise declares gatesOutputs, and the probe (a sync readback) runs only while `value` is consumed", noiseDef.gatesOutputs === true && off.draws.length === 1 && on.draws.length === 2 && Number.isFinite(offValue));
+    const nofloat = stubCtx(GW, GH, 0, { floatTargets: false });
+    const fb = runNoise({ type: "simplex", seed: 7 }, 0.37, 0.61, nofloat);
+    const [sx, sy] = noiseSamplePoint(0.37, 0.61, { width: GW, height: GH, scale: 4, offsetX: 0, offsetY: 0, seed: 7, animOffsetX: 0, animOffsetY: 0 });
+    check("without float render targets the value falls back to the CPU port (no probe)", nofloat.draws.length === 1 && fb === fbmWithW(noiseFnFor("simplex"), sx, sy, 0, 4, 0.5, 2));
+    const d = stubCtx(GW, GH, 0);
+    runNoise({ type: "phasor" }, 0.5, 0.5, d);
+    const key = Object.keys(d.ctx.state).find((k) => k.endsWith(":value-probe"));
+    noiseDef.dispose!(d.ctx, "nv");
+    check("dispose deletes the 1×1 probe target", !!key && !(key in d.ctx.state) && d.deleted.length >= 1);
   }
 }
 
