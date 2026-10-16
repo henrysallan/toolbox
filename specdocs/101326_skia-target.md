@@ -1790,7 +1790,8 @@ Frozen contracts (2026-10-13, additive changes only):
   `bake` class, procedural drivers (Expression → worklet). Wave 3 lanes
   F, S, I, T, A, P, B, C (§7), launched 2026-10-14. **Done 2026-10-14
   (§2e)**; device confirmation pending.
-- **M5 — polish.** Cost readout, docs pages, the `graph-to-sksl` skill.
+- **M5 — polish.** Cost readout, docs pages, the `graph-to-sksl` skill, plus the
+  SkSL editor and robustness / density items. Wave 4 lanes K, D, G, E, R (§7).
 
 ## 7. Parallelisation plan (subagent lanes)
 
@@ -1877,6 +1878,25 @@ Shared seams are integrated serially by the integrator:
 - The scene-emit asset section: lanes I, T, A, B.
 - `plan.ts` refusals: lanes I and P.
 - `scene-render.ts` / `scene-emit.ts`: additive per-kind sections.
+
+### Wave 4 (M5), planned 2026-10-16
+
+Starting point:
+- `inspectSkiaFillStages` (`nodes/skia/fill.ts`), `estimateShaderCost` (`fuse.ts`) and `PHONE_PIXEL_BUDGET` (32 units/px) exist, but nothing in the editor shows them.
+- The SkSL compile cache already evicts (64 programs, oldest first).
+- No CanvasKit context-loss handling exists.
+- The in-app docs (`src/app/docs/[...slug]`, `src/lib/docs/manifest.ts`, `src/components/docs/pages/`) have no Skia pages.
+- The delivery target is iOS only.
+
+Lane conventions are as in Wave 3. In addition: other sessions keep uncommitted work in the main checkout, so lanes never modify a file that `git -C <main checkout> status` shows as dirty; they stop and report the change instead.
+
+| lane | owns | done when |
+|---|---|---|
+| **K Cost readout** | units/px against the budget at 3× density, split stages, and per-node contributions, for Skia Fill / Skia Canvas / Skia layers: a param-panel section, `plan_skia_export` `cost`, manifest `cost` | numbers equal `estimateShaderCost` / `inspectSkiaFillStages` on fixtures; `check:skia-cost` |
+| **D Docs** | in-app pages: Skia layers, Authoring SkSL (the node contract, ES2 rules, channels, colour management, images, ramps), Exporting for iOS (bundle anatomy, animation modes, segments, assets, P3, procedural, bake, native-only filters), and a Skia node reference generated from defs + NodeFacts; a `README.md` in every exported bundle for the iOS developer | pages render (verified in the browser if `/docs` is public); the bundle README is snapshot-gated |
+| **G graph → SkSL** | `.claude/skills/graph-to-sksl/`; MCP `plan_skia_conversion` (read-only: each default-layer node → its `skia.mirrors` counterpart, unmapped nodes → the Skia Bake route or an SkSL port); `get_skia_docs`; Aurora as the worked example | the plan round-trips the fixtures; the skill's steps run headlessly on a fixture; `check:mcp` |
+| **E SkSL editor** | SkSL syntax highlighting and inline CanvasKit errors under the user's line, in the code editor used by SkSL Shader / SkSL Filter | errors map to user lines (gate); the highlighter tokenizes the library sources |
+| **R Robustness + density** | CanvasKit WebGL context loss / restore (surfaces and caches rebuilt, re-render); CanvasKit time in the profiler; the §3.8.5 density policy (`iResolution.z` = pixel ratio; a layer device-profile preview at ratio 3) | a forced context loss recovers (gate); perf capture shows CanvasKit time; density fixtures |
 
 ### Not parallelisable
 
