@@ -56,7 +56,10 @@ float pick(vec4 c, int ch) {
 
 vec2 wrapUv(vec2 uv) {
   if (u_wrap == 1) return clamp(uv, 0.0, 1.0);
-  if (u_wrap == 2) return abs(fract(uv * 0.5) * 2.0 - 1.0);
+  // Mirror: a period-2 triangle wave that is the identity on [0,1] and
+  // reflects past each edge (1.2 -> 0.8, -0.3 -> 0.3). Without the leading
+  // "1.0 -" it is 1 - uv inside the frame, which flips the whole image.
+  if (u_wrap == 2) return 1.0 - abs(fract(uv * 0.5) * 2.0 - 1.0);
   return uv;
 }
 
@@ -208,6 +211,7 @@ export const displaceNode: NodeDefinition = {
       "Polymorphic on the image socket: an image is pushed per pixel; a spline or points value is pushed per anchor/point, each sampling the map at its own UV.",
       "midlevel is the neutral map value (0.5 for signed 8-bit maps, 0 for unsigned); channelX/Y pick which map channels drive each axis.",
       "rotate spins from the map's luminance: images about the frame center, points via per-point rotation, splines via anchor handles.",
+      "wrap (Edge, image path only): transparent → alpha 0 past the frame; clamp → edge pixel; mirror reflects only out-of-range samples (1.2 → 0.8, −0.3 → 0.3), in-range ones untouched.",
     ],
   },
   backend: "webgl2",
@@ -400,7 +404,9 @@ export const displaceNode: NodeDefinition = {
       return { primary: output };
     }
 
-    const prog = ctx.getShader("displace/fs-v2", DISPLACE_FS);
+    // Shader cache entries are immutable by key: bump the suffix whenever
+    // DISPLACE_FS changes (v3: mirror wrap no longer flips in-range uv).
+    const prog = ctx.getShader("displace/fs-v3", DISPLACE_FS);
     // Missing displacement: degrade to a straight pass-through so the graph
     // stays visible while the user wires things up.
     const dispImg = disp && disp.kind === "image" ? disp : null;

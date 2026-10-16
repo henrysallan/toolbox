@@ -24,7 +24,8 @@ const DISPLACE_SKSL = `float tbx_displace_pick(float4 c, int ch) {
 
 float2 tbx_displace_wrap(float2 uv, int wrap) {
   if (wrap == 1) return clamp(uv, 0.0, 1.0);
-  if (wrap == 2) return abs(fract(uv * 0.5) * 2.0 - 1.0);
+  // Mirror: identity on [0,1], reflected past each edge (DISPLACE_FS's wrapUv).
+  if (wrap == 2) return 1.0 - abs(fract(uv * 0.5) * 2.0 - 1.0);
   return uv;
 }
 
@@ -64,12 +65,13 @@ const base = defineSkslNode({
       "amountX/Y are per-axis uv fractions ((channel − midlevel) × amount), not aspect-corrected, exactly as Displace.",
       "The map is read at the pixel's own uv; the source is re-evaluated once at the displaced uv (a 1-tap gather), not sampled from a texture.",
       "Unwired map: passes the source through, like Displace (the port feeds a constant map at midlevel).",
-      "wrap=mirror maps uv to 1 − uv inside the frame (abs(fract(uv/2)·2 − 1)), so the image flips; ported as Displace has it.",
+      "wrap=mirror reflects only out-of-range samples (period-2 mirror tile, 1 − |fract(uv/2)·2 − 1|): identity inside the frame, 1.2 → 0.8 and −0.3 → 0.3, exactly as Displace.",
       "Image branch only: the Skia sockets carry shaders, so spline / points displacement has no Skia form.",
     ],
   },
   fn: {
-    id: "tbx.displace@1",
+    // @2 (2026-10-16): wrap=mirror stopped flipping in-range uv, with Displace.
+    id: "tbx.displace@2",
     entry: "tbx_displace",
     source: DISPLACE_SKSL,
     params: [

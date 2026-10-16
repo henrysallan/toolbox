@@ -373,7 +373,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 - Mirror/Array translation classes corrected (F3).
 
 **Native toolbox bugs found by the ports (outside this work):**
-- Displace `wrap=mirror` flips the whole image (task chip filed).
+- ~~Displace `wrap=mirror` flips the whole image.~~ Fixed 2026-10-16: Displace and Displace (Skia) (`tbx.displace@2`) reflect only the out-of-range samples; check-skia-gather runs both wrap functions on CanvasKit. Polar Coords (GL + Skia) and Advect Image still use the old flipping formula.
 - Trim Path cuts by segment parameter, not arc length (F8).
 - The Text node blurs fractional translates (F8).
 - Noise's CPU `value` aux doesn't match the GL image for value/phasor noise at seed ≥ 1 or w ≠ 0 (F1).

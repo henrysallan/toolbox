@@ -19,7 +19,8 @@ image (a spline/points Displace is `opaque` and never reaches you).
    the shader). Positive is clockwise on screen in `v_uv`; do not negate.
 5. Sample the **source** once at `uv + offset`, with the `wrap` rule:
    `transparent` → `vec4(0)` outside [0,1]², `clamp`, or `mirror`
-   (`abs(fract(uv*0.5)*2 − 1)`).
+   (`1 − abs(fract(uv*0.5)*2 − 1)`: the identity inside [0,1], reflected
+   past each edge — without the `1 −` the whole image flips).
 
 Taps: 1 on the source, 1 on the map. Upstream evaluations pass through
 unchanged (a gather of taps 1), so fusing the source chain is cheap.
@@ -60,7 +61,7 @@ float pickCh(vec4 c, int ch) {
 }
 vec2 wrapUv(vec2 uv) {
   if (wrap == wrap_clamp) return clamp(uv, 0.0, 1.0);
-  if (wrap == wrap_mirror) return abs(fract(uv * 0.5) * 2.0 - 1.0);
+  if (wrap == wrap_mirror) return 1.0 - abs(fract(uv * 0.5) * 2.0 - 1.0);
   return uv;
 }
 // Replace these two with the fused upstream helpers when the plan fused them.

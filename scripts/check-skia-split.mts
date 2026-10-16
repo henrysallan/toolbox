@@ -286,7 +286,7 @@ const fmt = (d: { max: number; mean: number; identical: number }) => `max ${d.ma
   const undeclared = users.filter((f) => !(f.uses ?? []).includes(TEXEL_HELPER)).map((f) => f.id);
   check(`every function calling tbx_texel_clamp lists ${TEXEL_HELPER} in uses (${users.length} functions)`, users.length > 0 && undeclared.length === 0, undeclared.join());
   const want = [
-    "tbx.displace@1", "tbx.chromatic_aberration@1", "tbx.sharpen@1", "tbx.edge_detect@1", "tbx.bevel_emboss.emboss@1",
+    "tbx.displace@2", "tbx.chromatic_aberration@1", "tbx.sharpen@1", "tbx.edge_detect@1", "tbx.bevel_emboss.emboss@1",
     "tbx.vector_field.image@1", "tbx.flow_blur@1", "tbx.kuwahara@1", "tbx.split.bilinear@1",
   ];
   const warps = users.filter((f) => /^tbx\.(transform|mirror|polar|pixelate|array)/.test(f.id)).map((f) => f.id);

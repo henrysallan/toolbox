@@ -13,7 +13,9 @@
 //      a port used on two upstreams compiles as a `_G1` copy;
 //   3. semantics against closed forms on a linear ramp (no GL node needed):
 //      edge clamping, the kernels, offsets and wraps, gradient directions,
-//      symmetric walks, opacity, and every wiring rule;
+//      symmetric walks, opacity, and every wiring rule; plus Displace's
+//      wrap function from BOTH sources (the GL node's own wrapUv text and
+//      the port's) run on CanvasKit — mirror reflects only past the edges;
 //   4. cost: estimateShaderCost per port over an image child and over
 //      Noise (Skia), the taps the param-driven ports really take, and the
 //      list of ports over the 3× phone budget (helpers-gather.ts);
@@ -47,6 +49,7 @@ const { bindStatic } = await import("@/engine/skia/scene-ir");
 const { skiaBevelEmbossTaps } = await import("@/nodes/skia/bevel-emboss");
 const { skiaFlowBlurTaps } = await import("@/nodes/skia/flow-blur");
 const { skiaKuwaharaTaps, KUWAHARA_SKIA_MAX_EXTENT } = await import("@/nodes/skia/kuwahara");
+const { DISPLACE_FS } = await import("@/nodes/effect/displace");
 const fx = await import("./fixtures/skia/gather-graph.ts");
 const { checkExportable } = await import("./skia/export-check.ts");
 
@@ -65,7 +68,7 @@ function info(msg: string) {
 
 // The ports: type, mirror, and the lib function each emits.
 const PORTS = [
-  { type: "skia-displace", mirror: "displace", fn: "tbx.displace@1" },
+  { type: "skia-displace", mirror: "displace", fn: "tbx.displace@2" },
   { type: "skia-chromatic-aberration", mirror: "chromatic-aberration", fn: "tbx.chromatic_aberration@1" },
   { type: "skia-sharpen", mirror: "sharpen", fn: "tbx.sharpen@1" },
   { type: "skia-edge-detect", mirror: "edge-detect", fn: "tbx.edge_detect@1" },
@@ -236,6 +239,10 @@ function render(e: Evaluated, w = 32, h = 32): Uint8Array {
 const px = (img: Uint8Array, x: number, y: number, w = 32) => Array.from(img.slice((y * w + x) * 4, (y * w + x) * 4 + 4));
 // Pixel (x, y), row 0 = top → toolbox uv (Y-up) at its centre.
 const uvAt = (x: number, y: number, w = 32, h = 32): [number, number] => [(x + 0.5) / w, 1 - (y + 0.5) / h];
+
+// Displace's mirror edge rule (GL and port): a period-2 triangle wave, the
+// identity on [0,1] and reflected past each edge (1.2 → 0.8, −0.3 → 0.3).
+const mirrorWrap = (q: number) => 1 - Math.abs((q * 0.5 - Math.floor(q * 0.5)) * 2 - 1);
 
 // Worst |Δ| (0..255 steps) between a render and a closed form over pixels.
 function worstVs(img: Uint8Array, want: (x: number, y: number) => number[] | null, w = 32, h = 32): { worst: number; at: string } {
@@ -464,21 +471,32 @@ const declaredTaps = (fnId: string, input: string) => {
     check("Chromatic Aberration (Skia) radial: offset ∝ (uv − center), center Y-down", r2.worst <= 1, `max |Δ| ${r2.worst.toFixed(2)}/255 ${r2.at}`);
   }
   // Displace with a flat map: a uniform offset ((map − midlevel) × amount).
+  // mirror reflects only the out-of-range samples (mirrorWrap); until
+  // 2026-10-16 both Displace and the port returned 1 − uv inside the frame,
+  // flipping the whole image (spec §2c). Offset 0 is that bug's plainest
+  // form: every wrap must then be the identity.
   {
     const map = flat("map", [0.6, 0.3, 0.9, 1]);
     const base = { amountX: 0.25, amountY: 0.5, channelX: "r", channelY: "g", midlevel: 0.5, rotate: false };
-    const off = [(0.6 - 0.5) * 0.25, (0.3 - 0.5) * 0.5];
-    for (const wrap of ["clamp", "transparent", "mirror"]) {
-      const img = render(portOver("skia-displace", { ...base, wrap }, { image: ramp(), displacement: map }));
-      const r = worstVs(img, (x, y) => {
-        const [u, v] = uvAt(x, y);
-        let p = [u + off[0], v + off[1]];
-        if (wrap === "transparent" && (p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1)) return [0, 0, 0, 0];
-        if (wrap === "clamp") p = p.map((q) => Math.min(1, Math.max(0, q)));
-        if (wrap === "mirror") p = p.map((q) => Math.abs((((q * 0.5) % 1) + 1) % 1 * 2 - 1));
-        return [edgeClamp(p[0]), edgeClamp(p[1]), edgeClamp(p[0]), 1];
-      });
-      check(`Displace (Skia) wrap=${wrap}: a flat map shifts by (map − midlevel) × amount`, r.worst <= 1, `max |Δ| ${r.worst.toFixed(2)}/255 ${r.at}`);
+    const deep = flat("deep", [1, 0, 0, 1]);
+    const cases: [GraphNode, number, number, [number, number]][] = [
+      [map, 0, 0, [0, 0]],
+      [map, 0.25, 0.5, [(0.6 - 0.5) * 0.25, (0.3 - 0.5) * 0.5]],
+      [deep, 1, 1, [0.5, -0.5]],
+    ];
+    for (const [disp, amountX, amountY, off] of cases) {
+      for (const wrap of ["clamp", "transparent", "mirror"]) {
+        const img = render(portOver("skia-displace", { ...base, amountX, amountY, wrap }, { image: ramp(), displacement: disp }));
+        const r = worstVs(img, (x, y) => {
+          const [u, v] = uvAt(x, y);
+          let p = [u + off[0], v + off[1]];
+          if (wrap === "transparent" && (p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1)) return [0, 0, 0, 0];
+          if (wrap === "clamp") p = p.map((q) => Math.min(1, Math.max(0, q)));
+          if (wrap === "mirror") p = p.map(mirrorWrap);
+          return [edgeClamp(p[0]), edgeClamp(p[1]), edgeClamp(p[0]), 1];
+        });
+        check(`Displace (Skia) wrap=${wrap}, offset (${off.map((o) => +o.toFixed(3)).join(", ")}): a flat map shifts by (map − midlevel) × amount`, r.worst <= 1, `max |Δ| ${r.worst.toFixed(2)}/255 ${r.at}`);
+      }
     }
     const lum = 0.2126 * 0.6 + 0.7152 * 0.3 + 0.0722 * 0.9;
     const ang = (lum - 0.5) * 2 * (40 * Math.PI) / 180;
@@ -496,6 +514,58 @@ const declaredTaps = (fnId: string, input: string) => {
     const pe = portOver("skia-displace", { midlevel: 0.3 }, { image: ramp() });
     const flatIn = (pe.expr as any).inputs.disp;
     check("…via a constant DATA map (tbx.gather.flat, no layout(color)) derived from midlevel", flatIn?.fn === "tbx.gather.flat@1" && flatIn.params.value.deps?.[0]?.param === "midlevel" && flatIn.params.value.v.join() === "0.3,0.3,0.3,0.3");
+  }
+  // Displace's wrap function itself, from both sources, run on CanvasKit:
+  // the GL node's real shader text (DISPLACE_FS's wrapUv, vec2 → float2, the
+  // u_wrap uniform → the mode) and the port's tbx_displace_wrap, over uv a
+  // period and more past each edge. npm run check has no GL, so this is the
+  // GL node's offline regression gate for the 2026-10-16 mirror fix.
+  {
+    const W = 256;
+    const f = (n: number) => n.toFixed(4);
+    const strip = (fnSrc: string, call: string, lo: number, hi: number): Uint8Array =>
+      renderProgram(
+        {
+          sksl: `${fnSrc}\nhalf4 main(float2 fc) {\n  float t = fc.x / ${f(W)};\n  float2 q = float2(${f(lo)} + ${f(hi - lo)} * t, ${f(hi)} - ${f(hi - lo)} * t);\n  return half4(half2(${call}), 0.0, 1.0);\n}`,
+          uniforms: {},
+          children: [],
+        },
+        W,
+        1
+      );
+    const glSrc = /vec2 wrapUv\(vec2 uv\) \{[\s\S]*?\n\}/.exec(DISPLACE_FS)?.[0];
+    const portFn = lib.allSkslFunctions().find((fn) => fn.id === "tbx.displace@2");
+    const portSrc = /float2 tbx_displace_wrap\(float2 uv, int wrap\) \{[\s\S]*?\n\}/.exec(portFn?.source ?? "")?.[0];
+    check("Displace's wrapUv (DISPLACE_FS) and the port's tbx_displace_wrap are both found", !!glSrc && !!portSrc);
+    const modes: [number, string, number, number, (q: number) => number][] = [
+      [0, "transparent", 0, 1, (q) => q],
+      [1, "clamp", -1.5, 2.5, (q) => Math.min(1, Math.max(0, q))],
+      [2, "mirror", -1.5, 2.5, mirrorWrap],
+    ];
+    for (const [mode, wrap, lo, hi, want] of glSrc && portSrc ? modes : []) {
+      const gl = strip(glSrc!.replace(/\bvec2\b/g, "float2").replace(/\bu_wrap\b/g, String(mode)), "wrapUv(q)", lo, hi);
+      const port = strip(portSrc!, `tbx_displace_wrap(q, ${mode})`, lo, hi);
+      for (const [who, img] of [["Displace (GL wrapUv)", gl], ["Displace (Skia)", port]] as const) {
+        // Worst |Δ| for samples inside [0,1] and for those past an edge.
+        const worst = [0, 0];
+        let at = "";
+        for (let x = 0; x < W; x++) {
+          const t = (x + 0.5) / W;
+          const q = [lo + (hi - lo) * t, hi - (hi - lo) * t];
+          for (let k = 0; k < 2; k++) {
+            const err = Math.abs(img[x * 4 + k] - want(q[k]) * 255);
+            const side = q[k] >= 0 && q[k] <= 1 ? 0 : 1;
+            if (err > worst[side]) {
+              worst[side] = err;
+              at = `uv ${q[k].toFixed(3)} → ${img[x * 4 + k]} vs ${(want(q[k]) * 255).toFixed(1)}`;
+            }
+          }
+        }
+        const what = wrap === "mirror" ? "in-range uv untouched, out-of-range reflected (period 2)" : wrap === "clamp" ? "in-range uv untouched, out-of-range clamped" : "uv passes through";
+        check(`${who} wrap=${wrap}: ${what}`, worst[0] <= 1 && worst[1] <= 1, `in-range max ${worst[0].toFixed(1)}/255, out-of-range max ${worst[1].toFixed(1)}/255${at ? `; worst at ${at}` : ""}`);
+      }
+      check(`…GL wrapUv and the port agree byte for byte (wrap=${wrap})`, gl.every((v, i) => v === port[i]));
+    }
   }
   // Vector Field over the ramp: luma = 0.2848u + 0.7152v, g = (gx, −gyUp).
   {
