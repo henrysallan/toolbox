@@ -49,6 +49,7 @@ import { fileURLToPath } from "node:url";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { SkiaDrawValue } from "@/engine/types";
 import type { ImageFilterIR, SkiaNode, SkiaScene, SkslProgramIR } from "@/engine/skia/scene-ir";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -976,7 +977,7 @@ const canvas = { width: S, height: S };
       runtimeSource,
     })
   );
-  const stale = Object.entries(fresh.files ?? {}).filter(([f, text]) => !f.endsWith(".b64") && (!fs.existsSync(path.join(slot, f)) || fs.readFileSync(path.join(slot, f), "utf8") !== text)).map(([f]) => f);
+  const stale = Object.entries(fresh.files ?? {}).filter(([f, text]) => !f.endsWith(".b64") && (!fs.existsSync(path.join(slot, f)) || !sameUpToFloatNoise(fs.readFileSync(path.join(slot, f), "utf8"), text))).map(([f]) => f);
   check("skia-harness/src/bundle-filters is today's export (npx tsx scripts/export-skia.mts --fixture filters --out skia-harness/src/bundle-filters)", !!fresh.files && stale.length === 0, stale.join(", "));
 }
 

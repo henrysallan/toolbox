@@ -37,6 +37,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Edge } from "@xyflow/react";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { AssetIR, ShaderIR, SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
+// A fresh export vs the committed slot: code text up to last-ulp float
+// noise (V8 builds differ across platforms), binary assets byte for byte.
+const sameSlotFile = (a: string, b: string): boolean =>
+  /\.(png|ttf|otf|woff2?|jpe?g|webp)$/i.test(a) ? fs.readFileSync(a).equals(fs.readFileSync(b)) : sameUpToFloatNoise(fs.readFileSync(a, "utf8"), fs.readFileSync(b, "utf8"));
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -763,7 +768,7 @@ half4 main(float2 p) {
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? list(path.join(dir, d.name)).map((f) => `${d.name}/${f}`) : [d.name]));
     const mine = list(out).sort();
     const committed = fs.existsSync(slot) ? list(slot).sort() : [];
-    const stale = mine.length !== committed.length || mine.some((f, i) => f !== committed[i] || !fs.readFileSync(path.join(out, f)).equals(fs.readFileSync(path.join(slot, f))));
+    const stale = mine.length !== committed.length || mine.some((f, i) => f !== committed[i] || !sameSlotFile(path.join(out, f), path.join(slot, f)));
     check("skia-harness/src/bundle-image is today's export (re-run export-skia.mts --fixture image)", !stale, `${committed.length} committed vs ${mine.length} fresh files`);
   } catch (e) {
     check("export-skia CLI runs", false, String((e as { stderr?: Buffer }).stderr ?? e).slice(0, 400));

@@ -64,6 +64,7 @@ const fx = await import("./fixtures/skia/procedural-graph.ts");
 const afx = await import("./fixtures/skia/aurora.ts");
 const { auroraSceneGraph } = await import("./fixtures/skia/aurora-scene-graph.ts");
 import type { ProcProgram } from "@/lib/skia-export/procedural/ir";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const require = createRequire(path.join(ROOT, "package.json"));
 const CK = await require("canvaskit-wasm")();
@@ -1071,7 +1072,7 @@ for (const [slot, animation] of [["bundle-procedural", undefined], ["bundle-proc
     ? ["(export failed)"]
     : Object.entries(r.files).flatMap(([f, text]) => {
         const p = path.join(dir, f);
-        return !fs.existsSync(p) || fs.readFileSync(p, "utf8") !== text ? [f] : [];
+        return !fs.existsSync(p) || !sameUpToFloatNoise(fs.readFileSync(p, "utf8"), text) ? [f] : [];
       });
   const extra = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => !r.files || !(f in r.files)) : [];
   check(

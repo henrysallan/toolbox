@@ -45,6 +45,7 @@ import { fileURLToPath } from "node:url";
 import type { Canvas, CanvasKit, Paragraph } from "canvaskit-wasm";
 import type { Bind, SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
 import type { NodeDefinition } from "@/engine/types";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1067,7 +1068,7 @@ function calls(src: string, name: string): string[] {
       return !fs.existsSync(bin) || !fs.readFileSync(bin).equals(Buffer.from(text, "base64"));
     }
     const p = path.join(dir, f);
-    return !fs.existsSync(p) || fs.readFileSync(p, "utf8") !== text;
+    return !fs.existsSync(p) || !sameUpToFloatNoise(fs.readFileSync(p, "utf8"), text);
   });
   check(
     "skia-harness/src/bundle-text is today's export (fonts included)",

@@ -42,6 +42,7 @@ import {
   cubicSpeed,
 } from "../src/engine/cubic-arc-length.ts";
 import { trimPathNode } from "../src/nodes/effect/trim-path.ts";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 // Minimal DOM stubs — the loader / graph-ops / evaluator pull the registry
 // and the whole engine in (dynamic imports below, after the stubs).
@@ -538,16 +539,16 @@ const legacy = JSON.parse(
   for (const c of legacy.cases) {
     if ("measure" in c.params) absentBad.push(`${c.name}: fixture carries measure`);
     const want = JSON.stringify(c.out);
-    if (JSON.stringify(evalTrim(c.subpaths, c.params).subpaths) !== want) absentBad.push(c.name);
-    if (JSON.stringify(evalTrim(c.subpaths, { ...c.params, measure: "segment" }).subpaths) !== want) explicitBad.push(c.name);
-    if (JSON.stringify(evalTrim(c.subpaths, { ...c.params, measure: "arc length" }).subpaths) !== want) arcDiffers++;
+    if (!sameUpToFloatNoise(JSON.stringify(evalTrim(c.subpaths, c.params).subpaths), want)) absentBad.push(c.name);
+    if (!sameUpToFloatNoise(JSON.stringify(evalTrim(c.subpaths, { ...c.params, measure: "segment" }).subpaths), want)) explicitBad.push(c.name);
+    if (!sameUpToFloatNoise(JSON.stringify(evalTrim(c.subpaths, { ...c.params, measure: "arc length" }).subpaths), want)) arcDiffers++;
   }
   check(
-    `old save (no measure key): byte-identical to the pre-fix output on all ${legacy.cases.length} recorded cases`,
+    `old save (no measure key): the pre-fix output on all ${legacy.cases.length} recorded cases (to last-ulp float noise: the fixture was recorded on macOS, CI runs Linux)`,
     absentBad.length === 0,
     absentBad.join(" | ")
   );
-  check("measure=segment: byte-identical to the pre-fix output on every recorded case", explicitBad.length === 0, explicitBad.join(" | "));
+  check("measure=segment: the pre-fix output on every recorded case (to float noise)", explicitBad.length === 0, explicitBad.join(" | "));
   check("measure=arc length changes the uneven cases (the switch does something)", arcDiffers >= legacy.cases.length - 2, `${arcDiffers} of ${legacy.cases.length} differ`);
 }
 
@@ -635,12 +636,12 @@ const EDGE = { id: "e1", source: "src", sourceHandle: "out:primary", target: "tr
     const trim = res.nodes.find((n) => n.id === "trim")!;
     if (trim.data.params.measure !== "segment") loadedSegment = false;
     const out = evaluateTrim(res.nodes, res.edges, "trim");
-    if (!out || JSON.stringify(out) !== JSON.stringify(c.out)) bad.push(name);
+    if (!out || !sameUpToFloatNoise(JSON.stringify(out), JSON.stringify(c.out))) bad.push(name);
     const resaved = await serializeGraph(res.nodes, res.edges);
     if ((resaved.nodes.find((n: any) => n.id === "trim")!.params as Record<string, unknown>).measure !== "segment") resavedSegment = false;
   }
   check("loader: an old save's Trim Path loads pinned to measure = segment (migrateLoadedParams), so the panel shows the mode it renders", loadedSegment);
-  check(`loader + evaluator: those old saves render byte-identical to the pre-fix output (${picks.length} cases)`, bad.length === 0, bad.join(" | "));
+  check(`loader + evaluator: those old saves render the pre-fix output (${picks.length} cases, to float noise)`, bad.length === 0, bad.join(" | "));
   check("re-saving an old project writes measure = segment (it stays on segment)", resavedSegment);
 }
 {

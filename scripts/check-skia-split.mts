@@ -40,6 +40,7 @@ import type { EvalCache, GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { ShaderExpr } from "@/engine/skia/shader-expr";
 import type { SkiaNode, SkiaScene, SkslProgramIR } from "@/engine/skia/scene-ir";
 import type { NodeDefinition } from "@/engine/types";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -726,7 +727,7 @@ const shapes: Record<string, FillOut> = {};
       const { exportSkia } = await import("@/lib/skia-export");
       const runtimeSource = fs.readFileSync(path.join(ROOT, "src/lib/skia-export/runtime/toolbox-timeline.ts"), "utf8");
       const fresh = exportSkia({ nodes: g.nodes, edges: g.edges, targetId: splitFx.SPLIT_PARITY_CANVAS, name: "Split stages", canvas: { width: 512, height: 512 }, timeline, runtimeSource });
-      const stale = Object.entries(fresh.files ?? {}).filter(([f, text]) => !fs.existsSync(path.join(slot, f)) || fs.readFileSync(path.join(slot, f), "utf8") !== text).map(([f]) => f);
+      const stale = Object.entries(fresh.files ?? {}).filter(([f, text]) => !fs.existsSync(path.join(slot, f)) || !sameUpToFloatNoise(fs.readFileSync(path.join(slot, f), "utf8"), text)).map(([f]) => f);
       check("skia-harness/src/bundle-split is today's export (re-run `npx tsx scripts/export-skia.mts --fixture split --out skia-harness/src/bundle-split`, then parity:skia -- --bundle split)", !!fresh.files && stale.length === 0, stale.join(", "));
     }
   }

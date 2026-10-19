@@ -33,6 +33,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { snapshotDrift } from "./skia/snapshot-diff.ts";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { Bind, SkiaNode, SkiaScene, SkslProgramIR } from "@/engine/skia/scene-ir";
 
@@ -606,14 +607,29 @@ function snapshot(name: string, got: Record<string, string>) {
   for (const f of names) {
     if (!(f in have)) drift ||= `${f} is new (run with --update)`;
     else if (!(f in want)) drift ||= `${f} is no longer emitted`;
-    else if (have[f] !== want[f]) {
-      const a = have[f].split("\n");
-      const b = want[f].split("\n");
-      const i = a.findIndex((l, k) => l !== b[k]);
-      drift ||= `${f}:${i + 1}\n       snapshot: ${a[i]?.slice(0, 120)}\n       emitted:  ${b[i]?.slice(0, 120)}`;
-    }
+    // Text exact, numbers to 1e-12: raw doubles differ in the last ulp
+    // between V8 builds (snapshots written on macOS, CI on Linux).
+    else drift ||= snapshotDrift(f, have[f], want[f]);
   }
   check(`emitted files match snapshots/${name} (${names.length} files)`, !drift, drift ? `${drift}\n       (npx tsx scripts/check-skia-scene-export.mts --update after a deliberate change)` : "");
+}
+{
+  // The tolerant compare itself (scripts/skia/snapshot-diff.ts): a last-ulp
+  // nudge of a sampled double passes; a real value change, a toFixed(3)
+  // rounding flip and a text change all still fail.
+  const { sameUpToFloatNoise } = await import("./skia/snapshot-diff.ts");
+  const x = 0.5403023058681398;
+  const nudged = x + Number.EPSILON * x;
+  const line = (v: number, t = 401.047) => `const S: Series<number[]> = {"v":[[${v},0.8414709848078965,100,${t}]]};`;
+  check(
+    "snapshot compare: float noise passes, real changes fail",
+    nudged !== x &&
+      sameUpToFloatNoise(line(x), line(nudged)) &&
+      !sameUpToFloatNoise(line(x), line(x + 1e-6)) &&
+      !sameUpToFloatNoise(line(x), line(x, 401.048)) &&
+      !sameUpToFloatNoise(line(x), line(x).replace("Series", "Track")),
+    `${x} vs ${nudged}`
+  );
 }
 snapshot("scene", files);
 if (staticRes.files) snapshot("static", staticRes.files);

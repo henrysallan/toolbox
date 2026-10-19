@@ -46,6 +46,7 @@ import type { AssetIR, SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
 import type { GraphEdge, GraphNode as EngineNode } from "@/engine/evaluator";
 import type { GraphNode } from "@/state/graph-ops";
 import type { RenderContext, SkiaDrawValue } from "@/engine/types";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -865,7 +866,7 @@ console.log("— skia-harness/src/bundle-bake");
     const files = bundled.files ?? {};
     const stale = Object.keys(files)
       .filter((k) => !k.endsWith(".b64"))
-      .filter((k) => !fs.existsSync(path.join(slot, k)) || fs.readFileSync(path.join(slot, k), "utf8") !== files[k]);
+      .filter((k) => !fs.existsSync(path.join(slot, k)) || !sameUpToFloatNoise(fs.readFileSync(path.join(slot, k), "utf8"), files[k]));
     check("every code file in the slot is today's export", !stale.length, `${stale.join(", ")} differ — npx tsx scripts/export-skia.mts --fixture bake --out skia-harness/src/bundle-bake`);
     const dec = await png.decodePng(slotPng);
     const sm = JSON.parse(files["manifest.json"]);

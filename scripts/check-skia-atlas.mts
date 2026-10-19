@@ -47,6 +47,7 @@ import type { CanvasKit, Image } from "canvaskit-wasm";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
 import type { ImageGroupValue, ImageValue, PointsValue, RenderContext, SkiaDrawValue } from "@/engine/types";
+import { sameUpToFloatNoise } from "./skia/snapshot-diff.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -574,7 +575,7 @@ const kinds = (r: ReturnType<typeof exportSkia>) => {
   }
   // The harness slot is today's export.
   const slot = path.join(ROOT, "skia-harness", "src", "bundle-atlas");
-  const stale = Object.entries(r.files ?? {}).filter(([f, text]) => !f.endsWith(".b64") && (!fs.existsSync(path.join(slot, f)) || fs.readFileSync(path.join(slot, f), "utf8") !== text)).map(([f]) => f);
+  const stale = Object.entries(r.files ?? {}).filter(([f, text]) => !f.endsWith(".b64") && (!fs.existsSync(path.join(slot, f)) || !sameUpToFloatNoise(fs.readFileSync(path.join(slot, f), "utf8"), text))).map(([f]) => f);
   check("skia-harness/src/bundle-atlas is today's export", !stale.length, `${stale.join(", ")} differ — npx tsx scripts/export-skia.mts --fixture atlas --out skia-harness/src/bundle-atlas`);
   // checkExportable: programs compile, the bundle type-checks.
   const ce = await checkExportable({ nodes: sub.nodes, edges: sub.edges, canvasId: "combo_skc", canvas: { width: fx.ATLAS_SIZE, height: fx.ATLAS_SIZE }, timeline: TL, typecheck: true, slot: "atlas" });
