@@ -578,6 +578,10 @@ src/
                           sql_archive/user-preferences-brush-presets-migration.sql —
                           with localStorage fallback). Every action commits
                           pre-action pixels through the paint undo lane.
+                          Snapshots are PREMULTIPLIED ImageBitmaps — zero-
+                          copy off an accelerated canvas, ~1–3 ms per live
+                          frame at 4k; the node's shaders divide alpha out
+                          (see the alpha note under engine conventions).
                           Generic dock chrome (shell/pill/toggle) shared
                           with spline-editor via ../tool-dock.tsx.
                           GradientOverlay: linear/radial/multipoint
@@ -857,9 +861,18 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
   ImageBitmap sources — the bitmap's creation-time `premultiplyAlpha`
   wins, and `createImageBitmap`'s default is premultiplied. Mint
   straight-alpha bitmaps explicitly
-  (`createImageBitmap(src, { premultiplyAlpha: "none" })`, as the paint
-  snapshot paths do) or downstream compositing applies alpha twice and
-  soft edges fade through grey.
+  (`createImageBitmap(src, { premultiplyAlpha: "none" })`, as
+  figma-import's bake does) or downstream compositing applies alpha twice
+  and soft edges fade through grey. **The one deliberate exception is the
+  Paint node's own textures** (paint.ts `bitmapTexture`): its surfaces are
+  2D canvases, whose native storage is premultiplied, so the snapshots are
+  minted with plain `createImageBitmap(canvas)` (a zero-copy GPU reference)
+  and the two paint shaders divide alpha back out — the node's output is
+  straight like everything else. A straight-alpha snapshot forces a full
+  GPU→CPU readback + unpremultiply per live-stroke frame (measured
+  2026-10-19 on an M4 Pro: 5 ms at 1080p, 20–43 ms at 3k–4k, vs 1–3 ms
+  premultiplied). Every paint snapshot mint (PaintOverlay `snapshot()`,
+  EffectsApp `onPaintRestore`, project.ts load) must stay premultiplied.
 
 ### Socket types (src/engine/types.ts)
 

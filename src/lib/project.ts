@@ -672,13 +672,12 @@ async function deserializeParams(
           canvas.width = bmp.width;
           canvas.height = bmp.height;
           canvas.getContext("2d")?.drawImage(bmp, 0, 0);
-          // premultiplyAlpha "none": paint snapshots must be straight-alpha
-          // (WebGL ignores the UNPACK premultiply flag for ImageBitmaps; a
-          // premultiplied upload double-applies alpha downstream). Matches
-          // the editor's snapshot path in paint-editor/PaintOverlay.
-          const snapshot = await createImageBitmap(canvas, {
-            premultiplyAlpha: "none",
-          });
+          // Premultiplied (the default), like the editor's snapshot path in
+          // paint-editor/PaintOverlay: the Paint node's textures hold the
+          // canvas's premultiplied pixels and its shaders unpremultiply
+          // (paint.ts bitmapTexture). WebGL ignores the UNPACK premultiply
+          // flag for ImageBitmaps, so the creation-time option is the format.
+          const snapshot = await createImageBitmap(canvas);
           // Seed the encode cache: an untouched paint layer re-saves the
           // exact bytes it loaded, with no re-encode. (Skipped for storage
           // URLs — see isDataUrl.)

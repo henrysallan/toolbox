@@ -2951,15 +2951,14 @@ function EffectsShell({
           detail: { nodeId, canvases },
         })
       );
-      // premultiplyAlpha "none": paint snapshots must be straight-alpha —
-      // WebGL ignores UNPACK_PREMULTIPLY_ALPHA_WEBGL for ImageBitmaps, and a
-      // premultiplied upload double-applies alpha downstream (grey fringes
-      // on soft strokes). Matches paint-editor/PaintOverlay's snapshot().
+      // Premultiplied (the default), like paint-editor/PaintOverlay's
+      // snapshot(): the Paint node's textures are premultiplied and its
+      // shaders unpremultiply (paint.ts bitmapTexture). WebGL ignores the
+      // UNPACK premultiply flag for ImageBitmaps, so a straight-alpha bitmap
+      // here would render grey-fringed AND cost a full CPU readback.
       Promise.all(
         canvases.map((c) =>
-          createImageBitmap(c, { premultiplyAlpha: "none" }).then(
-            (bmp) => [c, bmp] as const
-          )
+          createImageBitmap(c).then((bmp) => [c, bmp] as const)
         )
       ).then((pairs) => {
         setNodes((prev) =>

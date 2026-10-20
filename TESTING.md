@@ -1218,6 +1218,13 @@ get_perf({ top: 10 })
   different loop spans compares content, not code. Cover the same span, or
   full loops.
 
+- **A 2D canvas timed with `getImageData` as the sync point goes software.**
+  Chromium's readback heuristic drops canvas acceleration after a few
+  `getImageData` calls, so every later number is a CPU number (the Paint
+  live-stroke bench first showed 11 ms "composites" that are ~0 on the GPU
+  path). Sync through a 1-px `readPixels` of a GL texture the canvas was
+  uploaded to instead, on a fresh canvas per measurement (2026-10-19).
+
 ### Reading the output
 
 - `poisonRoots` ranks uncacheable nodes by how much **downstream** recompute

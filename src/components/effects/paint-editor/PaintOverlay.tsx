@@ -579,13 +579,15 @@ export default function PaintOverlay({
       return;
     }
     snapshotPendingRef.current[param] = true;
-    // premultiplyAlpha "none" is load-bearing: WebGL IGNORES the
-    // UNPACK_PREMULTIPLY_ALPHA_WEBGL flag for ImageBitmap sources, so a
-    // default (premultiplied) bitmap uploads premultiplied into a pipeline
-    // that assumes straight alpha — downstream compositing then applies
-    // alpha twice and soft brush edges fade through grey instead of
-    // white→transparent.
-    createImageBitmap(canvas, { premultiplyAlpha: "none" })
+    // PREMULTIPLIED on purpose (the default): the Paint node's textures hold
+    // the canvas's native premultiplied pixels and its shaders divide alpha
+    // back out (paint.ts bitmapTexture). A premultiplied bitmap of an
+    // accelerated canvas is a zero-copy GPU reference; `premultiplyAlpha:
+    // "none"` would read the whole canvas back to the CPU every live frame
+    // (20–43 ms at 3k–4k). WebGL ignores the UNPACK premultiply flag for
+    // ImageBitmaps, so this creation-time choice IS the upload format — keep
+    // it in step with EffectsApp's onPaintRestore and project.ts's load.
+    createImageBitmap(canvas)
       .then((bmp) => {
         onChangeRef.current(nodeIdRef.current, param, {
           canvas,
@@ -1136,7 +1138,9 @@ export default function PaintOverlay({
     if (file) {
       let bmp: ImageBitmap;
       try {
-        bmp = await createImageBitmap(file, { premultiplyAlpha: "none" });
+        // Only ever drawn into a 2D canvas (which premultiplies anyway), so
+        // the cheap default bitmap is the right one.
+        bmp = await createImageBitmap(file);
       } catch {
         if (internal) pasteInternal(internal);
         return;

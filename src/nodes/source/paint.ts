@@ -19,13 +19,16 @@ uniform float u_transparent;
 out vec4 outColor;
 void main() {
   // Source is a 2D canvas (row 0 at top). Flip to WebGL-Y-up so downstream
-  // samples match the rest of the pipeline's convention. The canvas is
-  // transparent; strokes carry alpha. bg_mode "color" composites them over
-  // the configured background (legacy behavior, always opaque); bg_mode
-  // "transparent" passes the straight-alpha strokes through untouched — so
-  // Paint layers over other content, and image→mask coercion mattes by the
-  // stroke silhouette.
-  vec4 s = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
+  // samples match the rest of the pipeline's convention. The texture holds
+  // the canvas's native PREMULTIPLIED pixels (see bitmapTexture); divide
+  // alpha back out here so the output is straight like every other image.
+  // The canvas is transparent; strokes carry alpha. bg_mode "color"
+  // composites them over the configured background (legacy behavior,
+  // always opaque); bg_mode "transparent" passes the straight-alpha strokes
+  // through untouched — so Paint layers over other content, and image→mask
+  // coercion mattes by the stroke silhouette.
+  vec4 p = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
+  vec4 s = vec4(p.a > 0.0 ? clamp(p.rgb / p.a, 0.0, 1.0) : vec3(0.0), p.a);
   vec4 overBg = vec4(mix(u_bg.rgb, s.rgb, s.a), 1.0);
   outColor = mix(overBg, s, u_transparent);
 }`;
@@ -33,9 +36,11 @@ void main() {
 // With an image wired in (101526_paint-selection-transform.md §1): the input
 // is the live bottom layer, the knockout mask cuts holes in it (eraser,
 // moved pixels), and the edit layer sits on top —
-// out = over(edit, input × (1 − knockout.a)), all straight alpha, then the
-// same bg_mode step as the plain blit. Edit + knockout are 2D canvases (row
-// 0 at top) and flip; the input is a pipeline texture and doesn't.
+// out = over(edit, input × (1 − knockout.a)), then the same bg_mode step as
+// the plain blit. The edit layer samples PREMULTIPLIED (its canvas's native
+// storage — see bitmapTexture), the input is a straight pipeline texture,
+// the knockout is alpha-only; the output is straight. Edit + knockout are
+// 2D canvases (row 0 at top) and flip; the input doesn't.
 export const PAINT_COMPOSITE_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -49,12 +54,13 @@ uniform float u_transparent;
 out vec4 outColor;
 void main() {
   vec2 cuv = vec2(v_uv.x, 1.0 - v_uv.y);
+  // e is premultiplied: e.rgb already carries e.a.
   vec4 e = u_hasSrc > 0.5 ? texture(u_src, cuv) : vec4(0.0);
   vec4 b = texture(u_in, v_uv);
   if (u_hasKo > 0.5) b.a *= 1.0 - texture(u_ko, cuv).a;
   float a = e.a + b.a * (1.0 - e.a);
   vec3 rgb = a > 0.0
-    ? (e.rgb * e.a + b.rgb * b.a * (1.0 - e.a)) / a
+    ? clamp((e.rgb + b.rgb * b.a * (1.0 - e.a)) / a, 0.0, 1.0)
     : vec3(0.0);
   vec4 s = vec4(rgb, a);
   vec4 overBg = vec4(mix(u_bg.rgb, s.rgb, s.a), 1.0);
@@ -69,6 +75,22 @@ interface PaintState {
 // Upload `bitmap` into the per-node cached texture under `stateKey`,
 // re-uploading only when the snapshot identity changed (every editor
 // mutation mints a fresh ImageBitmap).
+//
+// The texture holds PREMULTIPLIED pixels, unlike every other upload in the
+// engine. Paint surfaces are 2D canvases, whose native storage is
+// premultiplied: a plain `createImageBitmap(canvas)` is a zero-copy GPU
+// reference and uploads as a GPU→GPU copy, whereas a straight-alpha one
+// (`premultiplyAlpha: "none"`) makes Chromium read the whole canvas back to
+// the CPU, unpremultiply, and re-upload — measured 5 ms per live-stroke
+// frame at 1080p and 20–43 ms at 3k–4k, vs 1–3 ms this way (2026-10-19,
+// M4 Pro). The shaders divide alpha back out, so the node's OUTPUT is
+// straight like everything downstream, and since the canvas never held
+// more than its premultiplied bytes the pixels are the same. WebGL ignores
+// UNPACK_PREMULTIPLY_ALPHA_WEBGL for ImageBitmap sources (the bitmap's own
+// creation-time option wins), so the flag below documents the contract
+// rather than enforcing it: every paint snapshot MUST be minted
+// premultiplied (PaintOverlay snapshot(), EffectsApp onPaintRestore,
+// project.ts load).
 function bitmapTexture(
   ctx: RenderContext,
   stateKey: string,
@@ -81,8 +103,11 @@ function bitmapTexture(
   const tex = gl.createTexture();
   if (!tex) throw new Error("paint: failed to create texture");
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+  // The rest of the engine assumes the flag is off (devguide: straight
+  // alpha throughout).
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

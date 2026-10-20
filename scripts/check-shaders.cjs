@@ -392,14 +392,19 @@ app.whenReady().then(async () => {
 
   // --- stage 4: Paint's input composite (101526_paint-selection-transform.md M0) ---
   // Uniform-colour layers, so the canvas-vs-pipeline Y flip can't mask a
-  // wrong formula. Straight alpha throughout.
+  // wrong formula. u_src / u_ko are PREMULTIPLIED (paint.ts bitmapTexture
+  // uploads the canvas's native storage); the input and the output are
+  // straight.
   const paint = await run(`
     (() => {
       const T = window.T, gl = T.gl;
       const clearTex = T.mkTex(() => [0, 0, 0, 0]);
       const fullKo = T.mkTex(() => [255, 255, 255, 255]);
       const halfKo = T.mkTex(() => [255, 255, 255, 128]);
-      const stroke = T.mkTex(() => [40, 200, 90, 150]);
+      // Straight (40, 200, 90, 150), premultiplied: rgb × 150/255.
+      const stroke = T.mkTex(() => [24, 118, 53, 150]);
+      const strokeStraight = [];
+      for (let i = 0; i < T.W * T.H; i++) strokeStraight.push(40 / 255, 200 / 255, 90 / 255, 150 / 255);
       const composite = (src, input, ko, transparent) => {
         T.draw(T.progs.paintComposite, T.tmp, (p) => {
           T.bindTex(p, "u_src", 0, src ?? input);
@@ -441,6 +446,7 @@ app.whenReady().then(async () => {
         passthrough: maxDiff(baseIn, layerA),
         fullKoAlpha: Math.max(...full.filter((_, i) => i % 4 === 3)),
         halfAlphaOk,
+        unpremul: maxDiff(blit(stroke, true), strokeStraight),
         parityTransparent: maxDiff(composite(stroke, clearTex, null, true), blit(stroke, true)),
         parityColor: maxDiff(composite(stroke, clearTex, null, false), blit(stroke, false)),
         parityKo: maxDiff(composite(stroke, clearTex, fullKo, false), blit(stroke, false)),
@@ -461,6 +467,11 @@ app.whenReady().then(async () => {
   report({
     name: "paint composite: half knockout scales the input alpha by (1 − k)",
     ok: paint.halfAlphaOk,
+  });
+  report({
+    name: "paint blit: a premultiplied stroke texture renders as its straight colour",
+    ok: paint.unpremul <= tol,
+    log: `max |Δ| = ${paint.unpremul.toFixed(4)}`,
   });
   report({
     name: "paint composite over a transparent input ≡ the unwired blit (transparent)",
