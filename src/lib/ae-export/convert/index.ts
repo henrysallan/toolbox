@@ -83,6 +83,7 @@ export type {
 export {
   parseAnimationKey,
   animationKeyParamType,
+  AE_COLOR_EASE_SCALE,
   AE_SHAPE_EASE_MAGNITUDE,
   evaluateAeKeys,
   evaluateAeProp,

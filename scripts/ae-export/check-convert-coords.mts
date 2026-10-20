@@ -108,12 +108,14 @@ export default async function run(): Promise<number> {
   for (const cv of ASPECTS) {
     const tag = `${cv.width}×${cv.height}`;
     // A square with one radius everywhere: AE's Round Corners lands on toolbox's
-    // fillet (90° corners, uncapped insets) to well under a pixel.
+    // fillet (90° corners, uncapped insets) well within planCorners' 0.25 px.
+    // AE's handle is 0.55 of the inset (measured, spec §14), the circle's
+    // 0.5523: 0.06–0.12 px apart at these radii (51–96 px).
     const sq = planCorners({ subpaths: [square(0.5, 0.5, 0.2, 0.05)] }, cv);
-    c.check(`${tag}: uniform radius on a square → Round Corners (${sq.kind}, ${sq.kind === "uniform" ? sq.maxDeviationPx.toFixed(4) + " px" : ""})`, sq.kind === "uniform" && sq.radius === 0.05 * cv.width && sq.maxDeviationPx < 0.05);
+    c.check(`${tag}: uniform radius on a square → Round Corners (${sq.kind}, ${sq.kind === "uniform" ? sq.maxDeviationPx.toFixed(4) + " px" : ""})`, sq.kind === "uniform" && sq.radius === 0.05 * cv.width && sq.maxDeviationPx < 0.13);
     c.check(`${tag}: …with the raw (unrounded) vertices`, sq.paths[0].vertices.length === 4);
   }
-  // Triangles are 60° corners: lottie's 0.5519 handle is not toolbox's circular arc.
+  // Triangles are 60° corners: AE's 0.55 handle (lottie's model) is not toolbox's circular arc.
   const tri: SplineSubpath = {
     closed: true,
     anchors: [

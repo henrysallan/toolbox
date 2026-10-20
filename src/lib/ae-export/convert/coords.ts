@@ -145,16 +145,20 @@ export function splineToAePaths(spline: { subpaths: readonly SplineSubpath[] }, 
 
 // ---- live corners (SplineAnchor.cornerRadius) -------------------------------
 
-// AE's Round Corners on one path, as lottie-web reproduces it
+// AE's Round Corners on one path, lottie-web's model
 // (RoundCornersModifier.processPath): every vertex with both tangents zero —
 // open-path endpoints excepted — becomes two vertices inset along each edge by
-// min(radius, edge/2), each with a handle 0.5519 of the way back toward the
-// corner. Toolbox's fillet differs in two places: it caps the inset at half of
-// the SHORTER adjacent edge on both sides, and its handles are a true circular
+// min(radius, edge/2), each with a handle KAPPA of the way back toward the
+// corner. Render-checked in AE 26.5 (spec §14, calibrate/shapes.mts) on 90°,
+// 60°, 108° and concave corners, capped insets and an open path: the model
+// holds, with KAPPA = 0.55 (the area difference crosses zero at 0.5500 on
+// both the square and the triangle; lottie's 0.5519 is 0.05 px out).
+// Toolbox's fillet differs in two places: it caps the inset at half of the
+// SHORTER adjacent edge on both sides, and its handles are a true circular
 // arc (R·4/3·tan(θ/4)), so the two agree only where the inset is uncapped and
 // the corner near 90°. planCorners measures the difference instead of
 // assuming it.
-export const AE_ROUND_CORNER_KAPPA = 0.5519;
+export const AE_ROUND_CORNER_KAPPA = 0.55;
 
 export function aeRoundCornersPath(path: AePath, radiusPx: number): AePath {
   const n = path.vertices.length;
