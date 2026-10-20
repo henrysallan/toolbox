@@ -565,7 +565,8 @@ const server = new McpServer(
       "set_param, get_keyframes, set_keyframes, validate_expression, " +
       "get_shader_errors, transport, set_markers, tidy, plan_glsl_translation, " +
       "get_glsl_docs, compare_renders, get_node_source, read_source, search_source, " +
-      "set_perf_capture, get_perf, get_perf_frame, plan_skia_export, export_skia.",
+      "set_perf_capture, get_perf, get_perf_frame, plan_skia_export, export_skia, " +
+      "plan_ae_export.",
   }
 );
 

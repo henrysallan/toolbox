@@ -935,6 +935,66 @@ export const BRIDGED_TOOLS = [
         .describe("The full marker list, any order."),
     },
   },
+  // --- After Effects export (spec 091926_after-effects-handoff.md §6) --------
+  {
+    name: "plan_ae_export",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Read-only exportability plan for After Effects. Call it FIRST when " +
+      "asked to export / hand off / rebuild a composition in After Effects. " +
+      "Classifies every node feeding the composition's Output onto the AE " +
+      "ladder (vector, style, transform, layer, mask, effect, expression, " +
+      "instances, text → native AE objects; shader → the Toolbox Shader " +
+      "host plugin, one fused GLSL region per shader region; bake → rendered " +
+      "footage; unsupported → live inputs that need a recorded take) and " +
+      "returns a readable report, then the JSON plan. The report starts with " +
+      "the `route` — direct (all native), direct+bake, direct+shader (host " +
+      "plugin + the graph-to-glsl loop per region), or blocked — then one " +
+      "line each for native / approx (named, with the reason) / shader " +
+      "regions (target + a plan_glsl_translation summary + parity frames) / " +
+      "baked (output, frames, codec, estimated MB) / blocked (the node to " +
+      "replace or record), expressions, fonts, estimates, and warnings " +
+      "(layer budget, bake size, anchor-count stability, AE-less blend " +
+      "modes). Relay those five lines; stop and say why when blocked; ask " +
+      "before exploding past the layer budget or baking past the size " +
+      "warning. The JSON carries per layer: clip `windows`, `segments` " +
+      "(each one AE layer or effect stack: kind, nodes, output, aeLayer) and " +
+      "`nodes` (class, AE match name, fidelity, notes). Default: the whole " +
+      "active composition. `scope` = one layer id; `target` = a node id / " +
+      "<id>:out / <id>:aux:<name> to plan just the branch feeding it; " +
+      "`policy` overrides the defaults (fidelity \"editable\" | \"exact\", " +
+      "color \"auto\" | \"expression\" | \"dense\" | \"rgb\", layerBudget 200, " +
+      "bakeWarnMB 500, bakeCodec \"prores4444\" | \"qtrle\", acceptApprox true " +
+      "(false routes approximate AE effects to shaders), shaderHost true " +
+      "(false bakes shader regions), bitsPerChannel, colorTolerance).",
+    inputSchema: {
+      scope: z
+        .string()
+        .optional()
+        .describe('A layer id to plan only that layer. Omit (or "root") for the whole composition.'),
+      target: z
+        .string()
+        .optional()
+        .describe("A node id, <id>:out or <id>:aux:<name> — plan only the branch feeding it, inside its layer."),
+      policy: z
+        .object({
+          fidelity: z.enum(["editable", "exact"]).optional(),
+          color: z.enum(["auto", "expression", "dense", "rgb"]).optional(),
+          colorTolerance: z.number().optional(),
+          layerBudget: z.number().optional(),
+          bakeWarnMB: z.number().optional(),
+          bakeCodec: z.enum(["prores4444", "qtrle"]).optional(),
+          bitsPerChannel: z.union([z.literal(8), z.literal(16), z.literal(32)]).optional(),
+          acceptApprox: z.boolean().optional(),
+          shaderHost: z.boolean().optional(),
+        })
+        .strict()
+        .optional()
+        .describe("Overrides of the export policy (defaults: editable, auto color, 200-layer budget, 500 MB bake warning, ProRes 4444, approximations accepted, shader host on)."),
+    },
+  },
 ];
 
 /** Tool names that mutate the document — the session-scoped grant set. */
