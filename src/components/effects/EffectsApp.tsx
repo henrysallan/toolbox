@@ -253,6 +253,11 @@ import { editorCanCoerce } from "@/engine/graph-validation";
 import { enclosingSkiaLayer } from "@/engine/skia/layer-target";
 import type { SkiaExportReport } from "@/lib/skia-export/editor";
 import type { BakeFrameRenderer } from "@/lib/skia-export/bake";
+import type { AeExportOptions, AeExportProgress, AeExportResult, AeFrameRenderer } from "@/lib/ae-export/package";
+import type { AeExportPolicy } from "@/lib/ae-export/types";
+import type { AeExportContext } from "./mcp-handlers";
+import ExportAeModal from "./ExportAeModal";
+import { CURRENT_VERSION } from "@/lib/changelog";
 import { pickInspectSocket } from "@/engine/socket-inspect";
 import { getPreset } from "@/state/presets";
 import {
@@ -3166,6 +3171,12 @@ function EffectsShell({
   // React Native Skia export below) — a ref so the MCP handlers, built
   // earlier in this component, reach it.
   const skiaBakeFramesRef = useRef<BakeFrameRenderer | null>(null);
+  // The After Effects export's frame renderer and runner (renderNodeFrames /
+  // runAeExport, defined with the exports below), for the same reason.
+  const renderNodeFramesRef = useRef<AeFrameRenderer | null>(null);
+  const runAeExportRef = useRef<
+    ((opts: AeExportOptions, ctx: AeExportContext, ui?: { pickFolder?: boolean; openAfterBuild?: boolean }) => Promise<AeExportResult>) | null
+  >(null);
   // The terminal ImageValue of the most recent render pass. Export capture
   // reads its pixels straight back from the GPU (captureFrameRGBA, below)
   // instead of copying the on-screen canvas — Chromium can hold that canvas'
@@ -8828,6 +8839,20 @@ function EffectsShell({
       if (!render) return Promise.reject(new Error("The editor is still starting — retry export_skia."));
       return render(bake, ticks, size);
     },
+    // After Effects (091926 §7.5): export_ae_package runs the modal's runner
+    // without its folder picker (main's export folder) or the open-in-AE
+    // step; compare_ae_renders renders the toolbox side through
+    // renderNodeFrames.
+    renderNodeFrames: (target, ticks, size, onFrame, opts) => {
+      const render = renderNodeFramesRef.current;
+      if (!render) return Promise.reject(new Error("The editor is still starting — retry."));
+      return render(target, ticks, size, onFrame, opts);
+    },
+    runAeExport: (opts, ctx) => {
+      const run = runAeExportRef.current;
+      if (!run) return Promise.reject(new Error("The editor is still starting — retry export_ae_package."));
+      return run(opts, ctx);
+    },
   });
 
   // The live loop/fps/resolution ARE the active composition's working scene;
@@ -12044,15 +12069,16 @@ function EffectsShell({
     ]
   );
 
-  // Skia Bake's frames for the React Native Skia export
-  // (lib/skia-export/bake.ts): render what is wired into the bake at each
-  // composition tick with the real engine — the node forced as the
-  // terminal, as compare_renders does, at the export canvas size inside
-  // the export-resolution bracket — and read it back straight off its
-  // texture. Simulations upstream are stepped from frame 0 so their state
-  // is the playback's. Restores the playhead, play state and resolution.
-  const renderSkiaBakeFrames = useCallback<BakeFrameRenderer>(
-    async (bake, ticks, size) => {
+  // Render one node's image at composition ticks with the real engine — the
+  // node forced as the terminal, as compare_renders does, at `size` inside
+  // the export-resolution bracket — and hand each frame, read straight off
+  // its texture, to `onFrame` as it lands (awaited: an encoder's
+  // backpressure holds the next frame back). Simulations upstream are
+  // stepped from frame 0 so their state is the playback's. Restores the
+  // playhead, play state and resolution. Skia Bake (below) and the After
+  // Effects export's bakes render through it.
+  const renderNodeFrames = useCallback<AeFrameRenderer>(
+    async (target, ticks, size, onFrame, opts) => {
       if (exportBusyRef.current || recordingRef.current || queueRenderingRef.current) {
         throw new Error("Another export is running — wait for it to finish, then export again.");
       }
@@ -12060,19 +12086,18 @@ function EffectsShell({
       const tpf = DEFAULT_TICKS_PER_FRAME;
       const want = new Set(ticks);
       const last = Math.max(0, ...ticks);
-      const sequential = outputNeedsSimPreroll(nodesRef.current, edgesRef.current, bake.source.node);
+      const sequential = outputNeedsSimPreroll(nodesRef.current, edgesRef.current, target.node);
       const order = sequential
         ? [...new Set([...Array.from({ length: Math.floor(last / tpf) + 1 }, (_, f) => f * tpf), ...ticks])].sort((a, b) => a - b)
         : [...want].sort((a, b) => a - b);
-      const handle = bake.source.handle || "out:primary";
+      const handle = target.handle || "out:primary";
       const socket = handle === "out:primary" ? "out" : handle.replace(/^out:/, "");
-      const got = new Map<number, Uint8Array | null>();
       const savedTime = timeRef.current;
       const savedPlaying = playingRef.current;
       exportBusyRef.current = true;
       setPlaying(false);
       offlineRenderingRef.current = true;
-      forcedTerminalRef.current = bake.source.node;
+      forcedTerminalRef.current = target.node;
       forcedTerminalHandleRef.current = handle === "out:primary" ? null : handle;
       try {
         await beginExportResolution([size.width, size.height]);
@@ -12082,17 +12107,17 @@ function EffectsShell({
           await renderSettledFrameAt(tick / (tpf * fps), fps);
           if (!want.has(tick)) continue;
           const output =
-            evalCacheRef.current.get(bake.source.node)?.output ??
-            lastEvalOutputsRef.current?.get(bake.source.node);
+            evalCacheRef.current.get(target.node)?.output ??
+            lastEvalOutputsRef.current?.get(target.node);
           const v = pickInspectSocket(output, socket).value;
           const backend = backendRef.current;
           const px =
             backend && v && (v.kind === "image" || v.kind === "mask")
               ? backend.readImagePixels(v as ImageValue, size.width, size.height)
               : null;
-          got.set(tick, px ? new Uint8Array(px) : null);
-          done++;
-          setCaptureProgress(`Baking ${bake.nodeId} for React Native Skia — frame ${done}/${want.size}`, done / want.size);
+          const index = done++;
+          setCaptureProgress(opts?.label?.(done, want.size) ?? `Rendering ${target.node} — frame ${done}/${want.size}`, done / want.size);
+          await onFrame({ tick, index, rgba: px ? new Uint8Array(px) : null });
           // Let the banner paint now and then.
           if (done % 12 === 0) await new Promise<void>((r) => requestAnimationFrame(() => r()));
         }
@@ -12106,9 +12131,29 @@ function EffectsShell({
         endExportResolution();
         exportBusyRef.current = false;
       }
-      return ticks.map((t) => got.get(t) ?? null);
     },
     [beginExportResolution, endExportResolution, renderSettledFrameAt, setCaptureProgress, setPlaying, setTime]
+  );
+  renderNodeFramesRef.current = renderNodeFrames;
+
+  // Skia Bake's frames for the React Native Skia export
+  // (lib/skia-export/bake.ts): what is wired into the bake, at each
+  // composition tick, through renderNodeFrames at the export canvas size.
+  const renderSkiaBakeFrames = useCallback<BakeFrameRenderer>(
+    async (bake, ticks, size) => {
+      const got = new Map<number, Uint8Array | null>();
+      await renderNodeFrames(
+        { node: bake.source.node, handle: bake.source.handle || "out:primary" },
+        ticks,
+        size,
+        ({ tick, rgba }) => {
+          got.set(tick, rgba);
+        },
+        { label: (done, total) => `Baking ${bake.nodeId} for React Native Skia — frame ${done}/${total}` }
+      );
+      return ticks.map((t) => got.get(t) ?? null);
+    },
+    [renderNodeFrames]
   );
   skiaBakeFramesRef.current = renderSkiaBakeFrames;
 
@@ -12182,12 +12227,151 @@ function EffectsShell({
     [flashToast, renderSkiaBakeFrames]
   );
 
+  // ---- Export to After Effects (spec 091926_after-effects-handoff.md §5) ----
+  // The modal (ExportAeModal) and the export_ae_package tool share one runner
+  // (lib/ae-export/package): scene build → package files → bakes through
+  // renderNodeFrames → a package folder main created (desktop) or a zip →
+  // optional headless build. Lazy: the planner tables, the scene walk, jszip
+  // and ffmpeg.wasm load on first use.
+  const [aeExport, setAeExport] = useState<{
+    outputNodeId: string;
+    editor: typeof import("@/lib/ae-export/editor");
+  } | null>(null);
+  const [aeProgress, setAeProgress] = useState<AeExportProgress | null>(null);
+
+  // The composition an Output node sits in, as planAeExportForEditor and the
+  // scene walk take it (the same fields plan_ae_export reads off get_status).
+  const aeContextFor = useCallback((outputNodeId: string): AeExportContext => {
+    const out = nodesRef.current.find((n) => n.id === outputNodeId);
+    const compositionId = out?.data.compositionId;
+    const fps = fpsRef.current;
+    const lf = loopFramesRef.current;
+    return {
+      env: {
+        composition: {
+          id: compositionId ?? "main",
+          name: currentProjectRef.current?.name ?? "Untitled",
+          width: canvasResRef.current[0],
+          height: canvasResRef.current[1],
+          fps,
+          durationFrames: lf != null && lf > 0 ? lf : fps * 5,
+        },
+        ...(compositionId ? { compositionId } : {}),
+        frame: Math.round(timeRef.current * fps),
+        lastOutputs: lastEvalOutputsRef.current,
+      },
+      ...(out ? { output: `${out.id}:out` } : {}),
+    };
+  }, []);
+
+  // Image / video / SVG sources the scene copies into footage/: their asset
+  // URL as the scene lane records it (blob:, data:, http(s), same-origin).
+  const readAeAsset = useCallback(async (copy: { source: { ref: string } }) => {
+    const ref = copy.source.ref;
+    if (!/^(?:https?:|blob:|data:|\/)/.test(ref)) return null;
+    const res = await fetch(ref);
+    return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+  }, []);
+
+  const runAeExport = useCallback(
+    async (opts: AeExportOptions, ctx: AeExportContext, ui: { pickFolder?: boolean; openAfterBuild?: boolean } = {}) => {
+      const [pkg, scene] = await Promise.all([import("@/lib/ae-export/package"), import("@/lib/ae-export/scene")]);
+      const ae = platform.runAfterEffects;
+      const run = pkg.createAeExportRunner({
+        toolboxVersion: CURRENT_VERSION,
+        buildScene: (o) =>
+          scene.buildAeSceneForEditor(nodesRef.current, edgesRef.current, {
+            env: { ...ctx.env, policy: o.policy },
+            overrides: o.overrides,
+            fused: o.fused,
+            name: o.name,
+            toolboxVersion: CURRENT_VERSION,
+          }),
+        renderFrames: renderNodeFrames,
+        readAsset: readAeAsset,
+        openSink: async (destination, root) => {
+          if (destination === "folder") {
+            if (!ae) throw new Error("A package folder needs the Toolbox desktop app — export a zip instead.");
+            let folder: FolderHandle | null = null;
+            if (ui.pickFolder) {
+              folder = await platform.pickSaveFolder();
+              if (!folder) return null;
+            }
+            return pkg.folderSink(await ae.createPackage(root, folder), platform);
+          }
+          return pkg.zipSink(root, {
+            encode: async (bake, fps, codec) => (await import("@/lib/ae-export/package/wasm")).wasmBakeEncoder(bake, fps, codec),
+            save: (blob, fileName) => downloadBlob(blob, fileName),
+          });
+        },
+        ...(ae && platform.aeCapabilities?.available ? { build: (location: string) => ae.build(location, { open: !!ui.openAfterBuild }) } : {}),
+        output: () => ctx.output,
+        onProgress: setAeProgress,
+      });
+      return run(opts);
+    },
+    [readAeAsset, renderNodeFrames]
+  );
+  runAeExportRef.current = runAeExport;
+
+  const openAeExport = useCallback(
+    async (outputNodeId: string) => {
+      try {
+        const editor = await import("@/lib/ae-export/editor");
+        setAeExport({ outputNodeId, editor });
+      } catch (err) {
+        flashToast(`After Effects export failed to load: ${toError(err, "load failed").message}`);
+      }
+    },
+    [flashToast]
+  );
+
+  // Cheap and synchronous (the planner is pure), so the modal re-plans on
+  // every option change. Per-node overrides only reach the scene walk; the
+  // plan itself has no override input yet.
+  const replanAe = useCallback(
+    (policy: Partial<AeExportPolicy>) => {
+      if (!aeExport) throw new Error("No After Effects export is open.");
+      return aeExport.editor.planAeExportForEditor(nodesRef.current, edgesRef.current, { ...aeContextFor(aeExport.outputNodeId).env, policy });
+    },
+    // nodes / edges: a graph edit re-plans an open modal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aeExport, aeContextFor, nodes, edges]
+  );
+
+  // "Convert with Claude": open the assistant overlay and send the modal's
+  // prompt once the session is connected (it connects when a shell shows).
+  const pendingAgentPromptRef = useRef<string | null>(null);
+  const convertAeWithClaude = useCallback(
+    (prompt: string) => {
+      if (!agentAvailable) {
+        flashToast("Claude runs in the Toolbox desktop app — the conversion prompt needs the assistant panel there.");
+        return;
+      }
+      if (agent.status.state === "ready") agent.send(prompt);
+      else pendingAgentPromptRef.current = prompt;
+      setAgentOverlayOpen(true);
+    },
+    [agent, agentAvailable, flashToast]
+  );
+  useEffect(() => {
+    const pending = pendingAgentPromptRef.current;
+    if (!pending) return;
+    if (agent.status.state === "ready") {
+      pendingAgentPromptRef.current = null;
+      agent.send(pending);
+    } else if (agent.status.state === "no-host" || agent.status.state === "denied") {
+      pendingAgentPromptRef.current = null;
+      flashToast("Claude isn't connected, so the After Effects prompt wasn't sent — see the assistant panel.");
+    }
+  }, [agent, flashToast]);
+
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg" | "skia";
+          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg" | "skia" | "ae";
           // kind "skia": the timeline shape (lib/skia-export/animation-modes).
           animation?: string;
         }>
@@ -12195,6 +12379,12 @@ function EffectsShell({
       if (!detail) return;
       if (detail.kind === "skia") {
         await exportSkiaNode(detail.id, detail.animation);
+        return;
+      }
+      // kind "ae": the Output node's "Export to After Effects…" — opens the
+      // modal; the export itself runs from there.
+      if (detail.kind === "ae") {
+        await openAeExport(detail.id);
         return;
       }
       // The offline single-export kinds share offlineRenderingRef and the
@@ -12235,6 +12425,7 @@ function EffectsShell({
     renderQueue,
     exportSvgNode,
     exportSkiaNode,
+    openAeExport,
   ]);
 
   // --- Save / Load ----------------------------------------------------------
@@ -16499,6 +16690,19 @@ function EffectsShell({
           />
         );
       })()}
+      {aeExport && (
+        <ExportAeModal
+          open
+          onClose={() => setAeExport(null)}
+          defaultName={currentProject?.name || "toolbox-export"}
+          replan={replanAe}
+          run={(opts) => runAeExport(opts, aeContextFor(aeExport.outputNodeId), { pickFolder: true, openAfterBuild: true })}
+          canBuildInAe={!!platform.runAfterEffects && !!platform.aeCapabilities?.available}
+          canWriteFolder={!!platform.runAfterEffects}
+          onConvertWithClaude={convertAeWithClaude}
+          progress={aeProgress}
+        />
+      )}
       <PublicPrivateConfirm
         open={!!pendingVisibility}
         toPublic={pendingVisibility?.toPublic ?? false}

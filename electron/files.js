@@ -9,13 +9,38 @@ const fs = require("fs/promises");
 const path = require("path");
 const { recordRecent } = require("./recents");
 const { recordOpenedToolbox } = require("./assets");
+const { resolveInside } = require("./safe-paths");
 
 const isToolbox = (p) => path.extname(String(p)).toLowerCase() === ".toolbox";
 
-// Folders the user explicitly picked this session. writeFileInFolder only
-// honors tokens from this set, so the renderer can't coerce a write to an
-// arbitrary path by inventing a token.
+// Folders the user explicitly picked this session, plus the After Effects
+// package folders main itself created inside one (ae.js registerFolder).
+// writeFileInFolder / writeFileInFolderAt only honor tokens from this set, so
+// the renderer can't coerce a write to an arbitrary path by inventing a token.
 const pickedFolders = new Set();
+
+function registerFolder(dir) {
+  pickedFolders.add(dir);
+  return dir;
+}
+
+function isRegisteredFolder(token) {
+  return typeof token === "string" && pickedFolders.has(token);
+}
+
+// A relative path inside a registered folder (safe-paths.js rules), its
+// parent directories created, and the parent's real path re-checked so a
+// symlink already inside the folder can't carry the write out of it.
+async function resolveInFolder(token, rel) {
+  if (!isRegisteredFolder(token)) throw new Error("unknown folder token");
+  const abs = resolveInside(token, rel);
+  const parent = path.dirname(abs);
+  await fs.mkdir(parent, { recursive: true });
+  const [realRoot, realParent] = await Promise.all([fs.realpath(token), fs.realpath(parent)]);
+  const back = path.relative(realRoot, realParent);
+  if (back.startsWith("..") || path.isAbsolute(back)) throw new Error(`refused: "${rel}" resolves outside its folder`);
+  return abs;
+}
 
 const EXT_FILTERS = {
   video: { name: "Video", extensions: ["mp4", "mov", "webm", "mkv", "m4v", "avi"] },
@@ -91,6 +116,14 @@ function registerFileHandlers() {
     await fs.writeFile(path.join(token, safe), Buffer.from(bytes));
   });
 
+  // Nested variant (the After Effects package: presets/, shaders/, footage/).
+  // `rel` is checked by safe-paths.js: relative, forward slashes, no "..",
+  // quotes or control characters, and it must land inside the folder.
+  ipcMain.handle("toolbox:writeFileInFolderAt", async (_event, token, rel, bytes) => {
+    const abs = await resolveInFolder(token, rel);
+    await fs.writeFile(abs, Buffer.from(bytes));
+  });
+
   ipcMain.handle("toolbox:pickOpenFiles", async (event, { kind, multiple }) => {
     const properties = ["openFile"];
     if (multiple) properties.push("multiSelections");
@@ -115,4 +148,4 @@ function registerFileHandlers() {
   });
 }
 
-module.exports = { registerFileHandlers };
+module.exports = { registerFileHandlers, registerFolder, isRegisteredFolder, resolveInFolder };

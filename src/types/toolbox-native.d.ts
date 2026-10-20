@@ -7,6 +7,8 @@
 // bytes are ArrayBuffer (not Blob), folders are opaque tokens (not paths the
 // page chose). See specdocs/archive/062626_electron-native-export.md (Security).
 
+import type { AeBuildResult, AeCapabilities, AeRenderResult, AeShaderCheck } from "@/lib/platform/types";
+
 export {};
 
 declare global {
@@ -30,6 +32,9 @@ declare global {
     pickSaveFolder(): Promise<{ token: string; name: string } | null>;
     /** Write one file into a previously-picked folder (by token). */
     writeFileInFolder(token: string, name: string, bytes: ArrayBuffer): Promise<void>;
+    /** Nested relative path inside a picked / main-created folder; main
+     *  refuses anything that leaves it. Optional: older shells lack it. */
+    writeFileInFolderAt?(token: string, relPath: string, bytes: ArrayBuffer): Promise<void>;
 
     /** Show a native Open dialog; returns file bytes (null = cancelled). */
     pickOpenFiles(opts: {
@@ -53,6 +58,9 @@ declare global {
       suggestedName: string;
       /** Export log id (exportLogOpen) — ffmpeg's stderr is appended there. */
       logId?: string;
+      /** Write into a picked / main-created folder at a relative path instead
+       *  of showing a Save dialog. */
+      target?: { token: string; path: string };
     }): Promise<{ sessionId: string; path: string } | null>;
     /** Push one RGBA8 frame; resolves when drained (backpressure). */
     encodeVideoFrame(sessionId: string, rgba: ArrayBuffer): Promise<void>;
@@ -127,6 +135,25 @@ declare global {
           message?: string;
         }) => void
       ): () => void;
+    };
+
+    // ---- After Effects (electron/ae.js; macOS) -----------------------------
+    /** Absent on web, on other platforms' older shells, and before ae.js. */
+    ae?: {
+      capabilities: AeCapabilities;
+      createPackage(opts: { name: string; folderToken?: string }): Promise<{
+        token: string;
+        path: string;
+        name: string;
+        aerenderSafe: boolean;
+        aerenderReason?: string;
+      }>;
+      build(pkg: string, opts?: { open?: boolean }): Promise<AeBuildResult>;
+      render(
+        pkg: string,
+        opts: { frames: number[] }
+      ): Promise<Omit<AeRenderResult, "frames"> & { frames: (Omit<AeRenderResult["frames"][number], "rgba"> & { rgba?: ArrayBuffer })[] }>;
+      checkShader(opts: { text: string }): Promise<AeShaderCheck>;
     };
 
     // ---- Recent local .toolbox files --------------------------------------

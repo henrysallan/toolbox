@@ -13,6 +13,7 @@ const { app, BrowserWindow, shell, ipcMain, nativeImage } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg, killAllSessions } = require("./ffmpeg");
+const { register: registerAe, killAll: killAeJobs } = require("./ae");
 const { register: registerExportLog, closeAll: closeExportLogs } = require("./export-log");
 const { registerRecentsHandlers } = require("./recents");
 const { registerAssetsHandlers } = require("./assets");
@@ -210,6 +211,7 @@ app.whenReady().then(() => {
   setDevDockIcon();
   registerFileHandlers();
   registerFfmpeg();
+  registerAe();
   registerExportLog();
   registerWindowControls();
   registerRecentsHandlers();
@@ -223,12 +225,14 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   killAllSessions();
+  killAeJobs();
   closeExportLogs();
   stopAgentHost();
   stopServer();
 });
 app.on("window-all-closed", () => {
   killAllSessions();
+  killAeJobs();
   stopAgentHost();
   stopServer();
   // macOS apps conventionally stay alive until Cmd+Q.

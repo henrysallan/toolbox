@@ -35,6 +35,14 @@ try {
   // handler not registered (shouldn't happen) — stay on the wasm path.
 }
 
+// After Effects (electron/ae.js): found or not, probed once like ffmpeg.
+let aeCaps = null;
+try {
+  aeCaps = ipcRenderer.sendSync("toolbox:ae:capabilities") || null;
+} catch {
+  // older main without ae.js — the renderer sees no aeCapabilities.
+}
+
 contextBridge.exposeInMainWorld("toolboxNative", {
   version: 1,
   platform: process.platform,
@@ -46,6 +54,20 @@ contextBridge.exposeInMainWorld("toolboxNative", {
   writeFileInFolder: (token, name, bytes) =>
     ipcRenderer.invoke("toolbox:writeFileInFolder", token, name, bytes),
   pickOpenFiles: (opts) => ipcRenderer.invoke("toolbox:pickOpenFiles", opts),
+  // Nested relative path inside a picked / main-created folder (main checks it).
+  writeFileInFolderAt: (token, rel, bytes) =>
+    ipcRenderer.invoke("toolbox:writeFileInFolderAt", token, rel, bytes),
+
+  // ---- After Effects (electron/ae.js; macOS) ----
+  ae: aeCaps
+    ? {
+        capabilities: aeCaps,
+        createPackage: (opts) => ipcRenderer.invoke("toolbox:ae:createPackage", opts),
+        build: (pkg, opts) => ipcRenderer.invoke("toolbox:ae:build", pkg, opts),
+        render: (pkg, opts) => ipcRenderer.invoke("toolbox:ae:render", pkg, opts),
+        checkShader: (opts) => ipcRenderer.invoke("toolbox:ae:checkShader", opts),
+      }
+    : undefined,
 
   // ---- Native ffmpeg streaming encode (Milestone 3) ----
   encodeVideoBegin: (spec) => ipcRenderer.invoke("toolbox:encodeVideoBegin", spec),

@@ -15,7 +15,9 @@
 // new project (AE asks to save the current one first if it has changes),
 // builds every comp in one undo group, opens the main comp, saves
 // <package name>.aep inside the package (next to scene.json, so footage and
-// shaders/ resolve relative to it) and shows one summary.
+// shaders/ resolve relative to it) and shows one summary. A scene with a
+// Toolbox Shader effect saves there once more first, before the effect's
+// Bundle ID is set (the host's rules, at @tbx-begin below).
 //
 // Hosts that drive it (the desktop app, the M0 spike) can set, before
 // evaluating this file:
@@ -32,7 +34,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars -- ES3 has no optional catch binding */
 
 (function () {
-  var BUILDER_VERSION = "1.0.0";
+  var BUILDER_VERSION = "1.1.0";
   var SCHEMA_VERSION = 1;
 
   /* @json-begin - gated in scripts/ae-export/check-runtime.mts under Node */
@@ -878,6 +880,124 @@
     }
   }
 
+  /* @tbx-begin - the planner is gated in scripts/ae-export/check-runtime.mts under Node */
+  // The Toolbox Shader host ("TBX Shader", ../AE_Plugins/toolbox-shader
+  // README "For scripts") has three rules, all measured in aerender:
+  //   1. save the project before setting Bundle ID - the host looks for
+  //      shaders/<id>.tbxfx next to the saved project (a headless build also
+  //      gets TBX_SHADER_BUNDLES from its launcher);
+  //   2. set Bundle ID first - it loads the bundle and resets every un-keyed
+  //      control to the bundle's defaults;
+  //   3. only the bundle's own controls are visible, and AE refuses setValue
+  //      on a hidden one - so set just those.
+  var TBX_MATCH = "TBX Shader";
+  var TBX_BUNDLE_PARAM = "TBX Shader-0001";
+  var TBX_STATUS_PARAM = "TBX Shader-0090";
+
+  function tbxMatch(diskId) {
+    var s = String(diskId);
+    while (s.length < 4) s = "0" + s;
+    return TBX_MATCH + "-" + s;
+  }
+
+  // Match names of the controls bundle `b` shows (disk ids in types.ts
+  // tbxShaderDiskId), or null when the bundle is unknown - the host then
+  // leaves every control visible.
+  function tbxControls(b) {
+    if (!b || typeof b !== "object") return null;
+    var out = {};
+    var j, p;
+    var inputs = { a: 10, b: 11, c: 12, d: 13 };
+    var base = { slider: 20, color: 60, point: 70, checkbox: 80 };
+    if (b.readsTime === true) {
+      out[tbxMatch(2)] = true;
+      out[tbxMatch(3)] = true;
+      out[tbxMatch(4)] = true;
+    }
+    if (b.inputs instanceof Array) {
+      for (j = 0; j < b.inputs.length; j++) if (has(inputs, b.inputs[j])) out[tbxMatch(inputs[b.inputs[j]])] = true;
+    }
+    if (b.params instanceof Array) {
+      for (j = 0; j < b.params.length; j++) {
+        p = b.params[j];
+        if (p && has(base, p.kind) && typeof p.slot === "number") out[tbxMatch(base[p.kind] + p.slot - 1)] = true;
+      }
+    }
+    return out;
+  }
+
+  // The bundle id an effect names: `bundle`, or a static Bundle ID prop.
+  function tbxBundleId(fx) {
+    var fromField = has(fx, "bundle") && fx.bundle !== null && fx.bundle !== "" ? Number(fx.bundle) : null;
+    var prop = has(fx.props, TBX_BUNDLE_PARAM) ? fx.props[TBX_BUNDLE_PARAM] : null;
+    if (prop && has(prop, "keys")) throw new Error("Bundle ID (" + TBX_BUNDLE_PARAM + ") cannot be keyed");
+    var fromProp = prop && has(prop, "v") ? Number(prop.v) : null;
+    if (fromField !== null && fromProp !== null && fromField !== fromProp) {
+      throw new Error("bundle " + fx.bundle + " and Bundle ID " + prop.v + " disagree");
+    }
+    var id = fromField !== null ? fromField : fromProp;
+    if (id === null || isNaN(id) || id < 1 || id >= 16777216 || Math.floor(id) !== id) {
+      throw new Error("a TBX Shader effect needs a bundle id (a whole number 1 to 2^24 - 1)");
+    }
+    return id;
+  }
+
+  // What to set, in order: Bundle ID first, then the scene's other props
+  // that are this bundle's own controls (all of them when the bundle is
+  // unknown). `skipped` names the rest, which AE would refuse.
+  function tbxPlan(fx, bundle) {
+    var id = tbxBundleId(fx);
+    var allowed = tbxControls(bundle);
+    var sets = [TBX_BUNDLE_PARAM];
+    var skipped = [];
+    var key;
+    for (key in fx.props) {
+      if (!Object.prototype.hasOwnProperty.call(fx.props, key)) continue;
+      if (key === TBX_BUNDLE_PARAM) continue;
+      if (key === TBX_STATUS_PARAM || (allowed !== null && !has(allowed, key))) skipped.push(key);
+      else sets.push(key);
+    }
+    return { id: id, sets: sets, skipped: skipped };
+  }
+  /* @tbx-end */
+
+  function tbxReadBundle(ctx, id) {
+    if (has(ctx.tbx, String(id))) return ctx.tbx[String(id)];
+    var b = null;
+    var f = packageFile(ctx.root, "shaders/" + id + ".tbxfx");
+    if (f.exists) {
+      f.encoding = "UTF-8";
+      if (f.open("r")) {
+        var text = f.read();
+        f.close();
+        b = TbxJson.parse(text);
+      }
+    }
+    ctx.tbx[String(id)] = b;
+    return b;
+  }
+
+  // Rule 1: the project gets its package path before the first Bundle ID.
+  function tbxEnsureSaved(ctx) {
+    if (ctx.tbxSaved) return;
+    app.project.save(ctx.saveTo);
+    ctx.tbxSaved = true;
+  }
+
+  function setEffectProp(get, fx, key, ctx, where) {
+    // Params by match name ("<effect>-<4-digit disk id>") or "#<index>",
+    // never by display name: the Toolbox Shader renames its params.
+    var p = key.charAt(0) === "#" ? get().property(parseInt(key.substring(1), 10)) : get().property(key);
+    var ref = layerRefOf(fx.props[key]);
+    if (ref !== null) {
+      // A layer param takes the layer's index; AE then follows the layer
+      // itself if the stack is reordered.
+      if (!p) throw new Error(fx.match + " has no param " + key);
+      if (!has(ctx.layerById, ref)) throw new Error(key + ": no layer \"" + ref + "\" in this comp");
+      p.setValue(ctx.layerById[ref].index);
+    } else applyProp(p, fx.props[key], where + " " + fx.match + " " + key);
+  }
+
   function applyEffects(layer, effects, ctx, where) {
     var j;
     for (j = 0; j < effects.length; j++) {
@@ -885,24 +1005,29 @@
         step(where + " effect " + n + " (" + fx.match + ")", function () {
           var parade = function () { return layer.property("ADBE Effect Parade"); };
           if (!parade().canAddProperty(fx.match)) throw new Error("this After Effects has no effect " + fx.match + " (is the plug-in installed?)");
+          var tbx = fx.match === TBX_MATCH ? tbxPlan(fx, null) : null;
+          var bundle = null;
+          if (tbx) {
+            bundle = tbxReadBundle(ctx, tbx.id);
+            tbx = tbxPlan(fx, bundle);
+            if (!bundle) warnings.push(where + ": shaders/" + tbx.id + ".tbxfx is missing or unreadable - every TBX Shader control was set; the .aep needs that file until it is opened once");
+            tbxEnsureSaved(ctx);
+          }
           parade().addProperty(fx.match);
           var index = parade().numProperties;
           var get = function () { return parade().property(index); };
           if (has(fx, "name") && fx.name) get().name = fx.name;
-          var key, p, ref;
-          for (key in fx.props) {
-            if (!Object.prototype.hasOwnProperty.call(fx.props, key)) continue;
-            // Params by match name ("<effect>-<4-digit disk id>") or "#<index>",
-            // never by display name: the Toolbox Shader renames its params.
-            p = key.charAt(0) === "#" ? get().property(parseInt(key.substring(1), 10)) : get().property(key);
-            ref = layerRefOf(fx.props[key]);
-            if (ref !== null) {
-              // A layer param takes the layer's index; AE then follows the
-              // layer itself if the stack is reordered.
-              if (!p) throw new Error(fx.match + " has no param " + key);
-              if (!has(ctx.layerById, ref)) throw new Error(key + ": no layer \"" + ref + "\" in this comp");
-              p.setValue(ctx.layerById[ref].index);
-            } else applyProp(p, fx.props[key], where + " " + fx.match + " " + key);
+          var k, key;
+          if (tbx) {
+            get().property(TBX_BUNDLE_PARAM).setValue(tbx.id);
+            for (k = 1; k < tbx.sets.length; k++) setEffectProp(get, fx, tbx.sets[k], ctx, where);
+            for (k = 0; k < tbx.skipped.length; k++) {
+              warnings.push(where + ": skipped " + tbx.skipped[k] + " - not a control of shader bundle " + (bundle && bundle.name ? bundle.name : tbx.id) + " (After Effects refuses hidden controls)");
+            }
+          } else {
+            for (key in fx.props) {
+              if (Object.prototype.hasOwnProperty.call(fx.props, key)) setEffectProp(get, fx, key, ctx, where);
+            }
           }
           if (has(fx, "compositingMask")) {
             var cm = fx.compositingMask;
@@ -914,7 +1039,6 @@
             }
           }
           if (has(fx, "preset") && fx.preset) applyPresetTo(layer, get, fx.preset, ctx, where + " " + fx.match);
-          if (has(fx, "bundle") && fx.bundle) warnings.push(where + ": shader bundle " + fx.bundle + " is loaded by the Toolbox Shader host, not by this builder");
           if (has(fx, "enabled")) get().enabled = fx.enabled === true;
           counts.effects++;
         });
@@ -1225,7 +1349,9 @@
 
       applyProject(scene.project || {});
 
-      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless, layerById: {} };
+      // One save target for the whole build: a TBX Shader effect saves the
+      // project there early (tbxEnsureSaved), the end saves it again.
+      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless, layerById: {}, saveTo: saveTarget(root), tbxSaved: false, tbx: {} };
       var j, f, folder = null;
       if (scene.presets) {
         for (j = 0; j < scene.presets.length; j++) ctx.presets[scene.presets[j].id] = scene.presets[j].path;
@@ -1259,7 +1385,7 @@
 
       app.endUndoGroup();
       undo = false;
-      var target = saveTarget(root);
+      var target = ctx.saveTo;
       app.project.save(target);
       result.saved = target.fsName;
       result.ok = true;

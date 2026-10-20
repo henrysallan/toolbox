@@ -7,6 +7,9 @@
 // safe to ship inert in the shared web bundle.
 
 import type {
+  AeCapabilities,
+  AePackageFolder,
+  AfterEffectsRunner,
   AssetsFolderHandle,
   ExportLogSink,
   FolderHandle,
@@ -40,16 +43,33 @@ async function saveFile(data: Blob | Uint8Array, opts: SaveFileOptions): Promise
   });
 }
 
-async function pickSaveFolder(): Promise<FolderHandle | null> {
-  const r = await bridge().pickSaveFolder();
-  if (!r) return null;
-  const { token, name } = r;
-  return {
+// Folder handle → its main-side token. Kept off the handle so feature code
+// never sees (or forges) a token; encodeVideo's `into` and the After Effects
+// runner look it up here.
+const folderTokens = new WeakMap<FolderHandle, string>();
+
+function folderHandle(token: string, name: string): FolderHandle {
+  const handle: FolderHandle = {
     name,
     async writeFile(fileName: string, data: Blob | Uint8Array) {
       await bridge().writeFileInFolder(token, fileName, await toArrayBuffer(data));
     },
+    ...(bridge().writeFileInFolderAt
+      ? {
+          async writeFileAt(relPath: string, data: Blob | Uint8Array) {
+            await bridge().writeFileInFolderAt!(token, relPath, await toArrayBuffer(data));
+          },
+        }
+      : {}),
   };
+  folderTokens.set(handle, token);
+  return handle;
+}
+
+async function pickSaveFolder(): Promise<FolderHandle | null> {
+  const r = await bridge().pickSaveFolder();
+  if (!r) return null;
+  return folderHandle(r.token, r.name);
 }
 
 async function pickOpenFiles(opts: {
@@ -59,6 +79,12 @@ async function pickOpenFiles(opts: {
   const r = await bridge().pickOpenFiles(opts);
   if (!r) return null;
   return r.map((f) => new File([f.bytes], f.name, { type: f.type }));
+}
+
+function tokenOf(folder: FolderHandle): string {
+  const t = folderTokens.get(folder);
+  if (!t) throw new Error("That folder did not come from pickSaveFolder / createPackage on this desktop app.");
+  return t;
 }
 
 async function encodeVideo(
@@ -79,6 +105,7 @@ async function encodeVideo(
     audioWav: spec.audioWav ? viewToArrayBuffer(spec.audioWav) : undefined,
     suggestedName: spec.suggestedName,
     logId: spec.logId,
+    ...(spec.into ? { target: { token: tokenOf(spec.into.folder), path: spec.into.path } } : {}),
   });
   if (!begun) return null; // user cancelled the save dialog
   const { sessionId } = begun;
@@ -215,6 +242,36 @@ const assets = {
   },
 };
 
+// After Effects (electron/ae.js). The bridge carries frames as ArrayBuffers;
+// they come out as Uint8Arrays.
+function aeBridge(): NonNullable<ToolboxNativeBridge["ae"]> {
+  const ae = bridge().ae;
+  if (!ae) throw new Error("This desktop app has no After Effects support — update Toolbox.");
+  return ae;
+}
+
+const runAfterEffects: AfterEffectsRunner = {
+  async createPackage(name, folder) {
+    const r = await aeBridge().createPackage({ name, ...(folder ? { folderToken: tokenOf(folder) } : {}) });
+    const base = folderHandle(r.token, r.name);
+    const pkg: AePackageFolder = {
+      ...base,
+      path: r.path,
+      aerenderSafe: r.aerenderSafe,
+      ...(r.aerenderReason ? { aerenderReason: r.aerenderReason } : {}),
+      writeFileAt: base.writeFileAt ?? (() => Promise.reject(new Error("This desktop app can't write nested files — update Toolbox."))),
+    };
+    folderTokens.set(pkg, r.token);
+    return pkg;
+  },
+  build: (pkg, opts) => aeBridge().build(pkg, opts),
+  async render(pkg, frames) {
+    const r = await aeBridge().render(pkg, { frames });
+    return { ...r, frames: r.frames.map((f) => ({ ...f, rgba: f.rgba ? new Uint8Array(f.rgba) : undefined })) };
+  },
+  checkShader: (text) => aeBridge().checkShader({ text }),
+};
+
 export const nativePlatform: Platform = {
   isNative: true,
   get os() {
@@ -223,6 +280,12 @@ export const nativePlatform: Platform = {
   },
   get canEncodeNative() {
     return !!(typeof window !== "undefined" && window.toolboxNative?.canEncodeNative);
+  },
+  get aeCapabilities(): AeCapabilities | null {
+    return (typeof window !== "undefined" && window.toolboxNative?.ae?.capabilities) || null;
+  },
+  get runAfterEffects(): AfterEffectsRunner | undefined {
+    return typeof window !== "undefined" && window.toolboxNative?.ae ? runAfterEffects : undefined;
   },
   saveFile,
   pickSaveFolder,

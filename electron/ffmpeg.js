@@ -3,6 +3,8 @@
 // reading rawvideo from stdin, and write the encoded file straight to a path
 // the USER picked via a native Save dialog. No wasm heap, real threads, no
 // whole-export buffering. See specdocs/archive/062626_electron-native-export.md.
+// A spec with `target: { token, path }` writes into a picked / main-created
+// folder instead (the After Effects package's baked footage, spec 091926 §5.1).
 "use strict";
 
 const { app, ipcMain, dialog, BrowserWindow } = require("electron");
@@ -14,6 +16,8 @@ const path = require("path");
 // Export log files: the renderer opens one per export and passes its id in
 // the encode spec; we append the command line and ffmpeg's stderr to it.
 const exportLog = require("./export-log");
+// Folder-target encodes resolve their path the way nested folder writes do.
+const { resolveInFolder } = require("./files");
 // ffmpeg 9.0, vendored by scripts/fetch-ffmpeg.mjs (NOT the ffmpeg-static npm
 // package, which is stuck on 6.0 and writes ProRes 4444 alpha that Apple's
 // decoder silently renders opaque — see specdocs/091526_prores-alpha.md).
@@ -156,13 +160,26 @@ function register() {
     };
 
     const win = BrowserWindow.fromWebContents(event.sender) || undefined;
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: spec.suggestedName,
-      filters: [EXT_FILTER[spec.container]],
-    });
-    if (canceled || !filePath) {
-      log("save dialog cancelled");
-      return null;
+    let filePath;
+    if (spec.target) {
+      // Folder target (the After Effects package's footage/): no Save
+      // dialog — the file goes to a relative path inside a folder the user
+      // picked or main created (files.js resolveInFolder: safe-paths rules,
+      // realpath-checked), with the container's own extension.
+      const rel = spec.target && typeof spec.target.path === "string" ? spec.target.path : "";
+      if (path.extname(rel).slice(1).toLowerCase() !== spec.container)
+        throw new Error(`folder target "${rel}" must end in .${spec.container}`);
+      filePath = await resolveInFolder(spec.target.token, rel);
+    } else {
+      const picked = await dialog.showSaveDialog(win, {
+        defaultPath: spec.suggestedName,
+        filters: [EXT_FILTER[spec.container]],
+      });
+      if (picked.canceled || !picked.filePath) {
+        log("save dialog cancelled");
+        return null;
+      }
+      filePath = picked.filePath;
     }
     log(`binary: ${ffmpegPath}`);
     log(`output: ${filePath}`);
@@ -409,4 +426,4 @@ function register() {
   });
 }
 
-module.exports = { register, ffmpegAvailable, killAllSessions };
+module.exports = { register, ffmpegAvailable, ffmpegPath, killAllSessions };
