@@ -87,7 +87,10 @@ struct TbxProgram {
 The host epilogue is a compute (or fragment) entry point that:
 - computes `v_uv = (float2(gid) + 0.5) / res` with Y flipped to Y-up;
 - constructs `TbxProgram p(U, a, b, c, d, l0..l7)`;
-- calls `p.shade(v_uv)`, premultiplies, converts to AE's channel order and writes.
+- calls `p.shade(v_uv)`, converts to AE's channel order and writes it **straight**.
+  AE hands effects straight-alpha pixels and expects straight ones back (the
+  host lane measured this in AE 26.5, 2026-10-20), so nothing is premultiplied
+  on either side. This corrects v1's first draft and changes no toolbox-side code.
 
 The entry point's name and bindings belong to the host. Toolbox never emits a kernel.
 
