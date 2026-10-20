@@ -759,17 +759,19 @@ the Advanced 3D renderer id) get confirmed in M0.
 - **M1 — analysis.** `classes.ts` (all 323 types), `plan.ts`,
   `plan_ae_export`, the modal's coverage tree, `check-ae-export`.
 - **M2 — direct export v1.** The easy subset end to end: layers, primitive
-  and drawn splines, fills/strokes/dashes, transforms and gizmo parenting,
-  masks and mattes, blend modes, keyframes with the easing converter and the
-  color policy, clips/time offsets, bake fallback through the existing
-  encoder, `build.jsx`, desktop launch, the modal's Export/Build actions.
+  and drawn splines, fills/strokes/dashes, static gradients (`.ffx`),
+  transforms and gizmo parenting, masks and mattes, blend modes, `blur` →
+  Gaussian Blur with a calibrated radius map, plain text layers, keyframes
+  with the easing converter and the color policy, clips/time offsets, bake
+  fallback through the existing encoder, `build.jsx`, desktop launch, the
+  modal's Export/Build actions (scope confirmed in §11.8).
 - **M3 — shader host.** Harden and sign `toolbox-ae-host`; translation
   pipeline + `validate_ae_shader`; bundle format; `export_ae_package`
   bundles; `compare_ae_renders`; `get_ae_docs` core docs; the skill and the
   panel paragraph; live protocol fixtures C.
-- **M4 — reach.** `effect`-class approximation table with calibrated unit
-  maps (blur radius ↔ blurriness, etc.) and `ae-nodes/*` docs; the value-
-  graph expression compiler; text layers + animators; instances → Repeater
+- **M4 — reach.** The rest of the `effect`-class approximation table with
+  calibrated unit maps and `ae-nodes/*` docs; the value-
+  graph expression compiler; text animators; instances → Repeater
   / exploded layers; SDF hard chains → Merge Paths; 3D cameras/lights/nulls
   and GLB passthrough; exposed knobs → Essential Properties; Windows host
   build; zero-copy GPU path.
@@ -777,27 +779,37 @@ the Advanced 3D renderer id) get confirmed in M0.
   reuse; LottieFiles importer as a zero-code fallback); identity plugins via
   CI from the host core.
 
-## 11. Decisions needed (owner)
+## 11. Decisions (owner)
 
-1. **Host plugin language/base**: fork tweak_shader (Rust + wgpu; new
-   language for the org, but the crate generates the PiPL and Gyroflow/
+Owner answers, 2026-10-19. Items 1 and 7 are still open.
+
+1. **Host plugin language/base** — *open, under discussion.* Fork
+   tweak_shader (Rust + wgpu; the crate generates the PiPL and Gyroflow/
    ntsc-rs prove the stack) vs ISF4AE (C++/OpenGL) vs SDK Skeleton C++.
-   Recommended: fork tweak_shader in a sibling repo.
-2. **Direct-export carrier**: `.jsx` + JSON (recommended) vs `py-aep` (Python
-   dependency, cannot add effects) vs Lottie through the LottieFiles plugin
-   (third-party login, importer fidelity not ours).
-3. **Default fidelity policy**: Editable (best-fit single segments, ≤0.6%)
-   vs Exact (extra keys). Recommended: Editable, with Exact one click away.
-4. **Default color policy**: expression vs dense keys vs accept-RGB for
-   OKLab tracks. Recommended: expression when the track drives a shape/solid
-   color, dense keys (tolerance 2/255) elsewhere.
-5. **Layer budget** for exploded instances (proposed 200) and bake size
-   warnings (proposed 500 MB).
-6. **Where AE runs**: designer machines with AE installed (desktop app
-   spawns it) now; a render box with `aerender` for CI-style parity later.
-7. **Windows** timing for the host build.
-8. **Scope of v1 coverage** — the "common operations" list: transform a
-   spline, layers with masks, fills/strokes, blur, gradient, text? Confirm.
+   Recommended: fork tweak_shader in a sibling repo. (Correction to the
+   2026-09-19 draft: Rust is not new to the project —
+   `rust/toolbox-vector-kernel` has shipped as WASM since v0.4.6.)
+2. **Direct-export carrier** — **decided: `.jsx` + JSON.** (Rejected: `py-aep`,
+   a Python dependency that cannot add effects; Lottie through the
+   LottieFiles plugin, which needs a third-party login and whose importer
+   fidelity we don't control.)
+3. **Default fidelity policy** — **decided: Editable** (best-fit single
+   segments, ≤0.6%), with Exact (extra keys) one click away.
+4. **Default color policy** for OKLab tracks — **decided: expression** when
+   the track drives a shape/solid color, **dense keys** (tolerance 2/255)
+   elsewhere; accept-RGB stays a per-track option.
+5. **Budgets** — **decided: 200-layer budget** for exploded instances,
+   **500 MB** bake size warning.
+6. **Where AE runs** — **decided:** designer machines with AE installed (the
+   desktop app spawns it) now; a render box with `aerender` for CI-style
+   parity later.
+7. **Windows** timing for the host build — *open, under discussion.*
+8. **Scope of v1 coverage** — **confirmed:** transform a spline, layers with
+   masks, fills/strokes, blur, gradient, text. This puts three things in M2
+   that the §10 draft had elsewhere: static gradients via `.ffx` (or SVG
+   import), Gaussian Blur with a calibrated `blur` radius ↔ Blurriness map,
+   and plain text layers (`TextDocument`, Path Options). Text animators and
+   the rest of the `effect`-class table stay in M4.
 
 ## 12. Risks
 
