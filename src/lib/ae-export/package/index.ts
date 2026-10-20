@@ -5,7 +5,7 @@
 // runner and mounts it in EffectsApp; the modal lane's ExportAeModal calls an
 // AeExportRunner it is handed and never reaches into EffectsApp itself.
 
-import type { AeExportPolicy } from "../types";
+import type { AeExportPlan, AeExportPolicy } from "../types";
 import type { AeNodeOverride } from "../scene";
 
 export interface AeExportOptions {
@@ -40,4 +40,25 @@ export interface AeExportProgress {
   done: number;
   total: number;
   label?: string;
+}
+
+// Props of src/components/effects/ExportAeModal.tsx (§5.4). The modal lane
+// builds the component against this; the package lane mounts it in
+// EffectsApp and supplies every callback. Kept React-free so the contract
+// lives with the runner.
+export interface AeExportModalProps {
+  open: boolean;
+  onClose(): void;
+  defaultName: string;
+  // Re-plan with the modal's current options (cheap, synchronous).
+  replan(policy: Partial<AeExportPolicy>, overrides: Record<string, AeNodeOverride>): AeExportPlan;
+  run: AeExportRunner;
+  // Desktop app with After Effects found.
+  canBuildInAe: boolean;
+  // Desktop app (folder destination available).
+  canWriteFolder: boolean;
+  // Opens the agent panel and sends this prompt (the modal builds the text).
+  onConvertWithClaude(prompt: string): void;
+  // Live progress while `run` is in flight (the host passes the latest).
+  progress?: AeExportProgress | null;
 }
