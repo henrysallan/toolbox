@@ -177,7 +177,12 @@
       f.effects = [];
       for (i = 1; parade && i <= parade.numProperties; i++) {
         fx = parade.property(i);
-        var ent = { matchName: fx.matchName, name: fx.name, enabled: fx.enabled, maskRefs: [] };
+        var ent = { matchName: fx.matchName, name: fx.name, enabled: fx.enabled, maskRefs: [], layerParams: [] };
+        for (var q = 1; q <= fx.numProperties; q++) {
+          try {
+            if (fx.property(q).propertyValueType === PropertyValueType.LAYER_INDEX) ent.layerParams.push({ mn: fx.property(q).matchName, value: fx.property(q).value });
+          } catch (eq) {}
+        }
         var bip = fx.property("ADBE Effect Built In Params");
         if (bip) {
           var mp = bip.property("ADBE Effect Mask Parade");

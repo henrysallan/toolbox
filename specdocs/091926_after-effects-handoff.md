@@ -849,8 +849,9 @@ Fixtures `scripts/fixtures/ae-export/`: A circle (keyed transform +
 spline mask), B two layers (luma matte by reference, Screen, Gaussian Blur
 with a compositing mask, parented matte), C gradients (+ SVG), D text, E a
 kitchen sink (precomp + time remap, 3-D, camera, light, adjustment +
-expression, footage, spatial tangents, path keys, every shape modifier).
-**All five build headless with 0 problems; 141 checks pass, 6 are GUI-only.**
+expression, footage, spatial tangents, path keys, every shape modifier,
+effect layer refs). **All five build headless with 0 problems; 142 checks
+pass, 6 are GUI-only.**
 
 ### How AE runs headless on macOS (corrects §1 and §5.3)
 
@@ -898,7 +899,7 @@ expression, footage, spatial tangents, path keys, every shape modifier).
 | spatial tangents `[x, y]` on a 2-D layer | AE wants 3 values (Position is ThreeD_SPATIAL); padded with z = 0, read back exactly |
 | JSON reader (in AE) | fixtures with `\u` escapes and raw UTF-8 build identically to JSON.parse |
 | JSON reader (Node, gate) | 13 tricky strings, 13 numbers, 8 documents, 26 malformed inputs rejected (incl. `__proto__`, depth > 256), 400 fuzz docs both ways; 2.5 MB in 28 ms |
-| headless build + save | 5/5 packages, 0 problems, `<name>.aep` saved next to `<name>.aepkg`, `build-log.json` written |
+| headless build + save | 5/5 packages, 0 problems, `<name>.aepkg/<name>.aep` saved inside the package next to `scene.json` (AE adds `<name>.aep Logs/` there when aerender renders), `build-log.json` written |
 | TIFF with alpha, `-s N -e N` | "TIFF Sequence with Alpha" = TIFF, RGB + Alpha, Millions of Colors+, **Premultiplied (Matted)**; 8-bit RGBA via sharp; pixel checks within ±1–3/255 after unpremultiplying |
 | aerender CLI frame vs render-queue frame | `compareRgba` meanAbs 0, alphaMeanAbs 0, **match** |
 | render queue | each queued item needs its own output name (else AE skips it: "name of an output module … already in use"); files are numbered by comp frame |
@@ -907,6 +908,8 @@ expression, footage, spatial tangents, path keys, every shape modifier).
 | `setTrackMatte(layer, LUMA)` | reads back LUMA, `isTrackMatte` true; a matte parented to a keyed null moves with it (pixels at frames 0 / 25) |
 | Screen blend, 8 bpc | [255, 141, 95] ±3 — the sRGB screen formula |
 | project color settings | bitsPerChannel 8 / 16, workingSpace "sRGB IEC61966-2.1", linearBlending, linearizeWorkingSpace, expressionEngine "javascript-1.0" all read back as written |
+| effect param match names | built-ins: `<match>-<4-digit position>` (Gaussian Blur 2-0001…0003, Tint-0001…0004, Displacement Map-0001…0008). Third-party: `<match>-<4-digit **disk ID**>`, not position — AEPL Line Runners' Density sits at position 32 and is `AEPL Line Runners-0029`, Stroke is `-0049` — so `tbxShaderParamMatch` holds |
+| `AeLayerRef` effect props | a layer param (value type LAYER_INDEX) takes `setValue(index)`; AE then follows the layer, not the index (value tracked a `moveToEnd()`); both `{ layerRef }` and `{ v: { layerRef } }` resolve in fixture E |
 
 Also found, all handled in build.jsx and noted in types.ts:
 

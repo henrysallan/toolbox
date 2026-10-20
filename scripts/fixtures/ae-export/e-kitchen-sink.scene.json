@@ -183,7 +183,16 @@
             "opacity": { "v": 100, "expression": "50 + 25 * Math.sin(time * 2)" }
           },
           "effects": [
-            { "match": "ADBE Tint", "props": { "#3": { "v": 40 } } }
+            { "match": "ADBE Tint", "props": { "#3": { "v": 40 } } },
+            {
+              "match": "ADBE Displacement Map",
+              "props": {
+                "ADBE Displacement Map-0001": { "layerRef": "base" },
+                "ADBE Displacement Map-0003": { "v": 0 },
+                "ADBE Displacement Map-0005": { "v": 0 }
+              }
+            },
+            { "match": "ADBE Set Matte3", "enabled": false, "props": { "ADBE Set Matte3-0001": { "v": { "layerRef": "dotLayer" } } } }
           ],
           "origin": ["color-correction1"]
         },

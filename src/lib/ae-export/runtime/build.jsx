@@ -14,7 +14,8 @@
 // Run it: File -> Scripts -> Run Script File... and pick this file. It starts a
 // new project (AE asks to save the current one first if it has changes),
 // builds every comp in one undo group, opens the main comp, saves
-// <package name>.aep next to the package folder and shows one summary.
+// <package name>.aep inside the package (next to scene.json, so footage and
+// shaders/ resolve relative to it) and shows one summary.
 //
 // Hosts that drive it (the desktop app, the M0 spike) can set, before
 // evaluating this file:
@@ -888,11 +889,20 @@
           var index = parade().numProperties;
           var get = function () { return parade().property(index); };
           if (has(fx, "name") && fx.name) get().name = fx.name;
-          var key, p;
+          var key, p, ref;
           for (key in fx.props) {
             if (!Object.prototype.hasOwnProperty.call(fx.props, key)) continue;
+            // Params by match name ("<effect>-<4-digit disk id>") or "#<index>",
+            // never by display name: the Toolbox Shader renames its params.
             p = key.charAt(0) === "#" ? get().property(parseInt(key.substring(1), 10)) : get().property(key);
-            applyProp(p, fx.props[key], where + " " + fx.match + " " + key);
+            ref = layerRefOf(fx.props[key]);
+            if (ref !== null) {
+              // A layer param takes the layer's index; AE then follows the
+              // layer itself if the stack is reordered.
+              if (!p) throw new Error(fx.match + " has no param " + key);
+              if (!has(ctx.layerById, ref)) throw new Error(key + ": no layer \"" + ref + "\" in this comp");
+              p.setValue(ctx.layerById[ref].index);
+            } else applyProp(p, fx.props[key], where + " " + fx.match + " " + key);
           }
           if (has(fx, "compositingMask")) {
             var cm = fx.compositingMask;
@@ -921,6 +931,13 @@
     fauxBold: false, fauxItalic: false, smallCaps: false, horizontalScale: 1, verticalScale: 1,
     baselineShift: 0, tsume: 0, superscript: false, subscript: false
   };
+
+  // AeLayerRef, bare ({ layerRef }) or as a static value ({ v: { layerRef } }).
+  function layerRefOf(val) {
+    if (has(val, "layerRef")) return String(val.layerRef);
+    if (has(val, "v") && has(val.v, "layerRef")) return String(val.v.layerRef);
+    return null;
+  }
 
   function toTextDocument(prop, d, problemsOut) {
     var td = prop.value;
@@ -1087,7 +1104,8 @@
         }
       }(made[j]));
     }
-    // Pass 3: properties.
+    // Pass 3: properties. Every layer exists now, so layer refs resolve.
+    ctx.layerById = byId;
     for (j = 0; j < made.length; j++) fillLayer(made[j].layer, made[j].L, ctx, C.name + "/" + made[j].L.name);
     // Visibility last: AE switches a matte source off when it becomes one.
     for (j = 0; j < made.length; j++) {
@@ -1124,15 +1142,15 @@
     return new File($.fileName).parent;
   }
 
+  // <package>.aepkg/<package>.aep - inside the package, so the host plug-in
+  // finds shaders/<bundle id>.tbxfx and AE footage paths relative to it.
   function saveTarget(root) {
-    var base = root.name.replace(/\.aepkg$/i, "");
-    base = decodeURI(base);
-    var parent = root.parent;
-    var f = new File(parent.fsName + "/" + base + ".aep");
+    var base = decodeURI(root.name).replace(/\.aepkg$/i, "");
+    var f = new File(root.fsName + "/" + base + ".aep");
     var n = 2;
     if (G.TBX_AE_OVERWRITE !== true) {
       while (f.exists) {
-        f = new File(parent.fsName + "/" + base + " " + n + ".aep");
+        f = new File(root.fsName + "/" + base + " " + n + ".aep");
         n++;
       }
     }
@@ -1207,7 +1225,7 @@
 
       applyProject(scene.project || {});
 
-      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless };
+      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless, layerById: {} };
       var j, f, folder = null;
       if (scene.presets) {
         for (j = 0; j < scene.presets.length; j++) ctx.presets[scene.presets[j].id] = scene.presets[j].path;

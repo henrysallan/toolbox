@@ -420,8 +420,16 @@ export function validateAeScene(scene: unknown): string[] {
           if (!isObj(fx) || !isStr(fx.match) || !fx.match) return void out.push(`${fp}: expected {match, props}`);
           if (!isObj(fx.props)) out.push(`${fp}.props: expected an object`);
           else for (const [k, v] of Object.entries(fx.props)) {
-            if (k.startsWith("#") && !/^#[1-9]\d*$/.test(k)) out.push(`${fp}.props["${k}"]: "#<1-based index>"`);
-            prop(v, `${fp}.props["${k}"]`, out, () => {});
+            const kp = `${fp}.props["${k}"]`;
+            if (k.startsWith("#") && !/^#[1-9]\d*$/.test(k)) out.push(`${kp}: "#<1-based index>"`);
+            else if (!k.startsWith("#") && !k.startsWith(`${fx.match}-`) && !k.startsWith("ADBE "))
+              out.push(`${kp}: params are keyed by match name ("${fx.match}-0001") or "#<index>", not display name`);
+            const ref = layerRefOf(v);
+            if (ref !== undefined) {
+              if (!layerIds.has(ref)) out.push(`${kp}: no layer "${ref}" in this comp`);
+            } else if (isObj(v) && Array.isArray(v.keys) && v.keys.some((key: any) => isObj(key?.v) && "layerRef" in key.v)) {
+              out.push(`${kp}: layer refs are static (no keys)`);
+            } else prop(v, kp, out, () => {});
           }
           if ("compositingMask" in fx) {
             const m = fx.compositingMask?.mask;
@@ -486,6 +494,13 @@ export function validateAeScene(scene: unknown): string[] {
     if (!isObj(r.requires) || !Array.isArray(r.requires.fonts)) out.push("report.requires.fonts: expected an array");
   }
   return out;
+}
+
+// AeLayerRef as an effect prop: bare { layerRef } or { v: { layerRef } }.
+function layerRefOf(v: unknown): string | undefined {
+  if (isObj(v) && isStr(v.layerRef)) return v.layerRef;
+  if (isObj(v) && isObj(v.v) && isStr(v.v.layerRef)) return v.v.layerRef;
+  return undefined;
 }
 
 function relativePath(p: string): boolean {

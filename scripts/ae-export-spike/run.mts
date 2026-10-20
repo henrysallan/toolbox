@@ -353,7 +353,11 @@ const PROBES: Record<string, Probe> = {
       const star = JSON.stringify(p.trees[0]?.tree ?? {});
       for (const mn of ["ADBE Vector Stroke Dash 3", "ADBE Vector Stroke Gap 3", "ADBE Vector Stroke Offset", "ADBE Vector Taper Start Width", "ADBE Vector Repeater Opacity 2", "ADBE Vector Merge Type", "ADBE Vector Offset Copies"])
         r.check(`Inner/Star contents hold ${mn}`, star.includes(`"mn":"${mn}"`));
-      r.fact("Adjust effects", L("Adjust").effects);
+      const fx = L("Adjust").effects;
+      const idx = (n: string) => L(n).index;
+      r.check("layer refs resolve to the layer's index ({ layerRef } and { v: { layerRef } })",
+        fx[1]?.layerParams?.[0]?.value === idx("Base") && fx[2]?.layerParams?.[0]?.value === idx("Dot") && fx[2]?.enabled === false,
+        { fx: fx.map((f: any) => [f.matchName, f.layerParams, f.enabled]), base: idx("Base"), dot: idx("Dot") });
       r.fact("build warnings", p.build?.warnings);
     },
   },
@@ -550,7 +554,7 @@ const last = pkgs[pkgs.length - 1];
 const lastMain = last.scene.comps.find((c) => c.id === last.scene.main)!;
 const cliFrame = last.probe.render?.frames[0] ?? 0;
 const aeArgs = [
-  "-project", join(WORK, `${last.name}.aep`),
+  "-project", join(last.dir, `${last.name}.aep`),
   "-comp", lastMain.name,
   "-RStemplate", "Best Settings",
   "-OMtemplate", "TIFF Sequence with Alpha",
@@ -585,7 +589,7 @@ const renderSeconds: Record<string, number> = {};
 for (const p of pkgs) {
   if (!p.probe.render) continue;
   const t1 = Date.now();
-  const rc = await runAerender({}, ["-project", join(WORK, `${p.name}.aep`), "-sound", "OFF"], join(WORK, `aerender-${p.name}.log`));
+  const rc = await runAerender({}, ["-project", join(p.dir, `${p.name}.aep`), "-sound", "OFF"], join(WORK, `aerender-${p.name}.log`));
   renderSeconds[p.name] = (Date.now() - t1) / 1000;
   console.log(`aerender -project ${p.name}.aep exited ${rc} after ${renderSeconds[p.name].toFixed(1)} s`);
 }
@@ -612,7 +616,7 @@ for (const p of pkgs) {
   r.check("build.jsx finished ok", build?.ok === true, build?.problems);
   r.check("no build problems", (build?.problems ?? ["missing"]).length === 0, build?.problems);
   if (build?.warnings?.length) r.fact("build warnings", build.warnings);
-  r.check(`saved ${p.name}.aep next to the package`, typeof build?.saved === "string" && existsSync(build.saved), build?.saved);
+  r.check(`saved ${p.name}.aep inside the package, next to scene.json`, build?.saved === join(p.dir, `${p.name}.aep`) && existsSync(build.saved), build?.saved);
   r.check("build-log.json written", existsSync(join(p.dir, "build-log.json")));
   r.fact("build seconds", build?.seconds);
   r.fact("$.fileName inside an $.evalFile'd script", probe.fileName);

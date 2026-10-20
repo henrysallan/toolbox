@@ -239,6 +239,9 @@ export default async function run(): Promise<number> {
     s.comps[0].layers[2].masks[0].path = { dims: 1, keys: [{ t: 0, v: sq(4), inInterp: "linear", outInterp: "linear" }, { t: 1, v: sq(5), inInterp: "linear", outInterp: "linear" }] };
   }, /constant vertex count/);
   mutate("main pointing nowhere", (s) => (s.main = "nope"), /main: no comp/);
+  mutate("layer ref to a missing layer", (s) => (s.comps[0].layers[2].effects[0].props["ADBE Gaussian Blur 2-0003"] = { layerRef: "nope" }), /no layer "nope"/);
+  mutate("keyed layer ref", (s) => (s.comps[0].layers[2].effects[0].props["ADBE Gaussian Blur 2-0003"] = { dims: 1, keys: [{ t: 0, v: { layerRef: "bg" }, inInterp: "hold", outInterp: "hold" }] }), /layer refs are static/);
+  mutate("effect param by display name", (s) => (s.comps[0].layers[2].effects[0].props["Blurriness"] = { v: 1 }), /not display name/);
   mutate("dissolve on a shape group (no shape-content form)", (s) => (s.comps[0].layers[1].contents[0].blendMode = "dissolve"), /no shape-content form/);
 
   // ---- .ffx ------------------------------------------------------------------------
