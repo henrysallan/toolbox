@@ -1,0 +1,414 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Rectangle-a",
+    "name": "C shader · Rectangle → a",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "plate",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "plate"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            320,
+            320
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "C shader",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Rectangle-a",
+      "name": "Rectangle → a",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "plate"
+      ],
+      "source": "comp:Rectangle-a",
+      "enabled": false
+     },
+     {
+      "id": "shader-2",
+      "name": "Tinted",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "tint",
+       "fused2"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      },
+      "effects": [
+       {
+        "match": "TBX Shader",
+        "name": "GLSL Expression",
+        "props": {
+         "TBX Shader-0001": {
+          "v": "bundle#2"
+         },
+         "TBX Shader-0010": {
+          "v": {
+           "layerRef": "pre:Rectangle-a"
+          }
+         }
+        },
+        "bundle": "bundle#2"
+       }
+      ]
+     },
+     {
+      "id": "shader-1",
+      "name": "Shader",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "noise",
+       "ramp",
+       "noise2",
+       "disp",
+       "fused"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      },
+      "effects": [
+       {
+        "match": "TBX Shader",
+        "name": "GLSL Expression",
+        "props": {
+         "TBX Shader-0001": {
+          "v": "bundle#1"
+         },
+         "TBX Shader-0020": {
+          "v": 0.5
+         }
+        },
+        "bundle": "bundle#1"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+shader",
+   "native": [
+    {
+     "id": "plate",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LC",
+     "type": "layer",
+     "name": "Shader",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LC1",
+     "type": "layer",
+     "name": "Tinted",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [
+    {
+     "id": "noise",
+     "type": "noise",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused into fused → Toolbox Shader bundle bundle#1"
+    },
+    {
+     "id": "ramp",
+     "type": "color-ramp",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused into fused → Toolbox Shader bundle bundle#1"
+    },
+    {
+     "id": "noise2",
+     "type": "noise",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused into fused → Toolbox Shader bundle bundle#1"
+    },
+    {
+     "id": "disp",
+     "type": "displace",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused into fused → Toolbox Shader bundle bundle#1"
+    },
+    {
+     "id": "tint",
+     "type": "color-ramp",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused into fused2 → Toolbox Shader bundle bundle#2"
+    },
+    {
+     "id": "fused",
+     "type": "glsl-expression",
+     "name": "GLSL Expression",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused shader for disp:out → Toolbox Shader bundle bundle#1"
+    },
+    {
+     "id": "fused2",
+     "type": "glsl-expression",
+     "name": "GLSL Expression",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "fused shader for tint:out → Toolbox Shader bundle bundle#2"
+    }
+   ],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": [],
+    "shaderHost": "1.0.0"
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [
+  {
+   "inputs": [],
+   "params": [
+    {
+     "name": "gain",
+     "label": "gain",
+     "kind": "slider",
+     "slot": 1,
+     "default": 0.5,
+     "min": 0,
+     "max": 1
+    }
+   ],
+   "readsTime": false,
+   "fps": 30,
+   "loopFrames": 60
+  },
+  {
+   "inputs": [
+    "a"
+   ],
+   "params": [],
+   "readsTime": false,
+   "fps": 30,
+   "loopFrames": 60
+  }
+ ],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

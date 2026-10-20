@@ -1,0 +1,690 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "L driver",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "blob",
+      "name": "Driven",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "blob"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "keys": [
+            {
+             "t": 0,
+             "v": [
+              256,
+              256
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.03333333333333333,
+             "v": [
+              269.37964329825957,
+              269.37964329825957
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.06666666666666667,
+             "v": [
+              282.6126964246733,
+              282.6126964246733
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.1,
+             "v": [
+              295.55417527999333,
+              295.55417527999333
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.13333333333333333,
+             "v": [
+              308.0622903137024,
+              308.0622903137024
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.16666666666666666,
+             "v": [
+              319.99999999999994,
+              319.99999999999994
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.2,
+             "v": [
+              331.23651229343665,
+              331.23651229343665
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.23333333333333334,
+             "v": [
+              341.64871761393385,
+              341.64871761393385
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.26666666666666666,
+             "v": [
+              351.1225376611065,
+              351.1225376611065
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.3,
+             "v": [
+              359.5541752799932,
+              359.5541752799932
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.3333333333333333,
+             "v": [
+              366.8512516844082,
+              366.8512516844082
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.36666666666666664,
+             "v": [
+              372.93381857825295,
+              372.93381857825295
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.4,
+             "v": [
+              377.73523408577967,
+              377.73523408577967
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.43333333333333335,
+             "v": [
+              381.2028928939271,
+              381.2028928939271
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.4666666666666667,
+             "v": [
+              383.298802607139,
+              383.298802607139
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.5,
+             "v": [
+              384.00000000000006,
+              384.00000000000006
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.5333333333333333,
+             "v": [
+              383.298802607139,
+              383.298802607139
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.5666666666666667,
+             "v": [
+              381.2028928939271,
+              381.2028928939271
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.6,
+             "v": [
+              377.73523408577967,
+              377.73523408577967
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.6333333333333333,
+             "v": [
+              372.93381857825295,
+              372.93381857825295
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.6666666666666666,
+             "v": [
+              366.8512516844082,
+              366.8512516844082
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.7,
+             "v": [
+              359.5541752799933,
+              359.5541752799933
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.7333333333333333,
+             "v": [
+              351.1225376611065,
+              351.1225376611065
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.7666666666666667,
+             "v": [
+              341.6487176139339,
+              341.6487176139339
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.8,
+             "v": [
+              331.23651229343665,
+              331.23651229343665
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.8333333333333334,
+             "v": [
+              319.99999999999994,
+              319.99999999999994
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.8666666666666667,
+             "v": [
+              308.0622903137024,
+              308.0622903137024
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.9,
+             "v": [
+              295.55417527999333,
+              295.55417527999333
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.9333333333333333,
+             "v": [
+              282.6126964246732,
+              282.6126964246732
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 0.9666666666666667,
+             "v": [
+              269.3796432982596,
+              269.3796432982596
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1,
+             "v": [
+              256,
+              256
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.0333333333333334,
+             "v": [
+              242.62035670174043,
+              242.62035670174043
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.0666666666666667,
+             "v": [
+              229.3873035753269,
+              229.3873035753269
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.1,
+             "v": [
+              216.44582472000673,
+              216.44582472000673
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.1333333333333333,
+             "v": [
+              203.93770968629764,
+              203.93770968629764
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.1666666666666667,
+             "v": [
+              191.99999999999994,
+              191.99999999999994
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.2,
+             "v": [
+              180.7634877065634,
+              180.7634877065634
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.2333333333333334,
+             "v": [
+              170.35128238606617,
+              170.35128238606617
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.2666666666666666,
+             "v": [
+              160.87746233889357,
+              160.87746233889357
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.3,
+             "v": [
+              152.4458247200068,
+              152.4458247200068
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.3333333333333333,
+             "v": [
+              145.14874831559194,
+              145.14874831559194
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.3666666666666667,
+             "v": [
+              139.06618142174707,
+              139.06618142174707
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.4,
+             "v": [
+              134.26476591422036,
+              134.26476591422036
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.4333333333333333,
+             "v": [
+              130.79710710607287,
+              130.79710710607287
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.4666666666666666,
+             "v": [
+              128.70119739286102,
+              128.70119739286102
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.5,
+             "v": [
+              128,
+              128
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.5333333333333334,
+             "v": [
+              128.70119739286102,
+              128.70119739286102
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.5666666666666667,
+             "v": [
+              130.79710710607287,
+              130.79710710607287
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.6,
+             "v": [
+              134.26476591422033,
+              134.26476591422033
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.6333333333333333,
+             "v": [
+              139.06618142174707,
+              139.06618142174707
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.6666666666666667,
+             "v": [
+              145.14874831559192,
+              145.14874831559192
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.7,
+             "v": [
+              152.44582472000678,
+              152.44582472000678
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.7333333333333334,
+             "v": [
+              160.87746233889357,
+              160.87746233889357
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.7666666666666666,
+             "v": [
+              170.3512823860661,
+              170.3512823860661
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.8,
+             "v": [
+              180.76348770656335,
+              180.76348770656335
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.8333333333333333,
+             "v": [
+              191.99999999999986,
+              191.99999999999986
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.8666666666666667,
+             "v": [
+              203.93770968629758,
+              203.93770968629758
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.9,
+             "v": [
+              216.44582472000673,
+              216.44582472000673
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.9333333333333333,
+             "v": [
+              229.38730357532688,
+              229.38730357532688
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1.9666666666666666,
+             "v": [
+              242.62035670174038,
+              242.62035670174038
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            }
+           ],
+           "dims": 2
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "wobble",
+     "type": "lfo",
+     "class": "expression",
+     "fidelity": "sampled",
+     "note": "sampled into blob:param:radiusX as per-frame keys (an AE expression compiler is the next wave) · sampled into blob:param:radiusY as per-frame keys (an AE expression compiler is the next wave)"
+    },
+    {
+     "id": "blob",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "sampled",
+     "note": "radius: driven (wobble:out, wobble:out) → per-frame keys"
+    },
+    {
+     "id": "LL",
+     "type": "layer",
+     "name": "Driven",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

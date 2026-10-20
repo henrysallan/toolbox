@@ -9,6 +9,12 @@
 //   npx tsx scripts/ae-export-spike/run.mts a-circle      fixtures whose name contains "a-circle"
 //   npx tsx scripts/ae-export-spike/run.mts --no-ae       only write the packages
 //   npx tsx scripts/ae-export-spike/run.mts --out DIR     package folder (default: a temp dir)
+//   npx tsx scripts/ae-export-spike/run.mts --fixtures DIR
+//       build DIR/*.scene.json instead (the scene walk's round trip,
+//       scripts/fixtures/ae-export/graphs/roundtrip.mts): each may carry a
+//       <name>.probe.json (render + pixels + regions, no functions) and a
+//       <name>.files/ folder copied into the package (shaders, presets,
+//       footage); shader bundles reach the host via TBX_SHADER_BUNDLES
 //
 // How AE runs headless on macOS. aerender launches its own render core
 // (aerendercore, bundle id com.adobe.aerendercore — a separate process; the
@@ -34,7 +40,7 @@
 // probe writes probe.json; this script only reads that preference).
 
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +68,9 @@ const args = process.argv.slice(2);
 const noAe = args.includes("--no-ae");
 const outIdx = args.indexOf("--out");
 const WORK = outIdx >= 0 ? resolve(args[outIdx + 1]) : join(tmpdir(), `toolbox-ae-spike-${Date.now()}`);
-const filters = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--out");
+const fxIdx = args.indexOf("--fixtures");
+const FIXTURE_DIR = fxIdx >= 0 ? resolve(args[fxIdx + 1]) : FIXTURES;
+const filters = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--out" && args[i - 1] !== "--fixtures");
 
 // ---------------------------------------------------------------------------
 // Per-fixture probes and checks
@@ -83,6 +91,9 @@ interface Pixel {
   // Straight-alpha 8-bit RGBA; null channels are not checked.
   want?: (number | null)[];
   pred?: (rgba: number[]) => boolean;
+  // Expect a partial alpha (an antialiased / blurred edge) — the JSON-able
+  // stand-in for `pred` in --fixtures probe sidecars.
+  soft?: boolean;
   tol?: number;
   label: string;
   // Needs a synthesized .ffx applied: only checkable when build.jsx ran in
@@ -424,6 +435,7 @@ function writePackage(name: string, scene: AeScene, raw: string, probe: Probe): 
 async function writeFootage(dir: string, scene: AeScene) {
   for (const f of scene.footage) {
     const dest = join(dir, f.path);
+    if (existsSync(dest)) continue; // shipped with the fixture (<name>.files/)
     mkdirSync(dirname(dest), { recursive: true });
     const asset = join(FIXTURES, "assets", basename(f.path));
     if (existsSync(asset)) copyFileSync(asset, dest);
@@ -521,7 +533,7 @@ function framesIn(dir: string, prefix: string): Map<number, string> {
 // Main
 // ---------------------------------------------------------------------------
 
-const fixtureFiles = readdirSync(FIXTURES)
+const fixtureFiles = readdirSync(FIXTURE_DIR)
   .filter((f) => f.endsWith(".scene.json"))
   .filter((f) => !filters.length || filters.some((x) => f.includes(x)))
   .sort();
@@ -532,11 +544,15 @@ console.log(`packages: ${WORK}`);
 const pkgs: { name: string; dir: string; probe: Probe; scene: AeScene }[] = [];
 for (const f of fixtureFiles) {
   const name = f.replace(/\.scene\.json$/, "");
-  const raw = readFileSync(join(FIXTURES, f), "utf8");
+  const raw = readFileSync(join(FIXTURE_DIR, f), "utf8");
   const scene = JSON.parse(raw) as AeScene;
-  const dir = writePackage(name, scene, raw, PROBES[name] ?? {});
+  const side = join(FIXTURE_DIR, `${name}.probe.json`);
+  const probe: Probe = PROBES[name] ?? (existsSync(side) ? (JSON.parse(readFileSync(side, "utf8")) as Probe) : {});
+  const dir = writePackage(name, scene, raw, probe);
+  const extra = join(FIXTURE_DIR, `${name}.files`);
+  if (existsSync(extra)) cpSync(extra, dir, { recursive: true });
   await writeFootage(dir, scene);
-  pkgs.push({ name, dir, probe: PROBES[name] ?? {}, scene });
+  pkgs.push({ name, dir, probe, scene });
 }
 if (noAe) {
   console.log(`wrote ${pkgs.length} package(s); --no-ae, not running After Effects`);
@@ -548,6 +564,11 @@ if (existsSync(prefsTxt) && !/"Pref_SCRIPTING_FILE_NETWORK_SECURITY" = "1"/.test
   console.log("note: \"Allow Scripts to Write Files and Access Network\" looks OFF — probe.json cannot be written. Not changing it.");
 }
 
+// Toolbox Shader bundles: the host looks next to the saved project, or in
+// TBX_SHADER_BUNDLES (colon-separated) — set it so the build's first setValue
+// on Bundle ID already finds the bundle.
+const shaderDirs = pkgs.map((p) => join(p.dir, "shaders")).filter((d) => existsSync(d));
+const shaderEnv: Record<string, string> = shaderDirs.length ? { TBX_SHADER_BUNDLES: shaderDirs.join(":") } : {};
 const driver = join(WORK, "driver.jsx");
 writeFileSync(driver, driverSource(pkgs));
 const last = pkgs[pkgs.length - 1];
@@ -576,7 +597,7 @@ process.on("SIGINT", () => {
 const t0 = Date.now();
 let code: number;
 try {
-  code = await runAerender({ TBX_AE_SPIKE_DRIVER: driver }, aeArgs, join(WORK, "aerender.log"));
+  code = await runAerender({ TBX_AE_SPIKE_DRIVER: driver, ...shaderEnv }, aeArgs, join(WORK, "aerender.log"));
 } finally {
   removeHook();
 }
@@ -589,7 +610,7 @@ const renderSeconds: Record<string, number> = {};
 for (const p of pkgs) {
   if (!p.probe.render) continue;
   const t1 = Date.now();
-  const rc = await runAerender({}, ["-project", join(p.dir, `${p.name}.aep`), "-sound", "OFF"], join(WORK, `aerender-${p.name}.log`));
+  const rc = await runAerender(shaderEnv, ["-project", join(p.dir, `${p.name}.aep`), "-sound", "OFF"], join(WORK, `aerender-${p.name}.log`));
   renderSeconds[p.name] = (Date.now() - t1) / 1000;
   console.log(`aerender -project ${p.name}.aep exited ${rc} after ${renderSeconds[p.name].toFixed(1)} s`);
 }
@@ -683,8 +704,9 @@ for (const p of pkgs) {
     const un = (c: number) => (a ? Math.round((c * 255) / a) : 0);
     const got = [un(img.data[o]), un(img.data[o + 1]), un(img.data[o + 2]), a];
     const tol = px.tol ?? 2;
-    const ok = px.pred ? px.pred(got) : px.want!.every((w, i) => w === null || Math.abs(got[i] - w) <= tol);
-    r.check(`frame ${px.frame} (${px.x}, ${px.y}) ${px.label}`, ok, { got, want: px.want ?? "predicate" });
+    // `soft` (sidecar probes, which carry no functions): a partial alpha.
+    const ok = px.pred ? px.pred(got) : px.soft ? got[3] > 8 && got[3] < 247 : px.want!.every((w, i) => w === null || Math.abs(got[i] - w) <= tol);
+    r.check(`frame ${px.frame} (${px.x}, ${px.y}) ${px.label}`, ok, { got, want: px.want ?? (px.soft ? "partial alpha" : "predicate") });
   }
   for (const rg of p.probe.regions ?? []) {
     const img = decoded.get(rg.frame);

@@ -1,0 +1,141 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "bake:p2i",
+    "path": "footage/bake_p2i.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "Particles to Image (baked)",
+    "fps": 30
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "D particles",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "p2i",
+      "name": "Particles",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "p2i",
+       "sim"
+      ],
+      "source": "bake:p2i"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+bake",
+   "native": [
+    {
+     "id": "LD",
+     "type": "layer",
+     "name": "Particles",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [
+    {
+     "id": "sim",
+     "type": "particle-simulator",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with p2i:out"
+    },
+    {
+     "id": "p2i",
+     "type": "particles-to-image",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked: Renders a simulation — the bake output."
+    }
+   ],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [
+  {
+   "id": "bake:p2i",
+   "output": "p2i:out",
+   "frames": [
+    0,
+    59
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_p2i.mov",
+   "reason": "Renders a simulation — the bake output."
+  }
+ ],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

@@ -1,0 +1,148 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "bake:copy",
+    "path": "footage/bake_copy.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "Copy to Points (baked)"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "K copies over",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "copy",
+      "name": "Too many",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "bake:copy"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+bake",
+   "native": [
+    {
+     "id": "spray",
+     "type": "scatter-points",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "sq",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LK",
+     "type": "layer",
+     "name": "Too many",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds — strokes widen them) · 300 copies exceed the layer budget (200) · baked: 300 copies exceed the layer budget (200) · static — one frame (AE holds a one-frame movie as a still)"
+    }
+   ],
+   "blocked": [],
+   "warnings": [
+    "copy-to-points (copy) makes ~300 instances — over the 200-layer budget (§11.5). Ask before exploding; a Repeater only covers a regular grid/array with one instance; otherwise bake it."
+   ],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [
+  {
+   "id": "bake:copy",
+   "output": "copy:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_copy.mov",
+   "reason": "300 copies exceed the layer budget (200)"
+  }
+ ],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": [
+  "copy-to-points (copy) makes ~300 instances — over the 200-layer budget (§11.5). Ask before exploding; a Repeater only covers a regular grid/array with one instance; otherwise bake it."
+ ]
+}

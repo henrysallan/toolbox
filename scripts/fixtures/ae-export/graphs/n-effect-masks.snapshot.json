@@ -1,0 +1,788 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Rectangle",
+    "name": "N effect masks · Rectangle",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "slab",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            400,
+            320
+           ]
+          },
+          "position": {
+           "v": [
+            400,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Rectangle#2",
+    "name": "N effect masks · Rectangle 2",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "slab2",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab2"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            400,
+            320
+           ]
+          },
+          "position": {
+           "v": [
+            900,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Image-mask",
+    "name": "N effect masks · Image mask",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "half",
+      "name": "Rectangle 3",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "half"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            380,
+            1280
+           ]
+          },
+          "position": {
+           "v": [
+            1090,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ],
+      "enabled": false
+     },
+     {
+      "id": "pre:Rectangle#2",
+      "name": "Rectangle 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab2",
+       "soften2"
+      ],
+      "source": "comp:Rectangle#2",
+      "effects": [
+       {
+        "match": "ADBE Gaussian Blur 2",
+        "name": "Blur",
+        "props": {
+         "ADBE Gaussian Blur 2-0003": {
+          "v": 1
+         },
+         "ADBE Gaussian Blur 2-0001": {
+          "v": 20
+         }
+        }
+       }
+      ],
+      "matte": {
+       "layer": "half",
+       "type": "LUMA"
+      }
+     },
+     {
+      "id": "slab2#3",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab2"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            400,
+            320
+           ]
+          },
+          "position": {
+           "v": [
+            900,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "N effect masks",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "chip",
+      "name": "Turned",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         640
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 45
+       },
+       "opacity": {
+        "v": 100
+       },
+       "position": {
+        "v": [
+         640,
+         640
+        ]
+       }
+      },
+      "origin": [
+       "chip",
+       "turn",
+       "turn"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            60,
+            60
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            640
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "pre:Image-mask",
+      "name": "Image mask",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "half",
+       "slab2",
+       "soften2"
+      ],
+      "source": "comp:Image-mask"
+     },
+     {
+      "id": "pre:Rectangle",
+      "name": "Spline mask",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab",
+       "soften"
+      ],
+      "source": "comp:Rectangle",
+      "masks": [
+       {
+        "name": "Blur mask",
+        "path": {
+         "v": {
+          "vertices": [
+           [
+            200,
+            300
+           ],
+           [
+            260,
+            360
+           ],
+           [
+            200,
+            420
+           ],
+           [
+            140,
+            360
+           ]
+          ],
+          "inTangents": [
+           [
+            -33.1370849898476,
+            0
+           ],
+           [
+            0,
+            -33.1370849898476
+           ],
+           [
+            33.1370849898476,
+            0
+           ],
+           [
+            0,
+            33.1370849898476
+           ]
+          ],
+          "outTangents": [
+           [
+            33.1370849898476,
+            0
+           ],
+           [
+            0,
+            33.1370849898476
+           ],
+           [
+            -33.1370849898476,
+            0
+           ],
+           [
+            0,
+            -33.1370849898476
+           ]
+          ],
+          "closed": true
+         }
+        },
+        "mode": "add",
+        "inverted": false,
+        "feather": {
+         "v": [
+          0,
+          0
+         ]
+        },
+        "expansion": {
+         "v": 0
+        },
+        "opacity": {
+         "v": 100
+        }
+       }
+      ],
+      "effects": [
+       {
+        "match": "ADBE Gaussian Blur 2",
+        "name": "Blur",
+        "props": {
+         "ADBE Gaussian Blur 2-0003": {
+          "v": 1
+         },
+         "ADBE Gaussian Blur 2-0001": {
+          "v": 20
+         }
+        },
+        "compositingMask": {
+         "mask": 1
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "slab",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "lens",
+     "type": "circle",
+     "class": "mask",
+     "fidelity": "exact"
+    },
+    {
+     "id": "slab2",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "half",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "chip",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "turn",
+     "type": "transform",
+     "class": "transform",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LN0",
+     "type": "layer",
+     "name": "Spline mask",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LN1",
+     "type": "layer",
+     "name": "Image mask",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LN2",
+     "type": "layer",
+     "name": "Turned",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "soften",
+     "type": "blur",
+     "class": "effect",
+     "fidelity": "approx",
+     "note": "Gaussian Blur: Blurriness ↔ radius needs the calibrated map from convert/ (M2); Repeat Edge Pixels on. mode bokeh → Camera Lens Blur (approx); convolve → shader. · approx, uncalibrated: ADBE Gaussian Blur 2 — PLACEHOLDER Blurriness = radius px — not yet calibrated against AE 26.5 · spline mask → the effect's Compositing Options mask"
+    },
+    {
+     "id": "soften2",
+     "type": "blur",
+     "class": "effect",
+     "fidelity": "approx",
+     "note": "Gaussian Blur: Blurriness ↔ radius needs the calibrated map from convert/ (M2); Repeat Edge Pixels on. mode bokeh → Camera Lens Blur (approx); convolve → shader. · approx, uncalibrated: ADBE Gaussian Blur 2 — PLACEHOLDER Blurriness = radius px — not yet calibrated against AE 26.5 · mask → the effected layer with the mask as its track matte, over the un-effected input"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

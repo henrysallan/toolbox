@@ -1,0 +1,511 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "svg:paint",
+    "path": "footage/svg_paint.svg",
+    "kind": "svg",
+    "alpha": "straight",
+    "name": "Rasterize Spline (SVG)"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Gradient",
+    "name": "F gradient · Gradient",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "ink",
+      "name": "Stroke",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ink",
+       "both"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Stroke 1",
+        "contents": [
+         {
+          "kind": "path",
+          "name": "Copy to Points 1",
+          "path": {
+           "v": {
+            "vertices": [
+             [
+              -63.999996185302734,
+              620
+             ],
+             [
+              576.0000038146973,
+              620
+             ]
+            ],
+            "inTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "outTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "closed": false
+           }
+          }
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            0,
+            1,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 10
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 10
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "Stroke 2",
+        "contents": [
+         {
+          "kind": "path",
+          "name": "Copy to Points 2",
+          "path": {
+           "v": {
+            "vertices": [
+             [
+              192.00000762939453,
+              620
+             ],
+             [
+              832.0000076293945,
+              620
+             ]
+            ],
+            "inTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "outTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "closed": false
+           }
+          }
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            0.3333333333333333,
+            0.6666666666666666,
+            0.3333333333333333
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 10
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 10
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "Stroke 3",
+        "contents": [
+         {
+          "kind": "path",
+          "name": "Copy to Points 3",
+          "path": {
+           "v": {
+            "vertices": [
+             [
+              448.0000305175781,
+              620
+             ],
+             [
+              1088.0000305175781,
+              620
+             ]
+            ],
+            "inTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "outTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "closed": false
+           }
+          }
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            0.6666666666666666,
+            0.3333333333333333,
+            0.6666666666666666
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 10
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 10
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "Stroke 4",
+        "contents": [
+         {
+          "kind": "path",
+          "name": "Copy to Points 4",
+          "path": {
+           "v": {
+            "vertices": [
+             [
+              704.0000152587891,
+              620
+             ],
+             [
+              1344.000015258789,
+              620
+             ]
+            ],
+            "inTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "outTangents": [
+             [
+              0,
+              0
+             ],
+             [
+              0,
+              0
+             ]
+            ],
+            "closed": false
+           }
+          }
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            1,
+            0,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 10
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 10
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "paint",
+      "name": "Rasterize Spline",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "paint",
+       "disc",
+       "both"
+      ],
+      "contents": [],
+      "source": "svg:paint"
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "F gradient",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Gradient",
+      "name": "Gradient",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ink",
+       "both",
+       "paint",
+       "disc"
+      ],
+      "source": "comp:Gradient"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "disc",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact",
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
+    },
+    {
+     "id": "paint",
+     "type": "rasterize-spline",
+     "class": "style",
+     "fidelity": "exact",
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
+    },
+    {
+     "id": "bars",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tick",
+     "type": "line",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "copies",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "ink",
+     "type": "spline-stroke",
+     "class": "style",
+     "fidelity": "exact",
+     "note": "color ramp by index → 4 strokes, one color each"
+    },
+    {
+     "id": "both",
+     "type": "merge",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
+    },
+    {
+     "id": "LF",
+     "type": "layer",
+     "name": "Gradient",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [
+  {
+   "path": "footage/svg_paint.svg",
+   "text": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1280\" height=\"720\" viewBox=\"0 0 1280 720\"><defs><linearGradient id=\"g0\" gradientUnits=\"userSpaceOnUse\" x1=\"384\" y1=\"360\" x2=\"896\" y2=\"360\"><stop offset=\"0\" stop-color=\"#ff0000\" stop-opacity=\"1\"/><stop offset=\"1\" stop-color=\"#0000ff\" stop-opacity=\"1\"/></linearGradient></defs><path d=\"M640 104 C781.385 104 896 218.615 896 360 C896 501.385 781.385 616 640 616 C498.615 616 384 501.385 384 360 C384 218.615 498.615 104 640 104 Z\" fill=\"url(#g0)\" fill-opacity=\"1\" fill-rule=\"nonzero\" /></svg>\n"
+  }
+ ],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}
