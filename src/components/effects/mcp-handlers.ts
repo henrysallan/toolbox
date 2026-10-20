@@ -58,6 +58,7 @@ import { HARD_OP_CODES } from "@/lib/ai/edit-recipe-client";
 import { pointExpressionNode } from "@/nodes/effect/point-expression";
 import {
   attachGlslErrorsToSpec,
+  glslExpressionPreludeLines,
   inspectGlslExpression,
 } from "@/nodes/effect/glsl-expression";
 import { inspectSkslShader } from "@/nodes/effect/sksl-shader";
@@ -99,6 +100,19 @@ import {
   type McpMarkerReport,
   type TimelineMarker,
 } from "@/lib/timeline-markers";
+import { platform } from "@/lib/platform";
+import type { AeExportOptions, AeExportResult, AeFrameRenderer } from "@/lib/ae-export/package";
+import type { AeEditorEnv } from "@/lib/ae-export/editor";
+import type { AeNodeOverride } from "@/lib/ae-export/scene";
+
+// The composition an After Effects export / plan works on, and the node its
+// main comp reproduces ("<output id>:out").
+export interface AeExportContext {
+  env: AeEditorEnv;
+  output?: string;
+}
+
+const AE_OVERRIDES: readonly AeNodeOverride[] = ["bake", "skip", "procedural"];
 
 // Mutation log + graph snapshots so a timed-out tool call isn't a black
 // box: get_recent_edits (keyed by the summary the agent already sent) and
@@ -230,6 +244,13 @@ export interface McpHandlerDeps {
   // the real engine at the export size. Optional: without it a bake's
   // asset is left out of the bundle with a warning.
   renderSkiaBakeFrames?: BakeFrameRenderer;
+  // After Effects (091926 §7.5). renderNodeFrames: EffectsApp's streaming
+  // frame renderer (compare_ae_renders' toolbox side). runAeExport: the
+  // export modal's runner, without its folder picker — a folder destination
+  // lands in main's own export folder. Optional: without them the AE tools
+  // say what's missing.
+  renderNodeFrames?: AeFrameRenderer;
+  runAeExport?: (opts: AeExportOptions, ctx: AeExportContext) => Promise<AeExportResult>;
 }
 
 // Shared validate step (identical split to the generate/edit clients): hard
@@ -423,6 +444,51 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       );
     return nodeOrThrow(id).id;
   };
+
+  // The composition the AE tools work on: the one `target` / `scope` / the
+  // current scope / the selection sits in, else the only one loaded. The
+  // status' project name, canvas, fps and loop length are its comp.
+  const aeStr = (v: unknown) => (v != null && String(v).trim() ? String(v).trim() : undefined);
+  const aeContext = (scope?: string, target?: string): AeExportContext => {
+    const nodes = deps.nodesRef.current;
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const anchor = [target, scope, deps.status.scope, deps.status.selectedNodeId ?? undefined]
+      .map((x) => x?.replace(/:(out|aux:[A-Za-z0-9_-]+)$/, ""))
+      .find((x) => !!x && byId.has(x));
+    const roots = new Set(
+      nodes.filter((n) => n.data.defType === "output" && !n.data.parentId).map((n) => n.data.compositionId)
+    );
+    const compositionId = (anchor ? byId.get(anchor)?.data.compositionId : undefined) ?? (roots.size === 1 ? [...roots][0] : undefined);
+    if (!compositionId && roots.size > 1)
+      throw new Error("Several compositions are loaded — pass `scope` (a layer id) or `target` (a node id) from get_graph to pick one.");
+    const output = nodes.find((n) => n.data.defType === "output" && !n.data.parentId && n.data.compositionId === compositionId);
+    const fps = deps.fpsRef.current;
+    return {
+      env: {
+        composition: {
+          id: compositionId ?? "main",
+          name: deps.status.projectName,
+          width: deps.status.canvasWidth,
+          height: deps.status.canvasHeight,
+          fps: deps.status.fps,
+          durationFrames: deps.status.loopFrames,
+        },
+        ...(compositionId ? { compositionId } : {}),
+        frame: Math.round(deps.timeRef.current * fps),
+        lastOutputs: deps.lastEvalOutputsRef.current,
+      },
+      ...(output ? { output: `${output.id}:out` } : {}),
+    };
+  };
+  const aeDesktop = () => {
+    const ae = platform.runAfterEffects;
+    const caps = platform.aeCapabilities;
+    return { ae, caps, ready: !!ae && !!caps?.available };
+  };
+  const aeMissing = (caps: typeof platform.aeCapabilities) =>
+    !platform.runAfterEffects
+      ? "this is not the Toolbox desktop app (the web build has no After Effects)"
+      : `${caps?.reason ?? "After Effects was not found"}${caps?.candidates?.length ? ` Looked in: ${caps.candidates.map((c) => `${c.dir} (${c.source})`).join(", ")}.` : ""}`;
 
   const glslInspectFor = (
     node: GraphNode | null,
@@ -1890,38 +1956,333 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     // current scope / selection sits in. Lazy like the Skia tools.
     plan_ae_export: async ({ scope, target, policy }) => {
       const { planAeExportForEditor, aePlanReport, vetAePolicy } = await import("@/lib/ae-export/editor");
-      const nodes = deps.nodesRef.current;
-      const edges = deps.edgesRef.current;
-      const byId = new Map(nodes.map((n) => [n.id, n]));
-      const str = (v: unknown) => (v != null && String(v).trim() ? String(v).trim() : undefined);
-      const anchor = [str(target), str(scope), deps.status.scope, deps.status.selectedNodeId ?? undefined]
-        .map((x) => x?.replace(/:(out|aux:[A-Za-z0-9_-]+)$/, ""))
-        .find((x) => !!x && byId.has(x));
-      const roots = new Set(
-        nodes.filter((n) => n.data.defType === "output" && !n.data.parentId).map((n) => n.data.compositionId)
-      );
-      const compositionId = (anchor ? byId.get(anchor)?.data.compositionId : undefined) ?? (roots.size === 1 ? [...roots][0] : undefined);
-      if (!compositionId && roots.size > 1)
-        throw new Error("Several compositions are loaded — pass `scope` (a layer id) or `target` (a node id) from get_graph to pick one.");
-      const fps = deps.fpsRef.current;
+      const ctx = aeContext(aeStr(scope), aeStr(target));
       return aePlanReport(
-        planAeExportForEditor(nodes, edges, {
-          composition: {
-            id: compositionId ?? "main",
-            name: deps.status.projectName,
-            width: deps.status.canvasWidth,
-            height: deps.status.canvasHeight,
-            fps: deps.status.fps,
-            durationFrames: deps.status.loopFrames,
-          },
-          ...(compositionId ? { compositionId } : {}),
+        planAeExportForEditor(deps.nodesRef.current, deps.edgesRef.current, {
+          ...ctx.env,
           policy: vetAePolicy(policy),
-          frame: Math.round(deps.timeRef.current * fps),
-          scope: str(scope),
-          target: str(target),
-          lastOutputs: deps.lastEvalOutputsRef.current,
+          scope: aeStr(scope),
+          target: aeStr(target),
         })
       );
+    },
+
+    // Design A (§5): the package — scene.json, build.jsx, presets, shader
+    // bundles, baked footage, README — through the export modal's runner. A
+    // folder destination (the desktop default) lands in main's own export
+    // folder; a zip downloads. Bakes render in the editor (the playhead moves).
+    export_ae_package: async ({ name, policy, overrides, fused, destination, build }) => {
+      if (!deps.runAeExport) throw new Error("This editor can't export After Effects packages.");
+      const { vetAePolicy } = await import("@/lib/ae-export/editor");
+      const errors: string[] = [];
+      const ov: Record<string, AeNodeOverride> = {};
+      if (overrides != null) {
+        if (typeof overrides !== "object" || Array.isArray(overrides)) errors.push('overrides must be an object { "<node id>": "bake" | "skip" | "procedural" }');
+        else
+          for (const [id, v] of Object.entries(overrides as Record<string, unknown>)) {
+            if (!deps.nodesRef.current.some((n) => n.id === id)) errors.push(`overrides: no node "${id}" (get_graph has the ids)`);
+            else if (!AE_OVERRIDES.includes(v as AeNodeOverride)) errors.push(`overrides["${id}"] must be "bake", "skip" or "procedural" — got ${JSON.stringify(v)}`);
+            else ov[id] = v as AeNodeOverride;
+          }
+      }
+      const fu: Record<string, string> = {};
+      if (fused != null) {
+        if (typeof fused !== "object" || Array.isArray(fused)) errors.push('fused must be an object { "<region target>": "<glsl-expression node id>" }');
+        else
+          for (const [t, id] of Object.entries(fused as Record<string, unknown>)) {
+            const n = typeof id === "string" ? deps.nodesRef.current.find((x) => x.id === id) : undefined;
+            if (!n) errors.push(`fused["${t}"]: no node ${JSON.stringify(id)}`);
+            else if (n.data.defType !== "glsl-expression") errors.push(`fused["${t}"]: "${id}" is a ${n.data.defType}, not a glsl-expression`);
+            else fu[t] = id as string;
+          }
+      }
+      const { ae } = aeDesktop();
+      const dest = destination == null ? (ae ? "folder" : "zip") : destination;
+      if (dest !== "folder" && dest !== "zip") errors.push(`destination must be "folder" or "zip" — got ${JSON.stringify(destination)}`);
+      else if (dest === "folder" && !ae) errors.push('destination "folder" needs the Toolbox desktop app — pass "zip" (a download) here');
+      if (build != null && typeof build !== "boolean") errors.push("build must be true or false");
+      if (errors.length) throw invalid("export_ae_package arguments", errors);
+      const res = await deps.runAeExport(
+        {
+          name: aeStr(name) ?? deps.status.projectName,
+          policy: vetAePolicy(policy) ?? {},
+          overrides: ov,
+          fused: fu,
+          destination: dest as "folder" | "zip",
+          build: build === true,
+        },
+        aeContext()
+      );
+      if (!res.location)
+        throw new Error(`Nothing exported — fix these and retry (plan_ae_export shows the plan):\n- ${res.problems.join("\n- ")}\n\n${res.report}`);
+      deps.flashToast(`Claude: exported After Effects package ${res.location.split(/[\\/]/).pop()}`);
+      return {
+        ok: res.ok,
+        location: res.location,
+        report: res.report,
+        problems: res.problems,
+        warnings: res.warnings,
+        ...(res.built ? { built: res.built } : {}),
+        files: res.files,
+        next:
+          dest === "folder"
+            ? aeDesktop().ready
+              ? `run_ae_script({ package: ${JSON.stringify(res.location)} }) builds the .aep headless (unless build was true); then compare_ae_renders({ package, frames }) checks it against this editor.`
+              : `After Effects isn't available here (${aeMissing(aeDesktop().caps)}): the package is exported, not verified. In After Effects: File → Scripts → Run Script File → build.jsx.`
+            : "The zip downloaded. Unzip it and run build.jsx in After Effects (File → Scripts → Run Script File). Exported, not verified.",
+      };
+    },
+
+    // Headless build of a package export_ae_package wrote this session
+    // (desktop only): aerender + a one-launch startup hook; `open` then
+    // opens the saved .aep in the After Effects app.
+    run_ae_script: async ({ package: pkgArg, open }) => {
+      const { ae, caps, ready } = aeDesktop();
+      if (!ae || !ready)
+        throw new Error(`run_ae_script can't run: ${aeMissing(caps)}. The package itself is fine — in After Effects, File → Scripts → Run Script File → build.jsx builds it.`);
+      const pkg = aeStr(pkgArg);
+      if (!pkg) throw new Error("Pass `package`: the `location` export_ae_package returned.");
+      if (open != null && typeof open !== "boolean") throw new Error("open must be true or false");
+      const r = await ae.build(pkg, { open: open === true });
+      const log = (r.result ?? {}) as { problems?: string[]; warnings?: string[]; counts?: unknown; seconds?: number; builder?: string; ae?: string; headless?: boolean };
+      return {
+        ok: r.ok,
+        ...(r.aep ? { aep: r.aep } : {}),
+        opened: r.opened,
+        seconds: r.seconds,
+        builder: log.builder,
+        afterEffects: log.ae,
+        counts: log.counts,
+        problems: log.problems ?? [],
+        warnings: log.warnings ?? [],
+        notes: r.notes,
+        ...(r.ok ? {} : { aerender: r.aerender, log: r.log }),
+        next: r.ok ? "compare_ae_renders({ package, frames }) renders it with aerender and diffs it against this editor." : "Read problems / notes; ae-parity (get_ae_docs) ranks the usual causes.",
+      };
+    },
+
+    // aerender frames of the built main comp vs this editor's render of the
+    // same composition at the same frames: compare_renders' metrics and its
+    // A | B | heat grid (A = toolbox, B = After Effects).
+    compare_ae_renders: async ({ package: pkgArg, frames, maxSize, threshold }) => {
+      const { ae, caps, ready } = aeDesktop();
+      if (!ae || !ready)
+        return `Package exported, not verified: compare_ae_renders needs the Toolbox desktop app on a Mac with After Effects — ${aeMissing(caps)}. Say so plainly when you report the export.`;
+      if (!deps.renderNodeFrames) throw new Error("This editor can't render frames for comparison.");
+      const pkg = aeStr(pkgArg);
+      if (!pkg) throw new Error("Pass `package`: the `location` export_ae_package returned.");
+      let list: number[];
+      if (Array.isArray(frames) && frames.length > 0) list = [...new Set(frames.map((f) => Math.max(0, Math.round(Number(f)))))];
+      else list = [...new Set([0, Math.max(0, deps.status.loopFrames - 1)])];
+      if (list.some((f) => !Number.isFinite(f))) throw new Error("`frames` must be an array of frame numbers.");
+      if (list.length > 8) throw new Error(`compare_ae_renders takes 1–8 frames (got ${list.length}) — use the plan's parity frames.`);
+      const thr = typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0 ? Math.min(1, threshold) : COMPARE_DEFAULTS.threshold;
+
+      const r = await ae.render(pkg, list);
+      const { width: W, height: H } = r.comp;
+      const nodes = deps.nodesRef.current;
+      const fromManifest = r.manifest?.output;
+      const ref =
+        fromManifest && nodes.some((n) => n.id === fromManifest.replace(/:(out|aux:[A-Za-z0-9_-]+)$/, "")) ? fromManifest : aeContext().output;
+      if (!ref) throw new Error("No Output node to compare against — open the composition the package was exported from.");
+      const aux = /^(.*):aux:([A-Za-z0-9_-]+)$/.exec(ref);
+      const target = aux ? { node: aux[1], handle: `out:aux:${aux[2]}` } : { node: ref.replace(/:out$/, ""), handle: "out:primary" };
+      const tpf = DEFAULT_TICKS_PER_FRAME;
+      const tb = new Map<number, Uint8Array | null>();
+      await deps.renderNodeFrames(
+        target,
+        list.map((f) => f * tpf),
+        { width: W, height: H },
+        ({ tick, rgba }) => {
+          tb.set(Math.round(tick / tpf), rgba);
+        },
+        { label: (d, t) => `Rendering ${target.node} for compare_ae_renders — frame ${d}/${t}` }
+      );
+
+      // Both sides take the same path down to the analysis and cell sizes.
+      const ANALYSIS_LONG_EDGE = 256;
+      const an = ANALYSIS_LONG_EDGE / Math.max(W, H);
+      const aw = Math.max(1, Math.round(W * an));
+      const ah = Math.max(1, Math.round(H * an));
+      const full = (rgba: Uint8Array) => {
+        const c = document.createElement("canvas");
+        c.width = W;
+        c.height = H;
+        c.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), W, H), 0, 0);
+        return c;
+      };
+      const small = (c: HTMLCanvasElement) => {
+        const s = document.createElement("canvas");
+        s.width = aw;
+        s.height = ah;
+        const g = s.getContext("2d")!;
+        g.imageSmoothingQuality = "high";
+        g.drawImage(c, 0, 0, aw, ah);
+        return g.getImageData(0, 0, aw, ah).data;
+      };
+      const cols = 3;
+      const rows = list.length;
+      const enc = screenshotEncode({ maxSize, format: "jpeg", strip: true });
+      const aspect = W / H;
+      const cellW = Math.max(64, Math.floor(Math.min(enc.max / cols, (enc.max / rows) * aspect, W)));
+      const cellH = Math.max(64, Math.round(cellW / aspect));
+      const grid = document.createElement("canvas");
+      grid.width = cellW * cols;
+      grid.height = cellH * rows;
+      const g = grid.getContext("2d")!;
+      g.fillStyle = "#000";
+      g.fillRect(0, 0, grid.width, grid.height);
+      const label = Math.max(10, Math.round(cellH / 18));
+      const stamp = (x: number, y: number, text: string) => {
+        g.font = `${label}px ui-monospace, monospace`;
+        const tw = g.measureText(text).width;
+        g.fillStyle = "rgba(0,0,0,0.65)";
+        g.fillRect(x, y, tw + label, label * 1.6);
+        g.fillStyle = "#fff";
+        g.fillText(text, x + label * 0.5, y + label * 1.15);
+      };
+      const heat = document.createElement("canvas");
+      heat.width = aw;
+      heat.height = ah;
+      const heatCtx = heat.getContext("2d")!;
+      const metrics: ({ frame: number } & ReturnType<typeof compareRgba>)[] = [];
+      const lines: string[] = [];
+      list.forEach((f, i) => {
+        const y = i * cellH;
+        const a = tb.get(f);
+        const b = r.frames.find((x) => x.frame === f);
+        if (a) {
+          g.drawImage(full(a), 0, y, cellW, cellH);
+          stamp(0, y, `f${f} A toolbox`);
+        } else stamp(0, y, `f${f} A: no toolbox image`);
+        if (b?.rgba) {
+          g.drawImage(full(b.rgba), cellW, y, cellW, cellH);
+          stamp(cellW, y, `f${f} B After Effects`);
+        } else stamp(cellW, y, `f${f} B: ${b?.error ? "aerender failed" : "missing"}`);
+        if (!a || !b?.rgba) {
+          lines.push(`f${f}: not compared — ${!a ? `${target.node} rendered no image` : `aerender: ${b?.error ?? "no frame"}`}`);
+          return;
+        }
+        const pa = small(full(a));
+        const pb = small(full(b.rgba));
+        const m = compareRgba(pa, pb, aw, ah, { threshold: thr });
+        metrics.push({ frame: f, ...m });
+        lines.push(describeMetrics(f, m));
+        heatCtx.putImageData(new ImageData(diffHeatRgba(pa, pb, aw, ah), aw, ah), 0, 0);
+        g.imageSmoothingEnabled = false;
+        g.drawImage(heat, cellW * 2, y, cellW, cellH);
+        g.imageSmoothingEnabled = true;
+        stamp(cellW * 2, y, `f${f} |A−B| ${m.verdict}`);
+      });
+      const verdicts = metrics.map((m) => m.verdict);
+      const overall =
+        verdicts.length < list.length ? "incomplete" : verdicts.every((v) => v === "match") ? "match" : verdicts.some((v) => v === "off") ? "off" : "close";
+      const notes: string[] = [];
+      if (Math.abs(r.comp.fps - deps.fpsRef.current) > 1e-6) notes.push(`The comp runs at ${r.comp.fps} fps, this editor at ${deps.fpsRef.current} — frame numbers differ in time.`);
+      if (W !== deps.status.canvasWidth || H !== deps.status.canvasHeight) notes.push(`The comp is ${W}×${H}, this editor's canvas ${deps.status.canvasWidth}×${deps.status.canvasHeight}; the toolbox side rendered at ${W}×${H}.`);
+      const summary = [
+        `A = toolbox ${ref} · B = After Effects "${r.comp.name}" (aerender, TIFF Sequence with Alpha, unpremultiplied) · analysis ${aw}×${ah} · threshold ${thr}`,
+        ...lines,
+        `Overall: ${overall.toUpperCase()}. Columns: A | B | |A−B| heat (×4 gain; blue = alpha mismatch). Bands (provisional): match meanAbs≤${COMPARE_DEFAULTS.match.meanAbs} p95≤${COMPARE_DEFAULTS.match.p95Abs}; close meanAbs≤${COMPARE_DEFAULTS.close.meanAbs} p95≤${COMPARE_DEFAULTS.close.p95Abs}. ae-parity (get_ae_docs) ranks the causes of each diff shape.`,
+        ...notes,
+      ].join("\n");
+      return {
+        kind: "compare",
+        mimeType: enc.mimeType,
+        base64: await canvasToBase64(grid, enc.mimeType, enc.quality),
+        width: grid.width,
+        height: grid.height,
+        frames: list,
+        grid: { cols, rows },
+        a: ref,
+        b: r.comp.name,
+        analysis: { width: aw, height: ah },
+        overall,
+        metrics,
+        summary,
+        aeFrames: r.frames.map((x) => ({ frame: x.frame, file: x.file, seconds: x.seconds, ...(x.error ? { error: x.error } : {}) })),
+      };
+    },
+
+    // A fused GLSL Expression → its Toolbox Shader bundle, validated before
+    // anything reaches After Effects. Desktop: main runs tbxshader-check
+    // --json (the host's own parser + Metal compile); web: structural
+    // checks only.
+    validate_ae_shader: async ({ node: nodeArg }) => {
+      const id = aeStr(nodeArg) ?? deps.status.selectedNodeId;
+      if (!id) throw new Error("Pass `node` (the fused glsl-expression's id from get_graph) — nothing is selected in the editor.");
+      const n = nodeOrThrow(id);
+      if (n.data.defType !== "glsl-expression")
+        throw new Error(`"${n.id}" is a ${n.data.defType}; validate_ae_shader takes a glsl-expression node (the fused region).`);
+      const [{ bundleFromGlslExpression }, { validateAeShader }, { writeTbxfx }, { hostCheckResult }] = await Promise.all([
+        import("@/lib/ae-export/shader/bundle"),
+        import("@/lib/ae-export/shader/validate"),
+        import("@/lib/ae-export/shader/tbxfx"),
+        import("@/lib/ae-export/package/shader-check"),
+      ]);
+      const params = n.data.params;
+      const prelude = glslExpressionPreludeLines(params);
+      const body = (line?: number) => (line ? { line, bodyLine: line - prelude } : {});
+      const r = bundleFromGlslExpression(params, {
+        name: n.data.name || "GLSL Expression",
+        fps: deps.status.fps,
+        loopFrames: deps.status.loopFrames,
+        canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
+      });
+      if (!r.ok)
+        return {
+          ok: false,
+          stage: "translate",
+          node: n.id,
+          errors: r.errors.map((e) => ({ message: e.message, ...body(e.line) })),
+          preludeLines: r.preludeLines,
+          note: "bodyLine = the line in the node's expression; line = the full template's.",
+        };
+      const ae = platform.runAfterEffects;
+      let compiled: ReturnType<typeof hostCheckResult> | null = null;
+      let skipNote = "web build: structural checks only — the Metal compile runs in the desktop app (tbxshader-check)";
+      if (ae) {
+        const chk = await ae.checkShader(writeTbxfx(r.bundle));
+        if (chk.available) compiled = hostCheckResult(chk);
+        else skipNote = chk.reason ?? "tbxshader-check not found";
+      }
+      const v = validateAeShader(r.bundle, { compiler: compiled ? () => compiled! : null, skipNote });
+      const b = r.bundle;
+      const wired = deps.edgesRef.current.filter((e) => e.target === n.id && /^in:/.test(e.targetHandle ?? "")).map((e) => e.targetHandle!.slice(3));
+      return {
+        ok: v.ok,
+        stage: v.ok ? "ok" : "skipped" in v.compile || v.compile.ok ? "validate" : "compile",
+        node: n.id,
+        bundle: {
+          id: b.id,
+          name: b.name,
+          hostMin: b.hostMin,
+          path: `shaders/${b.id}.tbxfx`,
+          inputs: b.inputs,
+          readsTime: b.readsTime,
+          params: b.params.map((p) => ({ name: p.name, kind: p.kind, slot: p.slot, default: p.default, ...(p.min !== undefined ? { min: p.min, max: p.max } : {}) })),
+          luts: (b.luts ?? []).map((l) => l.name),
+        },
+        errors: v.errors.map((e) => ({ message: e.message, ...body(e.line) })),
+        warnings: [
+          ...r.warnings,
+          ...v.warnings,
+          ...(wired.some((s) => s !== "a" && s !== "b" && s !== "c" && s !== "d")
+            ? [`wired channels (${wired.filter((s) => !["a", "b", "c", "d"].includes(s)).join(", ")}) ship at their row values; key the TBX Shader control in AE to animate them`]
+            : []),
+        ],
+        compile:
+          "skipped" in v.compile
+            ? { skipped: v.compile.skipped }
+            : { validator: v.compile.validator, ok: v.compile.ok, ...(v.compile.device ? { device: v.compile.device } : {}) },
+      };
+    },
+
+    // Bundled After Effects docs (ae-conventions, ae-host, ae-parity,
+    // ae-nodes/<type>), like get_glsl_docs.
+    get_ae_docs: async ({ slugs, types }) => {
+      const { getAeDocs } = await import("@/lib/ae-export/docs");
+      return getAeDocs({ slugs: slugs as string[] | string | undefined, types: types as string[] | string | undefined });
     },
 
     // ---- timeline markers (101326_skia-target.md §3.5a) -------------------

@@ -154,6 +154,10 @@ export const webPlatform: Platform = {
   pickOpenFiles,
   // encodeVideo intentionally undefined — web uses the existing
   // ffmpeg.wasm / WebCodecs / MediaRecorder tiers.
+  // No After Effects on web: aeCapabilities / runAfterEffects stay absent,
+  // so the After Effects export downloads a zip and validate_ae_shader runs
+  // its pure checks only.
+  aeCapabilities: null,
   assets: {
     // Web can't auto-scan a sibling folder (no path); only the picker applies.
     pick: pickAssetsFolder,

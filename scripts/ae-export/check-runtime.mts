@@ -25,7 +25,7 @@ import {
   type RifxNode,
 } from "@/lib/ae-export/runtime/ffx";
 import { validateAeScene } from "@/lib/ae-export/runtime/validate";
-import type { AeBlendMode, AeLayerKind, AeScene, AeShapeItem, AeTextDocument } from "@/lib/ae-export/types";
+import { tbxShaderDiskId, tbxShaderParamMatch, type AeBlendMode, type AeLayerKind, type AeScene, type AeShapeItem, type AeTextDocument, type TbxShaderParamKind } from "@/lib/ae-export/types";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -296,6 +296,88 @@ export default async function run(): Promise<number> {
   const nestedLayer = sceneC.comps[0].layers.find((l) => l.id === "nestedLayer")!;
   const inner = ((nestedLayer.contents![0] as any).contents[0] as any).contents[1] as AeShapeItem;
   c.check("gradientPresetPath finds nested gradients", JSON.stringify(gradientPresetPath(nestedLayer.contents!, inner)) === JSON.stringify({ groups: [0, 0], item: 1 }));
+
+  // ---- the Toolbox Shader rules (host README "For scripts"), under Node ---------
+  // Save before Bundle ID, Bundle ID first, then only the bundle's own
+  // controls. The planner runs here; the order of the AE calls is read off
+  // applyEffects' source. The live half: scripts/ae-export/e2e-package.mts.
+  const t = /\/\* @tbx-begin[\s\S]*?\*\/([\s\S]*?)\/\* @tbx-end \*\//.exec(src);
+  c.check("build.jsx marks its TBX Shader planner with @tbx-begin / @tbx-end", !!t);
+  if (t) {
+    const has = (o: any, k: string) => o !== null && o !== undefined && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
+    // Scene data is built inside the context: build.jsx's `instanceof Array`
+    // is per realm, as it is in ExtendScript (TbxJson.parse makes the arrays).
+    const ctx = vm.createContext({ has });
+    const raw: { tbxPlan(fx: any, b: any): { id: number; sets: string[]; skipped: string[] }; tbxMatch(d: number): string } = vm.runInContext(
+      `${t[1]}\n({ tbxPlan: tbxPlan, tbxMatch: tbxMatch });`,
+      ctx
+    );
+    const local = (v: unknown) => (v == null ? v : vm.runInContext(`(${JSON.stringify(v)})`, ctx));
+    const T = {
+      tbxMatch: raw.tbxMatch,
+      tbxPlan: (fx: any, b: any) => JSON.parse(JSON.stringify(raw.tbxPlan(local(fx), local(b)))) as { id: number; sets: string[]; skipped: string[] },
+    };
+    const kinds: [TbxShaderParamKind, number][] = [["bundle", 1], ["time", 1], ["timeOffset", 1], ["loopFrames", 1], ["layer", 1], ["layer", 4], ["slider", 1], ["slider", 32], ["color", 8], ["point", 3], ["checkbox", 8]];
+    c.check("build.jsx's TBX match names ≡ types.ts tbxShaderParamMatch", kinds.every(([k, n]) => T.tbxMatch(tbxShaderDiskId(k, n)) === tbxShaderParamMatch(k, n)));
+    const M = (k: TbxShaderParamKind, n = 1) => tbxShaderParamMatch(k, n);
+    const bundle = { readsTime: false, inputs: ["a"], params: [{ kind: "slider", slot: 1 }, { kind: "color", slot: 2 }, { kind: "checkbox", slot: 1 }] };
+    const fx = {
+      match: "TBX Shader",
+      bundle: "4242",
+      props: {
+        [M("slider", 1)]: { v: 0.5 },
+        [M("time")]: { v: 1 },
+        [M("bundle")]: { v: 4242 },
+        [M("color", 2)]: { v: [1, 0, 0, 1] },
+        [M("layer", 1)]: { layerRef: "src" },
+        [M("layer", 2)]: { layerRef: "src" },
+        [M("slider", 9)]: { v: 2 },
+        "TBX Shader-0090": { v: 0 },
+      },
+    };
+    const plan = T.tbxPlan(fx, bundle);
+    c.check("TBX: Bundle ID is set first, from `bundle`", plan.id === 4242 && plan.sets[0] === M("bundle"), plan);
+    c.check(
+      "TBX: then only the bundle's own controls, in scene order",
+      JSON.stringify(plan.sets.slice(1)) === JSON.stringify([M("slider", 1), M("color", 2), M("layer", 1)]),
+      plan.sets
+    );
+    c.check(
+      "TBX: hidden controls (no time without readsTime, unread layers, unused slots, Status) are skipped",
+      JSON.stringify(plan.skipped) === JSON.stringify([M("time"), M("layer", 2), M("slider", 9), "TBX Shader-0090"]),
+      plan.skipped
+    );
+    const timed = T.tbxPlan(fx, { ...bundle, readsTime: true });
+    c.check("TBX: a bundle that reads time shows Time Speed / Offset / Loop Frames", timed.sets.includes(M("time")) && !timed.skipped.includes(M("time")));
+    const unknown = T.tbxPlan({ match: "TBX Shader", props: { [M("bundle")]: { v: 7 }, [M("slider", 9)]: { v: 2 }, "TBX Shader-0090": { v: 0 } } }, null);
+    c.check(
+      "TBX: an unreadable bundle (host shows every control) sets them all, Bundle ID first, never Status",
+      unknown.id === 7 && JSON.stringify(unknown.sets) === JSON.stringify([M("bundle"), M("slider", 9)]) && JSON.stringify(unknown.skipped) === JSON.stringify(["TBX Shader-0090"]),
+      unknown
+    );
+    const throws = (f: any) => {
+      try {
+        T.tbxPlan(f, null);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    c.check("TBX: a keyed Bundle ID is refused", throws({ match: "TBX Shader", props: { [M("bundle")]: { keys: [{ t: 0, v: 1 }] } } }));
+    c.check("TBX: `bundle` and a Bundle ID prop that disagree are refused", throws({ match: "TBX Shader", bundle: "5", props: { [M("bundle")]: { v: 6 } } }));
+    c.check("TBX: a missing, fractional or ≥ 2^24 bundle id is refused", throws({ match: "TBX Shader", props: {} }) && throws({ match: "TBX Shader", bundle: "1.5", props: {} }) && throws({ match: "TBX Shader", bundle: String(2 ** 24), props: {} }));
+  }
+  const applyFx = /function applyEffects\([\s\S]*?\n {2}}\n/.exec(code)?.[0] ?? "";
+  const at = (needle: string) => applyFx.indexOf(needle);
+  c.check(
+    "applyEffects: save (tbxEnsureSaved) → addProperty → Bundle ID → the planned controls",
+    at("tbxEnsureSaved(ctx)") > 0 &&
+      at("tbxEnsureSaved(ctx)") < at("parade().addProperty(fx.match)") &&
+      at("parade().addProperty(fx.match)") < at("setValue(tbx.id)") &&
+      at("setValue(tbx.id)") < at("tbx.sets.length"),
+    applyFx.slice(0, 200)
+  );
+  c.check("the early TBX save and the final save use one target (ctx.saveTo)", /app\.project\.save\(ctx\.saveTo\)/.test(code) && /var target = ctx\.saveTo;/.test(code));
 
   return c.failures;
 }

@@ -29,6 +29,30 @@ const SKIA_ANIMATION_SCHEMA = z
 export const CMD_TIMEOUT_MS = 10_000;
 export const SCREENSHOT_TIMEOUT_MS = 30_000;
 export const MUTATION_TIMEOUT_MS = 60_000;
+// After Effects (spec 091926 §7.5): an export renders its bakes in the editor
+// and may build headless; a build is one aerender launch (~5 s, a 5-minute
+// cap in electron/ae.js); a compare renders up to 8 frames with aerender
+// (~5 s each) plus the toolbox side.
+export const AE_EXPORT_TIMEOUT_MS = 30 * 60_000;
+export const AE_RUN_TIMEOUT_MS = 6 * 60_000;
+export const AE_COMPARE_TIMEOUT_MS = 10 * 60_000;
+export const AE_SHADER_TIMEOUT_MS = 90_000;
+
+// export_ae_package's policy, the same strict shape as plan_ae_export's.
+const AE_POLICY_SCHEMA = z
+  .object({
+    fidelity: z.enum(["editable", "exact"]).optional(),
+    color: z.enum(["auto", "expression", "dense", "rgb"]).optional(),
+    colorTolerance: z.number().optional(),
+    layerBudget: z.number().optional(),
+    bakeWarnMB: z.number().optional(),
+    bakeCodec: z.enum(["prores4444", "qtrle"]).optional(),
+    bitsPerChannel: z.union([z.literal(8), z.literal(16), z.literal(32)]).optional(),
+    acceptApprox: z.boolean().optional(),
+    shaderHost: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
 
 // Shared prose appended to insert_recipe. Kept as its own export because it is
 // long, load-bearing, and referenced by edit_group's description by name.
@@ -978,21 +1002,137 @@ export const BRIDGED_TOOLS = [
         .string()
         .optional()
         .describe("A node id, <id>:out or <id>:aux:<name> — plan only the branch feeding it, inside its layer."),
-      policy: z
-        .object({
-          fidelity: z.enum(["editable", "exact"]).optional(),
-          color: z.enum(["auto", "expression", "dense", "rgb"]).optional(),
-          colorTolerance: z.number().optional(),
-          layerBudget: z.number().optional(),
-          bakeWarnMB: z.number().optional(),
-          bakeCodec: z.enum(["prores4444", "qtrle"]).optional(),
-          bitsPerChannel: z.union([z.literal(8), z.literal(16), z.literal(32)]).optional(),
-          acceptApprox: z.boolean().optional(),
-          shaderHost: z.boolean().optional(),
-        })
-        .strict()
+      policy: AE_POLICY_SCHEMA.describe(
+        "Overrides of the export policy (defaults: editable, auto color, 200-layer budget, 500 MB bake warning, ProRes 4444, approximations accepted, shader host on)."
+      ),
+    },
+  },
+  {
+    name: "export_ae_package",
+    mutates: true,
+    resultKind: "text",
+    timeoutMs: AE_EXPORT_TIMEOUT_MS,
+    description:
+      "Export the active composition as an After Effects package (Design A): " +
+      "scene.json (AE's object model), build.jsx (the static builder), " +
+      "presets/*.ffx, shaders/<id>.tbxfx (Toolbox Shader bundles from the " +
+      "glsl-expression nodes you fused), footage/ (bakes rendered in the editor " +
+      "now — the playhead moves — and copied sources), toolbox.json and " +
+      "README.txt. Call plan_ae_export first; for every shader region you " +
+      "fused, pass fused { \"<region target>\": \"<glsl-expression id>\" } " +
+      "(a region without one bakes). Writes ONLY under main's own export folder " +
+      "(desktop, destination \"folder\", the default there) or as a zip " +
+      "download (\"zip\", the web default) — you choose no path. Returns " +
+      "`location` (the package folder, or the zip's file name), `report` " +
+      "(native / approximate / sampled / shader / baked / blocked, the fonts " +
+      "and Toolbox Shader version the AE machine needs — relay it), " +
+      "`problems` (non-empty = not exported or a bake failed), `warnings`, " +
+      "`files`, and `built` when build is true. Refused with the problems " +
+      "when the scene can't export. `build: true` (desktop with After " +
+      "Effects) also builds the .aep headless; otherwise call run_ae_script.",
+    inputSchema: {
+      name: z.string().optional().describe("Package / main comp name (default: the project name)."),
+      policy: AE_POLICY_SCHEMA.describe("Export policy, as plan_ae_export takes it."),
+      overrides: z
+        .record(z.string(), z.enum(["bake", "skip", "procedural"]))
         .optional()
-        .describe("Overrides of the export policy (defaults: editable, auto color, 200-layer budget, 500 MB bake warning, ProRes 4444, approximations accepted, shader host on)."),
+        .describe('Per-node choices: { "<node id>": "bake" | "skip" | "procedural" }.'),
+      fused: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Shader region target (plan_ae_export shaderRegions[].target) → the glsl-expression node that replaces it.'),
+      destination: z.enum(["folder", "zip"]).optional().describe('"folder" (desktop: main\'s export folder) or "zip" (a download). Default: folder on desktop, zip on the web.'),
+      build: z.boolean().optional().describe("Desktop with After Effects: also build the .aep headless (default false)."),
+    },
+  },
+  {
+    name: "run_ae_script",
+    mutates: true,
+    resultKind: "text",
+    timeoutMs: AE_RUN_TIMEOUT_MS,
+    description:
+      "Desktop app only: build a package export_ae_package wrote this session " +
+      "into <name>.aep, headless — aerender's render core runs build.jsx " +
+      "through a one-launch startup hook (the After Effects window, if open, " +
+      "is never scripted). `open: true` then opens the saved .aep in the After " +
+      "Effects app. Returns `ok`, `aep`, `seconds`, build.jsx's `problems` / " +
+      "`warnings` / `counts` (from build-log.json), and `notes` when " +
+      "something is off. Gradient presets (.ffx) only apply when build.jsx " +
+      "runs inside the After Effects app; a headless build skips them with a " +
+      "warning. Fails plainly on the web or without After Effects.",
+    inputSchema: {
+      package: z.string().describe("The `location` export_ae_package returned."),
+      open: z.boolean().optional().describe("Open the built .aep in After Effects afterwards (default false)."),
+    },
+  },
+  {
+    name: "compare_ae_renders",
+    mutates: false,
+    resultKind: "compare",
+    timeoutMs: AE_COMPARE_TIMEOUT_MS,
+    description:
+      "Desktop app only: the parity oracle for an After Effects export. " +
+      "Renders the built package's main comp with aerender at `frames` " +
+      "(-s N -e N, \"TIFF Sequence with Alpha\", unpremultiplied) and this " +
+      "editor's render of the same composition at the same frames, and " +
+      "returns ONE image — a row per frame, columns A (toolbox) | B (After " +
+      "Effects) | |A−B| heat — plus compare_renders' metrics per frame " +
+      "(meanAbs, p95Abs, alphaMeanAbs, overThreshold, worst box, verdict " +
+      "match / close / off). Read the numbers first; get_ae_docs " +
+      "[\"ae-parity\"] ranks the causes of each diff shape (a unit mismatch " +
+      "is a param edit; a premult fringe or a Y flip is a host bug to report). " +
+      "Run run_ae_script first. Without the desktop app or After Effects it " +
+      "returns the text \"Package exported, not verified\" — say exactly that.",
+    inputSchema: {
+      package: z.string().describe("The `location` export_ae_package returned (built)."),
+      frames: z.array(z.number()).optional().describe("Comp frames to compare (1–8; use the plan's parity frames). Default: the first and last frame."),
+      maxSize: z.number().optional().describe("Long-edge cap for the WHOLE grid (default 1400)."),
+      threshold: z.number().optional().describe("Per-pixel max-channel error (0–1) counted as 'over' (default 0.02 ≈ 5/255)."),
+    },
+  },
+  {
+    name: "validate_ae_shader",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: AE_SHADER_TIMEOUT_MS,
+    description:
+      "The After Effects get_shader_errors: turn a fused glsl-expression node " +
+      "into its Toolbox Shader bundle (GLSL ES 3.00 → MSL, channels → host " +
+      "sliders / colors / checkboxes, ramps / curves → LUTs) and validate it " +
+      "before anything reaches After Effects. On the desktop the host's own " +
+      "tbxshader-check compiles it with Metal; on the web the checks are " +
+      "structural only (the result says which ran). Returns `ok`, `stage` " +
+      "(translate | validate | compile | ok), `errors` with `bodyLine` (the " +
+      "line in the node's expression) and `line` (the full template's), " +
+      "`warnings`, `bundle` (id, the param slots, inputs, readsTime, luts, " +
+      "hostMin) and `compile`. Fix every error before export_ae_package.",
+    inputSchema: {
+      node: z.string().optional().describe("The glsl-expression node id (default: the selected node)."),
+    },
+  },
+  {
+    name: "get_ae_docs",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "After Effects export guidance bundled with toolbox: ae-conventions " +
+      "(coordinates, time, alpha, color management, bit depth), ae-host (the " +
+      "Toolbox Shader plug-in, its bundle format, translation rules, param " +
+      "pool), ae-parity (reading compare_ae_renders diffs: premult fringes, Y " +
+      "flips, gamma / working-space shifts, blur calibration) and " +
+      "ae-nodes/<type> mapping notes. No args = the three core docs. Missing " +
+      "docs are named in the trailer; over ~40k chars the result is cut and " +
+      "says which slugs to fetch next.",
+    inputSchema: {
+      slugs: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe('Doc slugs, e.g. ["ae-host", "ae-nodes/merge"]. Omit for the core three.'),
+      types: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe("Node type strings whose ae-nodes notes to include."),
     },
   },
 ];
@@ -1050,7 +1190,8 @@ export function marshalResult(def, result) {
       ],
     };
   }
-  if (def.resultKind === "compare") {
+  // compare_ae_renders without After Effects answers in words.
+  if (def.resultKind === "compare" && typeof result?.base64 === "string") {
     // The metrics ARE the result; the image is for the model's eyes.
     return {
       content: [

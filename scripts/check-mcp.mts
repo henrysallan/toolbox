@@ -14,6 +14,8 @@ import { getGlslDocs } from "@/lib/glsl-translation";
 import { exportSkia } from "@/lib/skia-export/api";
 import { planAeExport, type AeExportPolicy } from "@/lib/ae-export";
 import { aePlanReport } from "@/lib/ae-export/editor";
+import { getAeDocs } from "@/lib/ae-export/docs";
+import { BRIDGED_TOOLS, MUTATING_TOOLS } from "./toolbox-tool-defs.mjs";
 import { readFileSync } from "node:fs";
 
 registerAllNodes();
@@ -274,9 +276,12 @@ process.on("unhandledRejection", bail);
 await client.connect(transport);
 
 const EXPECTED_TOOLS = [
+  "compare_ae_renders",
   "compare_renders",
   "edit_group",
+  "export_ae_package",
   "export_skia",
+  "get_ae_docs",
   "get_catalog",
   "get_glsl_docs",
   "get_graph",
@@ -293,6 +298,7 @@ const EXPECTED_TOOLS = [
   "plan_glsl_translation",
   "plan_skia_export",
   "read_source",
+  "run_ae_script",
   "screenshot",
   "screenshot_strip",
   "search_source",
@@ -302,6 +308,7 @@ const EXPECTED_TOOLS = [
   "set_perf_capture",
   "tidy",
   "transport",
+  "validate_ae_shader",
   "validate_expression",
 ];
 const tools = await client.listTools();
@@ -607,6 +614,49 @@ const bridge: BridgeClient = connectBridge({
           policy: policy as Partial<AeExportPolicy> | undefined,
         })
       ),
+    // After Effects package lane (091926 §5, §7.5): the runner, the build,
+    // the aerender compare and the shader check are covered by
+    // scripts/ae-export/check-package-*.mts and the live e2e-package.mts;
+    // here every arg has to reach the editor intact and the results (a
+    // compare grid, or the "not verified" text) have to come back marshalled.
+    export_ae_package: ({ name, policy, overrides, fused, destination, build }) => {
+      if (name === "blocked") throw new Error("Nothing exported — fix these and retry (plan_ae_export shows the plan):\n- Live Input (cam-1) needs a recorded take");
+      return {
+        ok: true,
+        location: `/Users/x/Documents/Toolbox/After Effects/${name ?? "E2E Test"}.aepkg`,
+        report: "Route: direct+bake\nNative (2):\n  - Circle (c1)\nBaked footage (1):\n  - footage/p1.mov — p1:out, frames 0–59",
+        problems: [],
+        warnings: [],
+        echo: { policy, overrides, fused, destination, build },
+      };
+    },
+    run_ae_script: ({ package: pkg, open }) => ({ ok: true, aep: `${pkg}/x.aep`, opened: open === true, seconds: 4.1, problems: [], warnings: [] }),
+    compare_ae_renders: ({ package: pkg, frames }) =>
+      pkg === "web"
+        ? "Package exported, not verified: compare_ae_renders needs the Toolbox desktop app on a Mac with After Effects — this is not the Toolbox desktop app (the web build has no After Effects). Say so plainly when you report the export."
+        : {
+            kind: "compare",
+            mimeType: "image/png",
+            base64: TINY_PNG,
+            width: 300,
+            height: 100,
+            frames: frames ?? [0, 119],
+            grid: { cols: 3, rows: (frames as number[] | undefined)?.length ?? 2 },
+            a: "out-1:out",
+            b: "Main",
+            overall: "match",
+            metrics: [{ frame: 0, meanAbs: 0.001, p95Abs: 0.004, alphaMeanAbs: 0, overThreshold: 0, compared: 1, worstBox: null, verdict: "match" }],
+            summary: `A = toolbox out-1:out · B = After Effects "Main" (${pkg})\nf0: MATCH — meanAbs 0.0010`,
+          },
+    validate_ae_shader: ({ node }) => ({
+      ok: false,
+      stage: "compile",
+      node: node ?? "selected",
+      errors: [{ message: "source.msl line 12: use of undeclared identifier 'missing_value'", line: 25, bodyLine: 12 }],
+      bundle: { id: 3720283, name: "Ring", hostMin: "1.0.0", params: [{ name: "radius", kind: "slider", slot: 1 }] },
+      compile: { validator: "tbxshader-check", ok: false },
+    }),
+    get_ae_docs: (args) => getAeDocs({ slugs: args.slugs as string[] | string | undefined, types: args.types as string[] | string | undefined }),
     export_skia: ({ target }) => {
       if (target === "nope")
         throw new Error('Nothing exported — fix these and retry:\n- No node "nope" in the graph.');
@@ -957,6 +1007,87 @@ check(
   check("plan_ae_export args are all optional (default: the whole composition)", !isError(aeBare) && textOf(aeBare).includes('"id":"root"'), textOf(aeBare).slice(0, 120));
 }
 
+// After Effects package tools (091926 §7.5): args forward intact, a refused
+// export is a tool error, compare_ae_renders comes back as the grid + metrics
+// or — without After Effects — as plain text, the docs are the real bundle,
+// and only the two writers are in the session grant set.
+{
+  const exp = await client.callTool({
+    name: "export_ae_package",
+    arguments: {
+      name: "Hero",
+      policy: { bakeCodec: "qtrle", shaderHost: true },
+      overrides: { "noise-1": "bake" },
+      fused: { "ramp-1:out": "glsl-9" },
+      destination: "folder",
+      build: true,
+    },
+  });
+  const ej = isError(exp) ? {} : JSON.parse(textOf(exp));
+  check(
+    "export_ae_package forwards name / policy / overrides / fused / destination / build and returns location + report",
+    !isError(exp) &&
+      ej.location?.endsWith("Hero.aepkg") &&
+      ej.report?.startsWith("Route: direct+bake") &&
+      ej.echo?.policy?.bakeCodec === "qtrle" &&
+      ej.echo?.overrides?.["noise-1"] === "bake" &&
+      ej.echo?.fused?.["ramp-1:out"] === "glsl-9" &&
+      ej.echo?.destination === "folder" &&
+      ej.echo?.build === true,
+    textOf(exp).slice(0, 240)
+  );
+  const expBad = await client.callTool({ name: "export_ae_package", arguments: { overrides: { x: "melt" } } });
+  check("export_ae_package rejects an unknown override at the server", isError(expBad), textOf(expBad).slice(0, 120));
+  const expPolicy = await client.callTool({ name: "export_ae_package", arguments: { policy: { budget: 3 } } });
+  check("export_ae_package rejects an unknown policy key at the server", isError(expPolicy), textOf(expPolicy).slice(0, 120));
+  const expDest = await client.callTool({ name: "export_ae_package", arguments: { destination: "desktop" } });
+  check("export_ae_package destination is folder | zip", isError(expDest), textOf(expDest).slice(0, 120));
+  const blocked = await client.callTool({ name: "export_ae_package", arguments: { name: "blocked" } });
+  check("export_ae_package refusals arrive as tool errors with the problems", isError(blocked) && textOf(blocked).includes("recorded take"), textOf(blocked).slice(0, 120));
+  const expBare = await client.callTool({ name: "export_ae_package", arguments: {} });
+  check("export_ae_package args are all optional", !isError(expBare) && JSON.parse(textOf(expBare)).location?.endsWith("E2E Test.aepkg"), textOf(expBare).slice(0, 120));
+
+  const run = await client.callTool({ name: "run_ae_script", arguments: { package: "/tmp/Hero.aepkg", open: true } });
+  check("run_ae_script forwards package + open", !isError(run) && JSON.parse(textOf(run)).aep === "/tmp/Hero.aepkg/x.aep" && JSON.parse(textOf(run)).opened === true, textOf(run).slice(0, 120));
+  const runBare = await client.callTool({ name: "run_ae_script", arguments: {} });
+  check("run_ae_script requires `package` at the server", isError(runBare), textOf(runBare).slice(0, 80));
+
+  const cmp = await client.callTool({ name: "compare_ae_renders", arguments: { package: "/tmp/Hero.aepkg", frames: [0, 60] } });
+  const cmpImg = (cmp as { content: { type: string; data?: string }[] }).content.find((b) => b.type === "image");
+  check(
+    "compare_ae_renders returns the A | B | heat grid and the metrics summary (compare marshalling)",
+    !isError(cmp) && cmpImg?.data === TINY_PNG && textOf(cmp).includes("f0: MATCH") && textOf(cmp).includes("frames [0, 60] in a 3×2 grid"),
+    textOf(cmp).slice(0, 200)
+  );
+  const cmpWeb = await client.callTool({ name: "compare_ae_renders", arguments: { package: "web" } });
+  check(
+    "compare_ae_renders without After Effects degrades to text: \"Package exported, not verified\"",
+    !isError(cmpWeb) && textOf(cmpWeb).startsWith("Package exported, not verified") && !(cmpWeb as { content: { type: string }[] }).content.some((b) => b.type === "image"),
+    textOf(cmpWeb).slice(0, 120)
+  );
+
+  const vs = await client.callTool({ name: "validate_ae_shader", arguments: { node: "glsl-9" } });
+  const vj = isError(vs) ? {} : JSON.parse(textOf(vs));
+  check("validate_ae_shader forwards node and returns body-line errors + the bundle", vj.node === "glsl-9" && vj.errors?.[0]?.bodyLine === 12 && vj.bundle?.id === 3720283, textOf(vs).slice(0, 160));
+
+  const docs = await client.callTool({ name: "get_ae_docs", arguments: {} });
+  check("get_ae_docs with no args returns the core docs", !isError(docs) && ["## ae-conventions", "## ae-host", "## ae-parity"].every((h) => textOf(docs).includes(h)), textOf(docs).slice(0, 120));
+  const docsMiss = await client.callTool({ name: "get_ae_docs", arguments: { slugs: ["ae-host", "nope"] } });
+  check("get_ae_docs names a missing slug in the trailer", !isError(docsMiss) && textOf(docsMiss).includes("No doc for: nope"), textOf(docsMiss).slice(-200));
+
+  const defs = new Map(BRIDGED_TOOLS.map((t) => [t.name, t]));
+  check(
+    "export_ae_package / run_ae_script are session-granted writers; plan / compare / validate / docs are read-only",
+    ["export_ae_package", "run_ae_script"].every((n) => MUTATING_TOOLS.includes(n)) &&
+      ["plan_ae_export", "compare_ae_renders", "validate_ae_shader", "get_ae_docs"].every((n) => defs.get(n)?.mutates === false),
+    MUTATING_TOOLS.join(",")
+  );
+  check(
+    "the AE tools carry long timeouts (export ≥ 10 min, compare ≥ 5 min, build ≥ 5 min)",
+    (defs.get("export_ae_package")?.timeoutMs ?? 0) >= 600_000 && (defs.get("compare_ae_renders")?.timeoutMs ?? 0) >= 300_000 && (defs.get("run_ae_script")?.timeoutMs ?? 0) >= 300_000
+  );
+}
+
 // `seq` is required by the schema — a missing one must fail at the server,
 // never reach the editor as NaN.
 const rpfBad = await client.callTool({ name: "get_perf_frame", arguments: {} });
@@ -1126,6 +1257,12 @@ type Connected = Extract<BridgeStatus, { state: "connected" }>;
     "editor errors survive the proxy hop",
     isError(viaProxyErr) && textOf(viaProxyErr).includes("UNKNOWN_TYPE example"),
     textOf(viaProxyErr).slice(0, 60)
+  );
+  const aeViaProxy = await client2.callTool({ name: "compare_ae_renders", arguments: { package: "/tmp/Hero.aepkg", frames: [0] } });
+  check(
+    "compare_ae_renders' grid survives the proxy hop",
+    !isError(aeViaProxy) && (aeViaProxy as { content: { type: string; data?: string }[] }).content.some((b) => b.type === "image" && b.data === TINY_PNG),
+    textOf(aeViaProxy).slice(0, 80)
   );
   const srcViaProxy = await client2.callTool({ name: "get_node_source", arguments: { type: "spline-merge" } });
   check(

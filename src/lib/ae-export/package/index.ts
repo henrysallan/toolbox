@@ -1,9 +1,10 @@
 // The AE package (spec §5.1, §5.3): scene build → files on disk or a zip, plus
 // the optional "Build in After Effects" step.
 //
-// CONTRACT STUB — committed before wave 2. The package lane implements the
-// runner and mounts it in EffectsApp; the modal lane's ExportAeModal calls an
-// AeExportRunner it is handed and never reaches into EffectsApp itself.
+// The modal lane's ExportAeModal calls an AeExportRunner it is handed and
+// never reaches into EffectsApp itself. The runner (runner.ts) is built from
+// deps EffectsApp supplies; files.ts assembles the static files and the
+// README report, sinks.ts writes a folder (desktop) or a zip (web).
 
 import type { AeExportPlan, AeExportPolicy } from "../types";
 import type { AeNodeOverride } from "../scene";
@@ -30,6 +31,8 @@ export interface AeExportResult {
   problems: string[];
   warnings: string[];
   built?: { ok: boolean; log: string; aep?: string };
+  // Every path in the package, README.txt first.
+  files?: string[];
 }
 
 export type AeExportRunner = (opts: AeExportOptions) => Promise<AeExportResult>;
@@ -62,3 +65,24 @@ export interface AeExportModalProps {
   // Live progress while `run` is in flight (the host passes the latest).
   progress?: AeExportProgress | null;
 }
+
+export {
+  AE_PACKAGE_EXT,
+  MANIFEST_FILE,
+  README_FILE,
+  SCENE_FILE,
+  aePackageBaseName,
+  aePackageNeeds,
+  aePackagePaths,
+  aePackageReport,
+  aeReadme,
+  assembleAePackage,
+  endpointTarget,
+  shaderBundlePath,
+  vetPackagePath,
+} from "./files";
+export type { AeAssembly, AeAssembleOptions, AeBakeOutcome, AePackageFile, AePackageManifest } from "./files";
+export { bakeEncodeSpec, createAeExportRunner } from "./runner";
+export type { AeBakeEncoder, AeFrameRenderer, AePackageSink, AeRenderedTick, AeRunnerDeps } from "./runner";
+export { buildZipBlob, folderSink, zipSink } from "./sinks";
+export type { ZipBakeEncoder, ZipSinkOptions } from "./sinks";

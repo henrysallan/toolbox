@@ -21,6 +21,10 @@ export interface FolderHandle {
   /** Display label (web: directory name; native: folder name). */
   readonly name: string;
   writeFile(name: string, data: Blob | Uint8Array): Promise<void>;
+  /** Write at a nested relative path ("footage/a.mov"), creating folders.
+   *  Native only: main checks the path stays inside the folder (relative,
+   *  forward slashes, no "..", quotes or control characters). */
+  writeFileAt?(relPath: string, data: Blob | Uint8Array): Promise<void>;
 }
 
 /** Mirrors the wasm path's FfmpegExportOptions minus canvas/renderFrame (those
@@ -41,6 +45,10 @@ export interface NativeVideoEncodeSpec {
   /** Export log sink id (ExportLogSink.id): the native encoder appends the
    *  spawned command line and ffmpeg's stderr to that file. */
   logId?: string;
+  /** Write into this folder at a relative path (its extension = `container`)
+   *  instead of asking with a Save dialog — the After Effects package's
+   *  baked footage. Only folders from pickSaveFolder / runAfterEffects. */
+  into?: { folder: FolderHandle; path: string };
 }
 
 /** A live native encode. The renderer drives the frame loop and pushes RGBA8
@@ -61,6 +69,102 @@ export interface ExportLogSink {
   readonly path: string | null;
   append(line: string): void;
   close(): Promise<void>;
+}
+
+/** After Effects on this machine (electron/ae.js; macOS only for now). */
+export interface AeCapabilities {
+  /** aerender and the After Effects app were found. */
+  available: boolean;
+  /** Why not, when `available` is false. */
+  reason?: string;
+  version?: string | null;
+  dir?: string;
+  aerender?: string;
+  app?: string;
+  /** The user Scripts/Startup folder headless builds hook into. */
+  startupFolder?: string;
+  /** Where main looked: TOOLBOX_AE_DIR first, then the release folders. */
+  candidates: { dir: string; source: "env" | "default"; found: boolean }[];
+  /** The Toolbox Shader host plug-in (shader regions). */
+  shaderHost: { installed: boolean; path?: string; version?: string | null };
+  /** tbxshader-check (TOOLBOX_SHADER_CHECK or ../AE_Plugins/toolbox-shader/build). */
+  shaderCheck: string | null;
+  /** The bundled ffmpeg is there (footage encodes, TIFF decodes). */
+  canEncode?: boolean;
+  /** Main's own export folder (tool exports with no picked folder). */
+  exportRoot?: string;
+}
+
+/** A package folder main created: nested writes, its absolute path, and
+ *  whether aerender can take that path (no quote / backslash / control). */
+export interface AePackageFolder extends FolderHandle {
+  readonly path: string;
+  readonly aerenderSafe: boolean;
+  readonly aerenderReason?: string;
+  writeFileAt(relPath: string, data: Blob | Uint8Array): Promise<void>;
+}
+
+export interface AeBuildResult {
+  ok: boolean;
+  /** The saved project, <package>/<name>.aep. */
+  aep?: string;
+  /** build-log.json as written by build.jsx ("" when AE could not write it). */
+  log: string;
+  /** build-log.json parsed. */
+  result: unknown;
+  /** Why it failed / what to check, in words. */
+  notes: string[];
+  /** The .aep was handed to the After Effects app (open -a). */
+  opened: boolean;
+  seconds: number;
+  aerender: { code: number | null; timedOut: boolean; output: string };
+}
+
+export interface AeRenderedFrame {
+  frame: number;
+  width?: number;
+  height?: number;
+  /** Straight-alpha RGBA8, row 0 = top (unpremultiplied from aerender's TIFF). */
+  rgba?: Uint8Array;
+  /** The TIFF aerender wrote, inside the package's renders/. */
+  file?: string;
+  error?: string;
+  seconds?: number;
+}
+
+export interface AeRenderResult {
+  comp: { id: string; name: string; width: number; height: number; fps: number; duration: number };
+  frames: AeRenderedFrame[];
+  seconds: number;
+  /** toolbox.json's `output` and `composition`, when the package has one. */
+  manifest?: { output?: string; composition?: { id?: string; name?: string } } | null;
+}
+
+export interface AeShaderCheck {
+  /** false: no tbxshader-check on this machine (`reason` says where main looked). */
+  available: boolean;
+  reason?: string;
+  checker?: string;
+  /** tbxshader-check's exit code: 0 ok, 1 errors, 2 usage / I/O / no device. */
+  status?: number | null;
+  /** Its --json line. */
+  json?: Record<string, unknown> | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+/** The desktop app's After Effects runner (electron/ae.js). Every path it
+ *  hands to After Effects is one main built inside a package it created. */
+export interface AfterEffectsRunner {
+  /** <folder or main's export folder>/<name>.aepkg, fresh (" 2" … when taken). */
+  createPackage(name: string, folder?: FolderHandle | null): Promise<AePackageFolder>;
+  /** Headless build (aerender + a one-launch startup hook); `open` then opens
+   *  the saved .aep in the After Effects app. */
+  build(pkg: string, opts?: { open?: boolean }): Promise<AeBuildResult>;
+  /** aerender the built main comp at comp frames (1–8, one launch each). */
+  render(pkg: string, frames: number[]): Promise<AeRenderResult>;
+  /** tbxshader-check --json on a .tbxfx. */
+  checkShader(tbxfx: string): Promise<AeShaderCheck>;
 }
 
 export interface Platform {
@@ -89,6 +193,13 @@ export interface Platform {
     spec: NativeVideoEncodeSpec,
     onProgress?: (label: string, fraction: number) => void
   ): Promise<VideoEncodeSession | null>;
+
+  /** After Effects on this machine (desktop; null/absent on web or an older
+   *  shell). `available` false still reports where main looked. */
+  readonly aeCapabilities?: AeCapabilities | null;
+
+  /** Build / render / check After Effects packages (desktop only). */
+  runAfterEffects?: AfterEffectsRunner;
 
   /** Open a per-export log file. null = the shell has no file sink (web, or
    *  an older desktop shell); the exporter then logs to the console only. */
