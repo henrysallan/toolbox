@@ -12,6 +12,8 @@ import { registerAllNodes } from "@/nodes";
 import { buildCatalogDsl } from "@/lib/ai/generate-recipe-client";
 import { getGlslDocs } from "@/lib/glsl-translation";
 import { exportSkia } from "@/lib/skia-export/api";
+import { planAeExport, type AeExportPolicy } from "@/lib/ae-export";
+import { aePlanReport } from "@/lib/ae-export/editor";
 import { readFileSync } from "node:fs";
 
 registerAllNodes();
@@ -287,6 +289,7 @@ const EXPECTED_TOOLS = [
   "get_shader_errors",
   "get_status",
   "insert_recipe",
+  "plan_ae_export",
   "plan_glsl_translation",
   "plan_skia_export",
   "read_source",
@@ -591,6 +594,19 @@ const bridge: BridgeClient = connectBridge({
       timeline: { fps: 60, frames: 300, seconds: 5 },
       uniforms: [{ name: "drift_x", kind: "float", animated: true, from: "Animated Value drift (2 keys)" }],
     }),
+    // After Effects (091926 §6): the planner and its editor glue are covered
+    // by check-ae-export; here a REAL report (an empty one-layer plan) has to
+    // cross the bridge as text, with scope / target / policy forwarded.
+    plan_ae_export: ({ scope, target, policy }) =>
+      aePlanReport(
+        planAeExport({
+          composition: { id: "main", name: String(target ?? "Main"), width: 1920, height: 1080, fps: 30, durationFrames: 120 },
+          layers: [{ id: String(scope ?? "root"), name: "Layer 1", nodes: [], edges: [] }],
+          infoOf: () => undefined,
+          valuesOf: () => ({}),
+          policy: policy as Partial<AeExportPolicy> | undefined,
+        })
+      ),
     export_skia: ({ target }) => {
       if (target === "nope")
         throw new Error('Nothing exported — fix these and retry:\n- No node "nope" in the graph.');
@@ -912,6 +928,33 @@ check(
     pd.includes("`animated`") && pd.includes("`from`") && pd.includes("Skia layer") && xd.includes("YOU write them") && xd.includes(".b64"),
     `${pd.slice(0, 120)} | ${xd.slice(0, 120)}`
   );
+}
+
+// After Effects plan (091926 §6): args forward, the report + JSON plan arrive
+// as one text block, a bad policy fails at the server.
+{
+  const ae = await client.callTool({
+    name: "plan_ae_export",
+    arguments: { scope: "layer-1", target: "circle-1", policy: { shaderHost: false, layerBudget: 50 } },
+  });
+  const aeText = isError(ae) ? "" : textOf(ae);
+  const at = aeText.indexOf("JSON plan:\n");
+  const aeJson = at >= 0 ? JSON.parse(aeText.slice(at + "JSON plan:\n".length)) : {};
+  check(
+    "plan_ae_export forwards scope / target / policy and returns the report then the JSON plan",
+    !isError(ae) &&
+      aeText.startsWith("After Effects export plan — route: direct") &&
+      /\nShader \(0\): none/.test(aeText) &&
+      aeJson.layers?.[0]?.id === "layer-1" &&
+      aeJson.composition?.name === "circle-1" &&
+      aeJson.policy?.shaderHost === false &&
+      aeJson.policy?.layerBudget === 50,
+    aeText.slice(0, 240)
+  );
+  const aeBad = await client.callTool({ name: "plan_ae_export", arguments: { policy: { budget: 3 } } });
+  check("plan_ae_export rejects an unknown policy key at the server", isError(aeBad), textOf(aeBad).slice(0, 120));
+  const aeBare = await client.callTool({ name: "plan_ae_export", arguments: {} });
+  check("plan_ae_export args are all optional (default: the whole composition)", !isError(aeBare) && textOf(aeBare).includes('"id":"root"'), textOf(aeBare).slice(0, 120));
 }
 
 // `seq` is required by the schema — a missing one must fail at the server,

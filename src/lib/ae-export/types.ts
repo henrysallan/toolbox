@@ -127,8 +127,14 @@ export interface AePlanNode {
   ae?: string;
   fidelity: AeFidelity;
   notes: string[];
-  // Index into the owning AePlanLayer.segments.
+  // Index into the owning AePlanLayer.segments. A value node compiled into
+  // an expression carries the segment of the property it drives; -1 when it
+  // drives nothing that exports.
   segment: number;
+  // What this node needs at export beyond its class's default (e.g. "ffx"
+  // for a gradient stroke) — the planner's per-node refinement of
+  // AeExportEntry.requires.
+  requires?: AeRequirement[];
 }
 
 export type AeSegmentKind =
@@ -138,7 +144,8 @@ export type AeSegmentKind =
   | "bake" // footage layer
   | "text"
   | "instances"
-  | "source"; // image/video source, solid, gradient generator → footage / solid layer
+  | "source" // image/video source, solid, gradient generator → footage / solid layer
+  | "composite"; // Merge / Collect: its inputs become layers of a precomp (blend modes, mattes)
 
 export type AeLayerKind =
   | "shape"
@@ -160,10 +167,20 @@ export interface AeSegment {
   aeLayer: AeLayerKind;
 }
 
+// One clip window of a toolbox layer in composition frames: visible on
+// [inFrame, outFrame); the interior's local frame 0 sits at
+// inFrame − sourceInFrame (AE startTime). Several windows = one AE layer each.
+export interface AePlanWindow {
+  inFrame: number;
+  outFrame: number;
+  sourceInFrame: number;
+}
+
 export interface AePlanLayer {
   // Toolbox layer node id (or the composition root when there are no layers).
   id: string;
   name: string;
+  windows: AePlanWindow[];
   segments: AeSegment[];
   nodes: AePlanNode[];
 }
@@ -213,6 +230,8 @@ export interface AeExportPlan {
   // Nodes whose fidelity is "approx", by name — the five-line relay's line 2.
   approximations: { id: string; type: string; note: string }[];
   estimates: { layers: number; keyframes: number; footageMB: number };
+  // Font families text layers name — AE needs them installed (§4.7).
+  fonts: string[];
   policy: AeExportPolicy;
   warnings: string[];
 }

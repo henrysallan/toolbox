@@ -1884,6 +1884,46 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       };
     },
 
+    // ---- After Effects (spec 091926_after-effects-handoff.md §6) ----------
+    // Read-only plan of the active composition, flattened the way the
+    // evaluator sees it. The composition is the one the target / scope /
+    // current scope / selection sits in. Lazy like the Skia tools.
+    plan_ae_export: async ({ scope, target, policy }) => {
+      const { planAeExportForEditor, aePlanReport, vetAePolicy } = await import("@/lib/ae-export/editor");
+      const nodes = deps.nodesRef.current;
+      const edges = deps.edgesRef.current;
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const str = (v: unknown) => (v != null && String(v).trim() ? String(v).trim() : undefined);
+      const anchor = [str(target), str(scope), deps.status.scope, deps.status.selectedNodeId ?? undefined]
+        .map((x) => x?.replace(/:(out|aux:[A-Za-z0-9_-]+)$/, ""))
+        .find((x) => !!x && byId.has(x));
+      const roots = new Set(
+        nodes.filter((n) => n.data.defType === "output" && !n.data.parentId).map((n) => n.data.compositionId)
+      );
+      const compositionId = (anchor ? byId.get(anchor)?.data.compositionId : undefined) ?? (roots.size === 1 ? [...roots][0] : undefined);
+      if (!compositionId && roots.size > 1)
+        throw new Error("Several compositions are loaded — pass `scope` (a layer id) or `target` (a node id) from get_graph to pick one.");
+      const fps = deps.fpsRef.current;
+      return aePlanReport(
+        planAeExportForEditor(nodes, edges, {
+          composition: {
+            id: compositionId ?? "main",
+            name: deps.status.projectName,
+            width: deps.status.canvasWidth,
+            height: deps.status.canvasHeight,
+            fps: deps.status.fps,
+            durationFrames: deps.status.loopFrames,
+          },
+          ...(compositionId ? { compositionId } : {}),
+          policy: vetAePolicy(policy),
+          frame: Math.round(deps.timeRef.current * fps),
+          scope: str(scope),
+          target: str(target),
+          lastOutputs: deps.lastEvalOutputsRef.current,
+        })
+      );
+    },
+
     // ---- timeline markers (101326_skia-target.md §3.5a) -------------------
     // The whole list replaces the active composition's; vetMarkersInput is
     // the strict boundary (whole frames, unique names). One undo step.
