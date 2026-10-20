@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": { "bitsPerChannel": 8, "workingSpace": "sRGB IEC61966-2.1", "linearBlending": false, "linearizeWorkingSpace": false, "expressionEngine": "javascript-1.0" },
+  "footage": [],
+  "presets": [],
+  "comps": [
+    {
+      "id": "compA",
+      "name": "A Circle",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration": 2,
+      "bgColor": [0, 0, 0],
+      "layers": [
+        {
+          "id": "clock",
+          "name": "Clock probe",
+          "kind": "null",
+          "inPoint": 0.5,
+          "outPoint": 2,
+          "startTime": 0.5,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [50, 50] },
+            "position": { "v": [960, 540] },
+            "scale": { "v": [100, 100] },
+            "rotation": {
+              "dims": 1,
+              "keys": [
+                { "t": 0.5, "v": 0, "inInterp": "linear", "outInterp": "linear" },
+                { "t": 1.5, "v": 90, "inInterp": "linear", "outInterp": "linear" }
+              ]
+            },
+            "opacity": { "v": 100 }
+          },
+          "origin": ["spike:startTime-convention"]
+        },
+        {
+          "id": "circle",
+          "name": "Circle",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "separated": {
+              "x": {
+                "dims": 1,
+                "keys": [
+                  { "t": 0, "v": 400, "inInterp": "linear", "outInterp": "bezier", "easeOut": [{ "speed": 4701.58, "influence": 33.333333333333 }] },
+                  { "t": 1, "v": 1400, "inInterp": "bezier", "outInterp": "linear", "easeIn": [{ "speed": 0, "influence": 33.333333333333 }] }
+                ]
+              },
+              "y": {
+                "dims": 1,
+                "keys": [
+                  { "t": 0.5, "v": 300, "inInterp": "linear", "outInterp": "bezier", "easeOut": [{ "speed": -2.077702832717426, "influence": 36.28219912543504 }] },
+                  { "t": 1.5, "v": 780, "inInterp": "bezier", "outInterp": "linear", "easeIn": [{ "speed": -2.077702832059894, "influence": 36.28219912549158 }] }
+                ]
+              }
+            },
+            "scale": {
+              "dims": 2,
+              "keys": [
+                { "t": 0, "v": [100, 100], "inInterp": "linear", "outInterp": "bezier", "easeOut": [{ "speed": 150, "influence": 33.333333333333 }, { "speed": -60, "influence": 33.333333333333 }] },
+                { "t": 1, "v": [150, 80], "inInterp": "bezier", "outInterp": "linear", "easeIn": [{ "speed": 0, "influence": 33.333333333333 }, { "speed": 0, "influence": 33.333333333333 }] }
+              ]
+            },
+            "rotation": { "v": 0 },
+            "opacity": {
+              "dims": 1,
+              "keys": [
+                { "t": 0, "v": 100, "inInterp": "hold", "outInterp": "hold" },
+                { "t": 1.8, "v": 40, "inInterp": "hold", "outInterp": "hold" }
+              ]
+            }
+          },
+          "masks": [
+            {
+              "name": "Spline mask",
+              "path": {
+                "v": {
+                  "vertices": [[-150, -150], [70, -150], [70, 50], [-150, 50]],
+                  "inTangents": [[0, 0], [-60, -40], [0, 0], [0, 40]],
+                  "outTangents": [[60, -40], [0, 0], [0, 0], [0, 0]],
+                  "closed": true
+                }
+              },
+              "mode": "add",
+              "inverted": false,
+              "feather": { "v": [0, 0] },
+              "expansion": { "v": 0 },
+              "opacity": { "v": 100 }
+            }
+          ],
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Circle",
+              "contents": [
+                { "kind": "ellipse", "name": "Ellipse", "size": { "v": [240, 240] }, "position": { "v": [0, 0] } },
+                { "kind": "fill", "name": "Fill", "color": { "v": [0.2, 0.6, 1] }, "opacity": { "v": 100 }, "rule": "nonzero" }
+              ],
+              "transform": { "anchor": { "v": [0, 0] }, "position": { "v": [0, 0] }, "scale": { "v": [100, 100] }, "rotation": { "v": 0 }, "opacity": { "v": 100 } }
+            }
+          ],
+          "origin": ["circle1", "transform1", "fill1", "mask1"]
+        }
+      ]
+    }
+  ],
+  "main": "compA",
+  "report": {
+    "route": "direct",
+    "native": [
+      { "id": "circle1", "type": "circle", "class": "vector", "fidelity": "exact" },
+      { "id": "transform1", "type": "transform", "class": "transform", "fidelity": "exact" },
+      { "id": "fill1", "type": "spline-fill", "class": "style", "fidelity": "exact" }
+    ],
+    "approx": [{ "id": "transform1", "type": "transform", "class": "transform", "fidelity": "approx", "note": "easeInOutSine as one best-fit segment (0.0076%)" }],
+    "shader": [],
+    "baked": [],
+    "blocked": [],
+    "warnings": [],
+    "requires": { "fonts": [] }
+  }
+}
