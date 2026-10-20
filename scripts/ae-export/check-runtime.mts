@@ -57,7 +57,7 @@ export default async function run(): Promise<number> {
   const src = readFileSync(join(RUNTIME, "build.jsx"), "utf8");
 
   // ---- build.jsx is ES3, ASCII, static ---------------------------------------
-  for (const f of ["src/lib/ae-export/runtime/build.jsx", "scripts/ae-export-spike/hook.jsx", "scripts/ae-export-spike/probe.jsx"]) {
+  for (const f of ["src/lib/ae-export/runtime/build.jsx", "scripts/ae-export-spike/hook.jsx", "scripts/ae-export-spike/probe.jsx", "scripts/ae-export-spike/gui-ffx-check.jsx"]) {
     const text = readFileSync(join(REPO, f), "utf8");
     let err = "";
     try {

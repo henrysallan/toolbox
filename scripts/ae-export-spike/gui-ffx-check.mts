@@ -3,6 +3,7 @@
 // aerender's render core; spec §13).
 //
 //   npx tsx scripts/ae-export-spike/gui-ffx-check.mts --yes-gui [--out DIR]
+//   npx tsx scripts/ae-export-spike/gui-ffx-check.mts --frame gui-frame0.png   re-check a captured frame (no AE)
 //
 // It SCRIPTS THE RUNNING After Effects (osascript DoScriptFile into
 // com.adobe.AfterEffects.application), so it refuses without --yes-gui; run it
@@ -20,7 +21,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import sharp from "sharp";
+import { inflateSync } from "node:zlib";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -32,6 +33,97 @@ const HOOK = join(STARTUP, "zz_toolbox_ae_spike_hook.jsx");
 const GUI_BUNDLE = "com.adobe.AfterEffects.application";
 
 const args = process.argv.slice(2);
+
+// ---------------------------------------------------------------------------
+// The frame check. saveFrameToPng writes a 16-bit PNG whose scale depends on
+// the open project's settings (the owner's project put white at 6553/65535),
+// so every sample is read relative to the plain white fill in the same frame.
+// ---------------------------------------------------------------------------
+
+function decodePng(buf: Buffer) {
+  if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error("not a PNG");
+  let o = 8;
+  let width = 0, height = 0, depth = 0, type = 0;
+  const idat: Buffer[] = [];
+  while (o < buf.length) {
+    const n = buf.readUInt32BE(o);
+    const t = buf.toString("latin1", o + 4, o + 8);
+    const body = buf.subarray(o + 8, o + 8 + n);
+    if (t === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      depth = body[8];
+      type = body[9];
+      if (body[12] !== 0) throw new Error("interlaced PNG");
+    } else if (t === "IDAT") idat.push(body);
+    o += 12 + n;
+  }
+  const channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 } as Record<number, number>)[type];
+  if (!channels || (depth !== 8 && depth !== 16)) throw new Error(`unsupported PNG (type ${type}, ${depth}-bit)`);
+  const bpp = (channels * depth) / 8;
+  const stride = width * bpp;
+  const raw = inflateSync(Buffer.concat(idat));
+  const rows: Uint8Array[] = [];
+  let prev = new Uint8Array(stride);
+  for (let y = 0, p = 0; y < height; y++, p += stride + 1) {
+    const f = raw[p];
+    const line = new Uint8Array(raw.subarray(p + 1, p + 1 + stride));
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? line[x - bpp] : 0;
+      const b = prev[x];
+      const c = x >= bpp ? prev[x - bpp] : 0;
+      const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c);
+      line[x] = (line[x] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]) & 255;
+    }
+    rows.push(line);
+    prev = line;
+  }
+  const max = depth === 16 ? 65535 : 255;
+  const get = (x: number, y: number): number[] => {
+    const r = rows[y];
+    const v: number[] = [];
+    for (let k = 0; k < channels; k++) v.push((depth === 16 ? (r[(x * channels + k) * 2] << 8) | r[(x * channels + k) * 2 + 1] : r[x * channels + k]) / max);
+    return channels >= 3 ? v : [v[0], v[0], v[0], v[1] ?? 1];
+  };
+  return { width, height, depth, channels, get };
+}
+
+// The c-gradient fixture's gradient samples (run.mts lists the same, GUI-only).
+const CHECKS: [string, number, number, number[]][] = [
+  ["bar (preset path group 0 / item 2 ≠ the item, 1): red stop", 101, 150, [255, 0, 0]],
+  ["bar: red → green at 25%", 250, 150, [128, 128, 0]],
+  ["bar: green stop at 50%", 400, 150, [0, 255, 0]],
+  ["bar: blue stop at the end", 698, 150, [0, 0, 255]],
+  ["ring (radial G-Stroke, exact path): 75% yellow → magenta", 350, 420, [255, 64, 191]],
+  ["nested groups (exact path): black → white midpoint", 650, 330, [128, 128, 128]],
+];
+const WHITE: [number, number] = [600, 580]; // the SVG-seeded layer's plain white fill
+
+function checkFrame(png: string): number {
+  const img = decodePng(readFileSync(png));
+  const white = img.get(WHITE[0], WHITE[1]);
+  const scale = white[0];
+  let failures = 0;
+  const line = (ok: boolean, text: string) => {
+    if (!ok) failures++;
+    console.log(`  ${ok ? "ok  " : "FAIL"} ${text}`);
+  };
+  console.log(`\nframe ${img.width}×${img.height}, ${img.depth}-bit, ${img.channels} channels; white fill encodes as ${white.slice(0, 3).map((v) => v.toFixed(4)).join(", ")}`);
+  line(scale > 0 && white[1] === scale && white[2] === scale && white[3] === 1, `white reference at (${WHITE[0]}, ${WHITE[1]}) is neutral and opaque`);
+  for (const [label, x, y, want] of CHECKS) {
+    const got = img.get(x, y).slice(0, 3).map((v) => Math.round((v / scale) * 255));
+    line(want.every((w, i) => Math.abs(got[i] - w) <= 3), `(${x}, ${y}) ${label} — got ${JSON.stringify(got)}, want ${JSON.stringify(want)} (relative to white)`);
+  }
+  return failures;
+}
+
+const frameIdx = args.indexOf("--frame");
+if (frameIdx >= 0) {
+  const n = checkFrame(resolve(args[frameIdx + 1]));
+  console.log(n ? `\ngui-ffx-check --frame: ${n} FAILED` : "\ngui-ffx-check --frame: all passed");
+  process.exit(n ? 1 : 0);
+}
+
 if (!args.includes("--yes-gui")) {
   console.error("This scripts the running After Effects app. Re-run with --yes-gui once the owner has agreed.");
   process.exit(2);
@@ -106,28 +198,8 @@ if (!pngOk) {
   process.exit(1);
 }
 
-// 5. Pixels (straight-alpha 8-bit), the c-gradient expectations of run.mts.
-const { data, info } = await sharp(PNG).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-const px = (x: number, y: number) => {
-  const o = (y * info.width + x) * info.channels;
-  return [data[o], data[o + 1], data[o + 2], data[o + 3]];
-};
-const checks: [string, number, number, number[], number][] = [
-  ["bar (preset path group 0 / item 2 ≠ the item, 1): red stop", 101, 150, [255, 0, 0], 4],
-  ["bar: red → green at 25%", 250, 150, [128, 128, 0], 4],
-  ["bar: green stop at 50%", 400, 150, [0, 255, 0], 4],
-  ["bar: blue stop at the end", 698, 150, [0, 0, 255], 4],
-  ["ring (radial G-Stroke, exact path): 75% yellow → magenta", 350, 420, [255, 64, 255], 4],
-  ["nested groups (exact path): black → white midpoint", 650, 330, [128, 128, 128], 4],
-];
-let failures = 0;
-console.log(`\nframe ${info.width}×${info.height}, ${info.channels} channels`);
-for (const [label, x, y, want, tol] of checks) {
-  const got = px(x, y);
-  const ok = want.every((w, i) => Math.abs(got[i] - w) <= tol);
-  if (!ok) failures++;
-  console.log(`  ${ok ? "ok  " : "FAIL"} (${x}, ${y}) ${label} — got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
-}
+// 5. Pixels.
+let failures = checkFrame(PNG);
 for (const j of r1.jobs ?? []) {
   const ok = j.ok && j.layersAfter === 0 && j.itemsAdded === 0;
   if (!ok) failures++;

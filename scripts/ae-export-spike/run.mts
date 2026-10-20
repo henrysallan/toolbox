@@ -267,7 +267,7 @@ const PROBES: Record<string, Probe> = {
       { frame: 0, x: 250, y: 150, want: [128, 128, 0, 255], tol: 4, label: "bar: halfway red → green at 25%", guiOnly: true },
       { frame: 0, x: 400, y: 150, want: [0, 255, 0, 255], tol: 4, label: "bar: green stop at 50%", guiOnly: true },
       { frame: 0, x: 698, y: 150, want: [0, 0, 255, 255], tol: 4, label: "bar: blue stop at the end", guiOnly: true },
-      { frame: 0, x: 350, y: 420, want: [255, 64, 255, 255], tol: 4, label: "ring (radial gradient stroke, exact path): 75% yellow → magenta", guiOnly: true },
+      { frame: 0, x: 350, y: 420, want: [255, 64, 191, 255], tol: 4, label: "ring (radial gradient stroke, exact path): 75% yellow → magenta", guiOnly: true },
       { frame: 0, x: 650, y: 330, want: [128, 128, 128, 255], tol: 4, label: "nested groups (exact path): black → white midpoint", guiOnly: true },
       { frame: 0, x: 600, y: 480, want: [128, 192, 128, 255], tol: 8, label: "SVG imported as shapes: cyan → orange midpoint" },
       // Shape layer seeded from the SVG at 50%: spans x 550..650, y 515..565.

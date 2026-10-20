@@ -933,26 +933,40 @@ Also found, all handled in build.jsx and noted in types.ts:
 - **`.ffx` (synthesized, `runtime/ffx.ts`)**: written from structure; its
   container is byte-identical to the AEUX-derived templates production CEP
   panels ship (0 differing bytes outside sizes and the XML), golden bytes are
-  gated, and stops parse back exactly. **Not verified in AE**: `applyPreset`
-  cannot run headless (above), and the GUI was off limits without the owner's
-  OK. Headless builds skip presets with a warning instead of crashing.
+  gated, and stops parse back exactly. **Verified in the After Effects app
+  (2026-10-20, owner's OK; `scripts/ae-export-spike/gui-ffx-check.mts`)**:
+  fixture C imported into the open (saved, clean) project, each Colors
+  property selected and `applyPreset` called — all three presets landed in
+  place (no new layers or contents), and every sampled color is within 2/255
+  of the stops relative to the frame's white: linear 3-stop red → green → blue
+  [254,1,0] / [127,127,0] / [0,255,0] / [0,2,253], radial Gradient Stroke at
+  75% [255,64,191], a Gradient Fill two groups deep [128,128,128]. The `bar`
+  preset's stored path (group 0, item 2) does not match its item (index 1)
+  and still landed: **AE applies to the selected property**, so the path need
+  not be exact (ffx.ts still writes the exact one). Headless, `applyPreset`
+  hangs the core (above), so build.jsx skips presets there with a warning.
 - **SVG fallback**: verified headless — native, editable Gradient Fills. A
-  shape layer may now take an SVG footage `source`; build.jsx copies the
-  imported shape layer in and adds the scene's contents after it.
-- **Verdict: SVG won for M0** — the only route verified in 26.5 and the only
-  one that works headless. `.ffx` stays implemented for gradients inside a
-  composed shape layer (a property cannot move between layers, so only a
-  preset puts stops into toolbox's own contents) and needs one run of the
-  spike's C fixture in the AE app before M2 relies on it.
+  shape layer may take an SVG footage `source`; build.jsx copies the imported
+  shape layer in and adds the scene's contents after it.
+- **Verdict: `.ffx` is the route** when build.jsx runs in the After Effects
+  app (the desktop launch and the manual path, §5.3): it puts the stops into
+  toolbox's own shape contents, which SVG cannot (a property cannot move
+  between layers). **SVG is the fallback** for headless builds (a render
+  box, CI) and for static-gradient layers whose structure SVG expresses.
+- `CompItem.saveFrameToPng(t, file)` is asynchronous in 26.5 (returns at
+  once; the file appears later) and wrote a 16-bit PNG whose white was
+  6553/65535 in the owner's project — compare frames from it against a
+  reference in the same frame, or use aerender's TIFF route.
+- `osascript … DoScriptFile` into `com.adobe.AfterEffects.application` ran
+  the check without a prompt (§5.3's desktop route works).
 
 ### Not verified
 
-- `.ffx` in the GUI (see above) — and whether AE resolves a preset by its
-  property path or by the selected property (fixture C tests both).
 - The shape-content blend-mode numbers (`SHAPE_BLEND`, menu order) and the
   Repeater composite numbers — set and read back, not render-checked.
-- osascript `DoScriptFile` into the GUI (§5.3's desktop route), 32 bpc,
-  Windows, the Advanced 3D renderer id (§9).
+- 32 bpc, Windows, the Advanced 3D renderer id (§9), and why the owner's
+  project encoded white at 0.1 in `saveFrameToPng` (its bit depth / working
+  space were not recorded).
 
 ## Appendix A — easing conversion, worked
 
