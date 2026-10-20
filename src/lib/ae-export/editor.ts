@@ -150,8 +150,22 @@ function windowsOf(n: { clips?: { inTick: number; outTick: number; sourceInTick:
   return ws.length ? ws : undefined;
 }
 
-export function buildAePlanInput(nodes: GraphNode[], edges: Edge[], env: AeEditorEnv): AePlanInput {
-  const comp = resolveComposition(nodes, edges, env.compositionId);
+// The composition as the evaluator sees it (see the header): flattened, zone
+// interiors included, bypassed nodes wired through. Shared by the planner
+// input below and the scene walk (scene/graph.ts), so both use the same ids.
+export interface AeFlatComposition {
+  comp: { nodes: GraphNode[]; edges: Edge[] };
+  names: Map<string, string>;
+  flat: ReturnType<typeof flattenGraph>;
+  allNodes: EngineNode[];
+  allEdges: GraphEdge[];
+  byId: Map<string, EngineNode>;
+  // allEdges minus edges into bypassed nodes, sources resolved through bypasses.
+  wires: GraphEdge[];
+}
+
+export function flattenAeComposition(nodes: GraphNode[], edges: Edge[], compositionId?: string): AeFlatComposition {
+  const comp = resolveComposition(nodes, edges, compositionId);
   const names = new Map(comp.nodes.map((n) => [n.id, n.data.name || getNodeDef(n.data.defType)?.name || n.data.defType]));
   const eng = toEngineGraph(comp.nodes, comp.edges);
   const flat = flattenGraph(eng.nodes, eng.edges);
@@ -189,6 +203,11 @@ export function buildAePlanInput(nodes: GraphNode[], edges: Edge[], env: AeEdito
     const s = resolveSource(e.source, e.sourceHandle);
     if (s) wires.push({ ...e, ...s });
   }
+  return { comp, names, flat, allNodes, allEdges, byId, wires };
+}
+
+export function buildAePlanInput(nodes: GraphNode[], edges: Edge[], env: AeEditorEnv): AePlanInput {
+  const { comp, names, flat, allNodes, byId, wires } = flattenAeComposition(nodes, edges, env.compositionId);
   const into = new Map<string, GraphEdge[]>();
   for (const e of wires) (into.get(e.target) ?? into.set(e.target, []).get(e.target)!).push(e);
   const sourceInto = (id: string, handle: string) => into.get(id)?.find((e) => e.targetHandle === handle);

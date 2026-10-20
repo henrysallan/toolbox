@@ -1,0 +1,304 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "A circle mask",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "matte",
+      "name": "Rectangle matte",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "matte"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "matte",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            320,
+            1280
+           ]
+          },
+          "position": {
+           "v": [
+            320,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ],
+      "enabled": false
+     },
+     {
+      "id": "fill",
+      "name": "Circle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 135
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": 45,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       },
+       "separated": {
+        "x": {
+         "keys": [
+          {
+           "t": 0,
+           "v": 640,
+           "inInterp": "linear",
+           "outInterp": "bezier",
+           "easeOut": [
+            {
+             "influence": 33.33333333333333,
+             "speed": 1203.6044800000004
+            }
+           ]
+          },
+          {
+           "t": 1,
+           "v": 896,
+           "inInterp": "bezier",
+           "outInterp": "linear",
+           "easeIn": [
+            {
+             "influence": 33.333333333333336,
+             "speed": 0
+            }
+           ]
+          }
+         ],
+         "dims": 1
+        },
+        "y": {
+         "v": 360
+        }
+       }
+      },
+      "origin": [
+       "fill",
+       "circle",
+       "move",
+       "matte"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Fill",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "v": [
+            240,
+            240
+           ]
+          },
+          "position": {
+           "v": [
+            400,
+            300
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0.2,
+            0.6,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ],
+      "matte": {
+       "layer": "matte",
+       "type": "ALPHA"
+      }
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "circle",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "move",
+     "type": "transform",
+     "class": "transform",
+     "fidelity": "exact",
+     "note": "translate: the easing overshoots or reverses — AE's spatial speed cannot, so X / Y position are separated · → the layer transform (separated X/Y position: the easing overshoots, which a group's one spatial ease cannot)"
+    },
+    {
+     "id": "matte",
+     "type": "rectangle",
+     "class": "mask",
+     "fidelity": "exact"
+    },
+    {
+     "id": "fill",
+     "type": "spline-fill",
+     "class": "style",
+     "fidelity": "exact",
+     "note": "spline mask → a hidden shape layer as ALPHA track matte (the layer transform is taken)"
+    },
+    {
+     "id": "LA",
+     "type": "layer",
+     "name": "Circle",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

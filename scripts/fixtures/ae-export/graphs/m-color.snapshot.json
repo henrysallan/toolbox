@@ -1,0 +1,269 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "M color",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "flash",
+      "name": "Tween",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 50
+       }
+      },
+      "origin": [
+       "flash"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Solid Color",
+        "contents": [
+         {
+          "kind": "rect",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "keys": [
+            {
+             "t": 0,
+             "v": [
+              1,
+              0,
+              0
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1,
+             "v": [
+              0,
+              0,
+              1
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            }
+           ],
+           "dims": 3,
+           "expression": "// toolbox: OKLab color interpolation (spec 091926 §4.3). Keys hold the colors;\n// E holds each key segment's easing. Retime or recolor keys freely; a segment\n// added in AE beyond E plays linear.\nvar E = [[\"l\"]];\nfunction tbxS2L(c) { return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }\nfunction tbxL2S(c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; }\nfunction tbxLab(c) {\n  var r = tbxS2L(c[0]), g = tbxS2L(c[1]), b = tbxS2L(c[2]);\n  var l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;\n  var m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;\n  var s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;\n  var l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);\n  return [0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,\n          1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,\n          0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_];\n}\nfunction tbxRgb(L, a, b) {\n  var l_ = L + 0.3963377774 * a + 0.2158037573 * b;\n  var m_ = L - 0.1055613458 * a - 0.0638541728 * b;\n  var s_ = L - 0.0894841775 * a - 1.291485548 * b;\n  var l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;\n  return [tbxL2S(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),\n          tbxL2S(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),\n          tbxL2S(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s)];\n}\nfunction tbxC01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }\nfunction tbxSolveX(x1, x2, x) {\n  if (x <= 0) return 0;\n  if (x >= 1) return 1;\n  function bez(u) { return 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u; }\n  function der(u) { return 3 * (1 - u) * (1 - u) * x1 + 6 * (1 - u) * u * (x2 - x1) + 3 * u * u * (1 - x2); }\n  var u = x, i, err, d, lo = 0, hi = 1;\n  for (i = 0; i < 8; i++) {\n    err = bez(u) - x;\n    if (Math.abs(err) < 1e-7) return u;\n    d = der(u);\n    if (d < 1e-6) break;\n    u = tbxC01(u - err / d);\n  }\n  for (i = 0; i < 32; i++) { u = (lo + hi) / 2; if (bez(u) < x) lo = u; else hi = u; }\n  return (lo + hi) / 2;\n}\nfunction tbxCubic(x1, y1, x2, y2, t) {\n  if (t <= 0) return 0;\n  if (t >= 1) return 1;\n  var u = tbxSolveX(tbxC01(x1), tbxC01(x2), t), o = 1 - u;\n  return 3 * o * o * u * y1 + 3 * o * u * u * y2 + u * u * u;\n}\nfunction tbxPreset(n, u) {\n  var c1, c3, i, x;\n  switch (n) {\n    case \"easeInSine\": return 1 - Math.cos(u * (Math.PI / 2));\n    case \"easeOutSine\": return Math.sin(u * (Math.PI / 2));\n    case \"easeInOutSine\": return -(Math.cos(Math.PI * u) - 1) / 2;\n    case \"easeIn\": case \"easeInQuad\": return u * u;\n    case \"easeOut\": case \"easeOutQuad\": return 1 - (1 - u) * (1 - u);\n    case \"easeInOut\": case \"easeInOutQuad\": return u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;\n    case \"easeInCubic\": return u * u * u;\n    case \"easeOutCubic\": i = 1 - u; return 1 - i * i * i;\n    case \"easeInOutCubic\": return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;\n    case \"easeInExpo\": return u === 0 ? 0 : Math.pow(2, 10 * u - 10);\n    case \"easeOutExpo\": return u === 1 ? 1 : 1 - Math.pow(2, -10 * u);\n    case \"easeInBack\": c1 = 1.70158; c3 = c1 + 1; return c3 * u * u * u - c1 * u * u;\n    case \"easeOutBack\": c1 = 1.70158; c3 = c1 + 1; i = u - 1; return 1 + c3 * i * i * i + c1 * i * i;\n    case \"easeOutBounce\":\n      if (u < 1 / 2.75) return 7.5625 * u * u;\n      if (u < 2 / 2.75) { x = u - 1.5 / 2.75; return 7.5625 * x * x + 0.75; }\n      if (u < 2.5 / 2.75) { x = u - 2.25 / 2.75; return 7.5625 * x * x + 0.9375; }\n      x = u - 2.625 / 2.75; return 7.5625 * x * x + 0.984375;\n    case \"easeOutElastic\":\n      if (u === 0) return 0;\n      if (u === 1) return 1;\n      return Math.pow(2, -10 * u) * Math.sin((u * 10 - 0.75) * ((Math.PI * 2) / 3)) + 1;\n  }\n  return u;\n}\nfunction tbxSpring(z, w, rest, u) {\n  if (u <= 0) return 0;\n  if (u >= 1) return 1;\n  if (u * w >= rest) return 1;\n  var x0 = -1, v0 = 0, w1, s1, c1, env;\n  if (z < 1) {\n    w1 = w * Math.sqrt(1 - z * z);\n    s1 = Math.sin(w1 * u);\n    c1 = Math.cos(w1 * u);\n    env = Math.exp(-z * w * u);\n    return 1 + env * (s1 * ((v0 + z * w * x0) / w1) + x0 * c1);\n  }\n  env = Math.exp(-w * u);\n  return 1 + env * (x0 + (v0 + w * x0) * u);\n}\nfunction tbxEase(d, u) {\n  if (!d) return u;\n  if (d[0] === \"c\") return tbxCubic(d[1], d[2], d[3], d[4], u);\n  if (d[0] === \"p\") return tbxPreset(d[1], u);\n  if (d[0] === \"k\") return tbxSpring(d[1], d[2], d[3], u);\n  return u;\n}\nfunction tbxColor() {\n  var n = numKeys, i;\n  if (n < 1) return value;\n  if (n < 2 || time <= key(1).time) return key(1).value;\n  if (time >= key(n).time) return key(n).value;\n  for (i = 1; i < n; i++) if (time < key(i + 1).time) break;\n  var A = key(i).value, B = key(i + 1).value, d = E[i - 1];\n  if (time === key(i).time) return A;\n  if (d && d[0] === \"h\") return A;\n  var s = tbxEase(d, (time - key(i).time) / (key(i + 1).time - key(i).time));\n  var a = tbxLab(A), b = tbxLab(B);\n  var c = tbxRgb(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s);\n  var al = A.length > 3 ? A[3] + (B[3] - A[3]) * s : 1;\n  return [tbxC01(c[0]), tbxC01(c[1]), tbxC01(c[2]), al];\n}\ntbxColor();\n"
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "sky",
+      "name": "Ramp",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "sky"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      },
+      "effects": [
+       {
+        "match": "ADBE Ramp",
+        "name": "Gradient Ramp",
+        "props": {
+         "ADBE Ramp-0001": {
+          "v": [
+           0,
+           360
+          ]
+         },
+         "ADBE Ramp-0002": {
+          "v": [
+           0,
+           0,
+           0
+          ]
+         },
+         "ADBE Ramp-0003": {
+          "v": [
+           1280,
+           360
+          ]
+         },
+         "ADBE Ramp-0004": {
+          "v": [
+           1,
+           1,
+           1
+          ]
+         },
+         "ADBE Ramp-0005": {
+          "v": 1
+         },
+         "ADBE Ramp-0006": {
+          "v": 0
+         },
+         "ADBE Ramp-0007": {
+          "v": 0
+         }
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "sky",
+     "type": "gradient",
+     "class": "effect",
+     "fidelity": "exact",
+     "note": "Gradient Ramp linear (Ramp Scatter 0)"
+    },
+    {
+     "id": "flash",
+     "type": "solid-color",
+     "class": "effect",
+     "fidelity": "exact",
+     "note": "color: OKLab expression on linear RGB keys (the keys alone play AE's RGB lerp if the expression is disabled) · color: OKLab tween as an expression on linear RGB keys (exact, not graph-editable) · keyed color → a comp-sized rectangle whose Fill carries the keys"
+    },
+    {
+     "id": "LM0",
+     "type": "layer",
+     "name": "Ramp",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LM1",
+     "type": "layer",
+     "name": "Tween",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

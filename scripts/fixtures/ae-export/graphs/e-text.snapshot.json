@@ -1,0 +1,137 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "E text",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "title",
+      "name": "Title",
+      "kind": "text",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "title"
+      ],
+      "text": {
+       "document": {
+        "v": {
+         "text": "Hello AE",
+         "font": "Inter-Bold",
+         "fontSize": 120,
+         "fillColor": [
+          1,
+          0.8,
+          0
+         ],
+         "tracking": 50,
+         "leading": 144,
+         "justification": "center",
+         "allCaps": false,
+         "box": {
+          "size": [
+           1280,
+           264
+          ],
+          "position": [
+           0,
+           317.28
+          ]
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "LE",
+     "type": "layer",
+     "name": "Title",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "title",
+     "type": "text",
+     "class": "text",
+     "fidelity": "approx",
+     "note": "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking, leading, case, alignment, box; on-path → Path Options. Glyph metrics differ from toolbox's rasterizer; animators → AE animators (M4); gradient fills → Gradient Ramp on the layer. · glyph metrics: toolbox's canvas rasterizer vs AE's text engine (font Inter-Bold) · no wrap: the AE box is the toolbox box (long lines may wrap in AE where toolbox overflows)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": [
+     "Inter"
+    ]
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

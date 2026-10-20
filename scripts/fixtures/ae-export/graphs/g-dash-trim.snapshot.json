@@ -1,0 +1,413 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Dash-Trim",
+    "name": "G dash trim · Dash Trim",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "dash",
+      "name": "Stroke",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dash",
+       "rule",
+       "cut",
+       "both"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Stroke",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Trim Path",
+          "contents": [
+           {
+            "kind": "path",
+            "name": "Line 1",
+            "path": {
+             "v": {
+              "vertices": [
+               [
+                320,
+                360
+               ],
+               [
+                960,
+                360
+               ]
+              ],
+              "inTangents": [
+               [
+                0,
+                0
+               ],
+               [
+                0,
+                0
+               ]
+              ],
+              "outTangents": [
+               [
+                0,
+                0
+               ],
+               [
+                0,
+                0
+               ]
+              ],
+              "closed": false
+             }
+            }
+           },
+           {
+            "kind": "trim",
+            "start": {
+             "v": 10
+            },
+            "end": {
+             "v": 90
+            },
+            "offset": {
+             "v": 0
+            },
+            "mode": "individual"
+           }
+          ]
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            1,
+            0.25098039215686274,
+            0.25098039215686274
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 6
+          },
+          "cap": "butt",
+          "join": "round",
+          "miterLimit": 10,
+          "dashes": [
+           {
+            "dash": {
+             "v": 30
+            },
+            "gap": {
+             "v": 20
+            }
+           }
+          ],
+          "dashOffset": {
+           "v": 0
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "ring",
+      "name": "Circle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ring",
+       "both"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Circle trim",
+          "contents": [
+           {
+            "kind": "ellipse",
+            "name": "Circle",
+            "size": {
+             "v": [
+              307.2,
+              307.2
+             ]
+            },
+            "position": {
+             "v": [
+              384,
+              360
+             ]
+            }
+           },
+           {
+            "kind": "trim",
+            "start": {
+             "v": 0
+            },
+            "end": {
+             "keys": [
+              {
+               "t": 0,
+               "v": 25,
+               "inInterp": "linear",
+               "outInterp": "bezier",
+               "easeOut": [
+                {
+                 "influence": 62.48852626987205,
+                 "speed": -4.863206642706251
+                }
+               ]
+              },
+              {
+               "t": 1,
+               "v": 100,
+               "inInterp": "bezier",
+               "outInterp": "linear",
+               "easeIn": [
+                {
+                 "influence": 62.48852626987205,
+                 "speed": -4.863206642706262
+                }
+               ]
+              }
+             ],
+             "dims": 1
+            },
+            "offset": {
+             "v": 0
+            },
+            "mode": "individual"
+           }
+          ]
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 12
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 4
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "G dash trim",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Dash-Trim",
+      "name": "Dash Trim",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dash",
+       "rule",
+       "cut",
+       "both",
+       "ring"
+      ],
+      "source": "comp:Dash-Trim"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "rule",
+     "type": "line",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "cut",
+     "type": "trim-path",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "dash",
+     "type": "spline-stroke",
+     "class": "style",
+     "fidelity": "exact",
+     "note": "dashes → one Dash / Gap pair (Canvas and AE both start the pattern at each path's start)"
+    },
+    {
+     "id": "both",
+     "type": "merge",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LG",
+     "type": "layer",
+     "name": "Dash Trim",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ring",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "trim_end: easeInOutCubic → best-fit cubic (≤0.27%); Exact policy adds a midpoint key. · bundled trim → Trim Paths: toolbox's primitive trim uses the segment measure, AE trims by arc length · trim_end: within 0.192 (AE units) of toolbox at every frame"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

@@ -1,0 +1,382 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Two-cuts",
+    "name": "I clips · Two cuts",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "box",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 0.8333333333333334,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Rectangle rotate",
+          "contents": [
+           {
+            "kind": "rect",
+            "name": "Rectangle",
+            "size": {
+             "v": [
+              256,
+              256
+             ]
+            },
+            "position": {
+             "v": [
+              1024,
+              360
+             ]
+            },
+            "roundness": {
+             "v": 0
+            }
+           }
+          ],
+          "transform": {
+           "anchor": {
+            "v": [
+             1024,
+             360
+            ]
+           },
+           "position": {
+            "v": [
+             1024,
+             360
+            ]
+           },
+           "rotation": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": 90,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           }
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0.8,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "I clips",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "LI1",
+      "name": "Two cuts 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 0.5,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "LI1"
+      ],
+      "source": "comp:Two-cuts"
+     },
+     {
+      "id": "LI1#2",
+      "name": "Two cuts 2",
+      "kind": "precomp",
+      "inPoint": 1,
+      "outPoint": 1.6666666666666667,
+      "startTime": 0.8333333333333334,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "LI1"
+      ],
+      "source": "comp:Two-cuts"
+     },
+     {
+      "id": "pulse",
+      "name": "Windowed",
+      "kind": "shape",
+      "inPoint": 0.3333333333333333,
+      "outPoint": 1.3333333333333333,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "pulse"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "keys": [
+            {
+             "t": 0.3333333333333333,
+             "v": [
+              128,
+              128
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            },
+            {
+             "t": 1,
+             "v": [
+              384,
+              384
+             ],
+             "inInterp": "linear",
+             "outInterp": "linear"
+            }
+           ],
+           "dims": 2
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pulse",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LI0",
+     "type": "layer",
+     "name": "Windowed",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LI1",
+     "type": "layer",
+     "name": "Two cuts",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "a bake inside this layer follows its first clip window's clock · 2 clip windows on different clocks → one precomp, placed 2×"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [
+    "Layer \"Two cuts\" has 2 clip windows — one AE layer each."
+   ],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": [
+  "Layer \"Two cuts\" has 2 clip windows — one AE layer each."
+ ]
+}

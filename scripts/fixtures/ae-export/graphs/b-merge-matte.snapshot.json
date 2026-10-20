@@ -1,0 +1,480 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Circle",
+    "name": "B merge matte · Circle",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "dot",
+      "name": "Circle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dot"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "v": [
+            400,
+            400
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.5019607843137255,
+            0.10196078431372549
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Front",
+    "name": "B merge matte · Front",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "band",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "band"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            1280,
+            200
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            300
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ],
+      "enabled": false
+     },
+     {
+      "id": "pre:Circle",
+      "name": "Circle",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dot",
+       "soft",
+       "mix"
+      ],
+      "source": "comp:Circle",
+      "effects": [
+       {
+        "match": "ADBE Gaussian Blur 2",
+        "name": "Blur",
+        "props": {
+         "ADBE Gaussian Blur 2-0003": {
+          "v": 1
+         },
+         "ADBE Gaussian Blur 2-0001": {
+          "v": 6
+         }
+        }
+       }
+      ],
+      "matte": {
+       "layer": "band",
+       "type": "LUMA"
+      }
+     },
+     {
+      "id": "clear",
+      "name": "Solid Color",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 0
+       }
+      },
+      "origin": [
+       "clear",
+       "mix"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      }
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "B merge matte",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Front",
+      "name": "Front",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "screen",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "band",
+       "dot",
+       "soft",
+       "mix",
+       "clear"
+      ],
+      "source": "comp:Front"
+     },
+     {
+      "id": "navy",
+      "name": "Back",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "navy"
+      ],
+      "solid": {
+       "color": [
+        0.050980392156862744,
+        0.10196078431372549,
+        0.30196078431372547
+       ],
+       "width": 1280,
+       "height": 720
+      }
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "navy",
+     "type": "solid-color",
+     "class": "effect",
+     "fidelity": "exact"
+    },
+    {
+     "id": "clear",
+     "type": "solid-color",
+     "class": "effect",
+     "fidelity": "exact"
+    },
+    {
+     "id": "dot",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "band",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "mix",
+     "type": "merge",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "layer 1: in:mask:L1 → LUMA track matte"
+    },
+    {
+     "id": "LB0",
+     "type": "layer",
+     "name": "Back",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LB1",
+     "type": "layer",
+     "name": "Front",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "soft",
+     "type": "blur",
+     "class": "effect",
+     "fidelity": "approx",
+     "note": "Gaussian Blur: Blurriness ↔ radius needs the calibrated map from convert/ (M2); Repeat Edge Pixels on. mode bokeh → Camera Lens Blur (approx); convolve → shader. · approx, uncalibrated: ADBE Gaussian Blur 2 — PLACEHOLDER Blurriness = radius px — not yet calibrated against AE 26.5"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}
