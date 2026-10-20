@@ -39,7 +39,9 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - Keys are written in the containing comp's time, even on a layer with a
   non-zero `startTime` (*measured*).
 - Layer clip windows become `inPoint` / `outPoint`; the layer-local clock
-  offset becomes `startTime`. Several windows become one AE layer each.
+  offset becomes `startTime`. Windows on one clock emit straight into the
+  main comp; windows on different clocks become one precomp, placed once
+  per window with that window's start time.
 - The Toolbox Shader effect's clock is layer time × Time Speed + Time
   Offset (equal to comp time for layers that start at 0).
 
@@ -56,15 +58,24 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - Springs become per-frame keys, exact at frames only.
 - AE's minimum influence is 0.1%: a `cubicBezier` handle sitting on its key
   costs ~3e-4.
+- Position, color and path keys have one ease for all dimensions, and AE
+  never plays them past their keys: a negative speed is stored as 0 and an
+  over-long handle is shortened (*measured*). Back and elastic on those
+  become per-frame keys. Per-dimension eases overshoot freely.
 
 ## Color
 
 - Toolbox interpolates keyed colors in **OKLab** (default) or RGB; AE always
   interpolates RGB. A red→blue tween differs badly at the midpoint.
 - Policy `auto` (default): an OKLab-lerp **expression** on shape / solid
-  colors (exact, two keys, not graph-editable), **dense keys** within
-  2/255 elsewhere (red→blue 63 keys, orange→teal 56, black→white 9).
-  `rgb` accepts AE's interpolation and reports the worst ΔE.
+  colors (exact; it sits on the track's own keys, which stay editable),
+  **dense keys** within 2/255 elsewhere (red→blue 63 keys, orange→teal 56,
+  black→white 9). `rgb` accepts AE's interpolation and reports the worst
+  ΔE; a segment AE can't play within tolerance (an in-out cubic, whose fit
+  dips below 0) still goes dense.
+- AE solids can't key their color, so a keyed solid color becomes a
+  comp-sized rectangle shape layer.
+- One-ease color speed is in 0–255 units per second (*measured*).
 - An 8-digit hex color's alpha rides a separate opacity track.
 - Ramps are sampled into gradient stops within 1/255; `srgb` ramps map 1:1.
 - The builder sets the project's color settings explicitly (bit depth,
@@ -81,14 +92,27 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 
 ## Effects, masks, mattes
 
-- Built-in effect params are addressed as `<match>-<4-digit position>`
-  (`ADBE Gaussian Blur 2-0001`); third-party params as
-  `<match>-<4-digit disk ID>` (`TBX Shader-0020`) (*measured*).
+- Effect params are addressed as `<match>-<4-digit param ID>`: the ID, not
+  the param's position in Effect Controls, for built-ins
+  (`ADBE Gaussian Blur 2-0001`) and third-party effects alike
+  (`TBX Shader-0020`) (*measured*).
+- AE hands a shape or text layer's effects a buffer cropped to its content;
+  toolbox filters frame-sized images. Effects therefore go on a comp-sized
+  precomp of the layer.
+- Echo and Displacement Map read their layer's source frames and ignore
+  effects earlier on the layer, so their inputs are precomposed.
+- Some nodes are two AE effects on one layer (Posterize = Levels, then
+  Posterize; Threshold = a Channel Mixer, then Threshold). The per-node docs
+  (`ae-nodes/<type>`) give each map and its measured error.
 - A layer param (`PF_Param_LAYER`) is set by layer index; AE then follows
   the layer, not the index.
-- Merge's per-layer matte is an AE luma track matte set by reference
-  (`setTrackMatte`, AE 23+). The universal `mask` input becomes the
-  effected layer, matted, over an un-effected copy — exact by construction.
+- Merge's per-layer matte is a track matte set by reference
+  (`setTrackMatte`, AE 23+): Luma when the mask is an image (luma × alpha),
+  Alpha when it's a spline; `maskInvert` gives the Inverted type.
+- The universal `mask` input: a spline mask on an AE effect becomes that
+  effect's Compositing Options mask, on one layer. An image mask makes the
+  effected layer, luma-matted, over an un-effected copy — exact by
+  construction.
 - An effect's Compositing Options mask follows the mask's mode: Add = effect
   inside, Subtract = outside, **None is ignored**, and a referenced mask
   stops masking the layer (*measured*). Effect-only masks are mode Add.
@@ -97,14 +121,19 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 
 ## Gradients
 
-- AE scripting can't set gradient stop colors directly. Two routes, both
-  verified in AE 26.5:
-  - **In the AE app** (build.jsx run there): a synthesized `.ffx` preset
-    applied to the gradient's Colors. AE applies a preset to the selected
-    property, so it works for gradients nested in shape groups. Stops land
-    within 2/255 (*measured*).
-  - **Headless** (aerender, which hangs on `applyPreset`): an SVG imported as
-    cropped shape layers, giving native, editable Gradient Fills.
+- AE scripting can't set gradient stop colors directly. The route depends
+  on the gradient's structure; both are verified in AE 26.5:
+  - **SVG seed** (default): gradient groups at the top of a shape layer,
+    holding only static paths with flat or gradient fills and plain
+    strokes, move into an SVG imported as cropped shape layers: native,
+    editable Gradient Fills. The rest of the layer stays native underneath.
+    Works headless and in the app.
+  - **`.ffx` preset**: gradients in composed contents (modifiers, group
+    transforms, keys, dashes). A synthesized preset is applied to the
+    gradient's Colors; stops land within 2/255 (*measured*). Needs the AE
+    app build: aerender hangs on `applyPreset`, so a headless build shows
+    AE's default gradient and the report says so.
+- A Gradient node (2-stop linear or radial) is Gradient Ramp on a solid.
 - Animated gradient stops can't be scripted at all: shader region or bake.
 
 ## Text
@@ -115,3 +144,10 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
   sets every attribute explicitly.
 - Glyph metrics differ between toolbox's rasterizer and AE, so text is
   `approx`.
+- Text animators, text on a path, keyed text documents and gradient or
+  image fills bake for now.
+
+## ExtendScript
+
+- AE 26.5's ExtendScript reads `a ? x : b ? y : z` as
+  `(a ? x : b) ? y : z` (*measured*). Never nest ternaries in `.jsx`.

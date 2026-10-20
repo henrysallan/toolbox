@@ -908,7 +908,7 @@ pass, 6 are GUI-only.**
 | `setTrackMatte(layer, LUMA)` | reads back LUMA, `isTrackMatte` true; a matte parented to a keyed null moves with it (pixels at frames 0 / 25) |
 | Screen blend, 8 bpc | [255, 141, 95] ±3 — the sRGB screen formula |
 | project color settings | bitsPerChannel 8 / 16, workingSpace "sRGB IEC61966-2.1", linearBlending, linearizeWorkingSpace, expressionEngine "javascript-1.0" all read back as written |
-| effect param match names | built-ins: `<match>-<4-digit position>` (Gaussian Blur 2-0001…0003, Tint-0001…0004, Displacement Map-0001…0008). Third-party: `<match>-<4-digit **disk ID**>`, not position — AEPL Line Runners' Density sits at position 32 and is `AEPL Line Runners-0029`, Stroke is `-0049` — so `tbxShaderParamMatch` holds |
+| effect param match names | built-ins: `<match>-<4-digit position>` (**corrected in §14: the param ID, not its position**) (Gaussian Blur 2-0001…0003, Tint-0001…0004, Displacement Map-0001…0008). Third-party: `<match>-<4-digit **disk ID**>`, not position — AEPL Line Runners' Density sits at position 32 and is `AEPL Line Runners-0029`, Stroke is `-0049` — so `tbxShaderParamMatch` holds |
 | `AeLayerRef` effect props | a layer param (value type LAYER_INDEX) takes `setValue(index)`; AE then follows the layer, not the index (value tracked a `moveToEnd()`); both `{ layerRef }` and `{ v: { layerRef } }` resolve in fixture E |
 
 Also found, all handled in build.jsx and noted in types.ts:
