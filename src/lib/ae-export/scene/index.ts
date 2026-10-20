@@ -62,10 +62,11 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     name: opts.name,
     report: new AeReport(plan),
     out: { comps: [], footage: [], presets: [], files: [], assets: [], bakes: [], bundles: [], warnings: [], problems: [] },
+    projectNeeds: {},
     free: new WeakSet(),
     uid: makeUid(),
   };
-  for (const a of plan.approximations) ctx.report.approx(a.id, a.note);
+  for (const a of plan.approximations) ctx.report.seedApprox(a.id, a.note);
   for (const b of plan.blocked) ctx.out.problems.push(`${b.type} (${b.id}) is a live input: ${b.reason}`);
 
   const em: Emitters = {
@@ -147,7 +148,10 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
       bitsPerChannel: plan.policy.bitsPerChannel,
       workingSpace: "sRGB IEC61966-2.1",
       linearBlending: false,
-      linearizeWorkingSpace: false,
+      // Off: toolbox composites display-referred sRGB, and the calibrated
+      // effect maps were measured that way (Gaussian Blur 2 linearizes on its
+      // own; in a linearized space it would twice). build.jsx sets it.
+      linearizeWorkingSpace: ctx.projectNeeds.linearizeWorkingSpace ?? false,
       expressionEngine: "javascript-1.0",
     },
     footage: ctx.out.footage,

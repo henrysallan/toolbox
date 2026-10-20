@@ -232,11 +232,14 @@
         "match": "ADBE Gaussian Blur 2",
         "name": "Blur",
         "props": {
+         "ADBE Gaussian Blur 2-0002": {
+          "v": 1
+         },
          "ADBE Gaussian Blur 2-0003": {
           "v": 1
          },
          "ADBE Gaussian Blur 2-0001": {
-          "v": 6
+          "v": 10.478093999999999
          }
         }
        }
@@ -458,7 +461,7 @@
      "type": "blur",
      "class": "effect",
      "fidelity": "approx",
-     "note": "Gaussian Blur: Blurriness ↔ radius needs the calibrated map from convert/ (M2); Repeat Edge Pixels on. mode bokeh → Camera Lens Blur (approx); convolve → shader. · approx, uncalibrated: ADBE Gaussian Blur 2 — PLACEHOLDER Blurriness = radius px — not yet calibrated against AE 26.5"
+     "note": "Gaussian Blur, calibrated: Blurriness = 1.7464·radius, Repeat Edge Pixels on. AE blurs in linear light (γ 2.4), so it stands in for linearize on (≤ 0.033 mean, a 1-px grid's worst); linearize off, bokeh / convolve and radius > 42.7 (toolbox's 64-tap cap) → shader. · measured with the working space un-linearized — the project keeps Linearize Working Space off · ADBE Gaussian Blur 2 — Blurriness = 1.7464·radius (σ_AE = B/3.50 in linear light, σ_toolbox = r/2; R² 0.999999996 over r 2–42). Matches linearize on: toolbox decodes piecewise sRGB, AE a pure 2.404 power, so fine mixed detail (a 1-px grid) sits up to 0.033 brighter in AE; noise and soft content ≤ 0.002 mean. Never in a linearized working space: Gaussian Blur 2 then linearizes twice (γ ≈ 5.4)."
     }
    ],
    "shader": [],

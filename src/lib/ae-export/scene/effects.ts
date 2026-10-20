@@ -6,20 +6,29 @@
 //          image-source → footage (AeAssetCopy), fit → Scale, its own TRS on
 //                         a precomp (toolbox crops the fitted image to the frame)
 //          video-source → footage, played from the layer's start
-// raster   built-in effects through calibration.ts's aeEffectMap(type): static
-//          params via `map`, keyed ones through the map's `linear` rule (each
-//          key's value mapped, speeds scaled), driven ones per frame. A map
-//          with measured: false is reported "approx, uncalibrated". No map, or
-//          one whose applies() refuses the node's params → the node is a
-//          shader region of its own (a fused node in opts.fused) or bakes.
+// raster   built-in effects through calibration.ts's resolveAeEffectMap(type,
+//          values, ctx) — the map or the first variant that applies (sharpen
+//          box → Sharpen, unsharp → Unsharp Mask). A map is a chain on ONE
+//          layer: its `before` steps, the main effect, its `then` steps.
+//          Per step: fixed props; params via `map` — keyed ones through the
+//          map's `linear` rule (each key's value mapped, speeds scaled),
+//          wired or non-linear ones per frame; `derived` props (several
+//          params → one value) static, or per frame when a param they read
+//          animates; `kind: "layer"` derived props (displace's map) → the
+//          input rendered as a hidden precomp and an AeLayerRef. measured:
+//          false is reported "approx, uncalibrated". No map, or a refusal →
+//          the node is a shader region of its own (a fused node in
+//          opts.fused) or bakes, with the map's refusal as the reason.
 //          An image Transform → the layer transform (or a precomp's, when
 //          something already sits between).
 //
 // Effects run on a layer before its transform and track matte, so a layer
-// whose transform or matte is taken collapses into a precomp first.
+// whose transform or matte is taken collapses into a precomp first; so does
+// one with effects already, ahead of Echo / Displacement Map (they read the
+// layer's source).
 
 import { evaluateKeyframesAt, type KeyframeAnimationBlock } from "@/engine/keyframes";
-import { aeEffectMap, type AeEffectContext, type AeParamMap } from "../calibration";
+import { resolveAeEffectMap, type AeDerivedProp, type AeEffectContext, type AeEffectStep, type AeInputLayer, type AeParamMap } from "../calibration";
 import { numericTrackToAe, sampledTrackToAe, uv01AxisAffine } from "../convert";
 import type { AeEffect, AeLayer, AePlanNode, AeProp } from "../types";
 import {
@@ -51,8 +60,13 @@ import { applyImageMask, isSplineEndpoint, matteSource, splineMasks } from "./ma
 import { nodeTransform, nodeTrs, type NodeTrs } from "./trs";
 
 export function effectContext(ctx: WalkCtx): AeEffectContext {
-  return { width: ctx.canvas.width, height: ctx.canvas.height, bitsPerChannel: ctx.policy.bitsPerChannel };
+  return { width: ctx.canvas.width, height: ctx.canvas.height, bitsPerChannel: ctx.policy.bitsPerChannel, fps: ctx.fps };
 }
+
+// Effects that read their layer's SOURCE frames and ignore the effects
+// before them on the same layer (calibration.ts: Echo, Displacement Map):
+// a layer that already carries effects collapses into a precomp first.
+const SOURCE_READERS = new Set(["ADBE Echo", "ADBE Displacement Map"]);
 
 // One layer an effect / transform can go on: collapsed when its transform
 // or track matte is already taken. An effect also needs a comp-sized buffer:
@@ -102,11 +116,11 @@ export function emitSource(scope: Scope, endpoint: string, pn: AePlanNode, em: E
     return null;
   } else {
     // An effect-class generator with no input (a map may exist for it).
+    const mapped = mapEffects(scope, id);
+    if (!mapped || "refusal" in mapped) return shaderOrBake(scope, endpoint, pn, em, mapped ? mapped.refusal : "no AE effect map (calibration.ts) for this node");
     const L = compSolid(scope, name, [id]);
-    const fx = mapEffect(scope, id, pn);
-    if (!fx) return shaderOrBake(scope, endpoint, pn, em, "no AE effect map");
-    L.effects = [fx];
-    r = rendered(L);
+    L.effects = mapped.effects;
+    r = { layers: [...mapped.helpers, L], main: L };
   }
   if (!r) return null;
   const mask = ctx.graph.wireInto(id, "in:mask");
@@ -327,22 +341,97 @@ function mapParam(scope: Scope, id: string, param: string, m: AeParamMap, ectx: 
   return { v: m.map(raw, ectx) };
 }
 
-// The AE effect for a node through its calibration map, or null.
-export function mapEffect(scope: Scope, id: string, pn: AePlanNode): AeEffect | null {
+// A derived prop (several params → one AE value). Static unless a param
+// it reads is keyed or wired: then the map runs at every frame of the
+// window with the values at that tick (per-frame keys, reported sampled).
+function derivedProp(scope: Scope, id: string, d: AeDerivedProp, ectx: AeEffectContext): AeProp {
+  const { ctx, clock } = scope;
+  const values = ctx.graph.params(id);
+  const moving = d.from.filter((p) => isAnimatedParam(ctx, id, p));
+  if (!moving.length) return { v: d.map(values, ectx) };
+  for (const p of moving) {
+    const src = driverOf(ctx, id, p);
+    const what = `${p} (read by ${d.prop}) animates → that prop per frame`;
+    if (src) markDriven(ctx, id, p, src, what);
+    else ctx.report.sampled(id, what);
+  }
+  const r = sampledTrackToAe(
+    windowFrames(clock),
+    (tick) => {
+      const at: Record<string, unknown> = { ...values };
+      for (const p of moving) at[p] = staticAt(ctx, id, p, tick, typeof values[p] === "number" ? (values[p] as number) : 0);
+      const ae = d.map(at, ectx);
+      return Array.isArray(ae) ? (ae as number[]) : [Number(ae)];
+    },
+    keyCtx(ctx, clock),
+    `derived ${d.prop}`
+  );
+  if ("v" in r.prop) return { v: r.prop.v.length === 1 ? r.prop.v[0] : r.prop.v };
+  return r.prop.dims === 1 ? { keys: r.prop.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 } : r.prop;
+}
+
+// A layer param (AeInputLayer): the node's input socket rendered as its own
+// hidden, comp-sized precomp (AE reads a referenced layer's source, so the
+// map must not carry effects of its own), referenced by id.
+function inputLayer(scope: Scope, id: string, inp: AeInputLayer): { prop: AeProp; layers: AeLayer[] } {
+  const { ctx } = scope;
+  const w = ctx.graph.wireInto(id, `in:${inp.input}`);
+  if (!w) throw new BakeSignal(`nothing is wired into ${inp.input} — the AE effect needs that layer`);
+  const inner = scope.render(sourceEndpoint(w));
+  const plain = inner.main && inner.main.kind === "precomp" && inner.layers.length === 1 && ctx.free.has(inner.main) && !inner.main.effects?.length;
+  const ref = plain ? inner : collapse(scope, { layers: inner.layers }, `${ctx.graph.name(w.source)} → ${inp.input}`);
+  ref.main!.enabled = false;
+  ctx.report.note(id, `${inp.input} → a hidden precomp layer the effect references`);
+  return { prop: { v: { layerRef: ref.main!.id } }, layers: ref.layers };
+}
+
+export interface MappedEffects {
+  // In order: the map's `before` steps, the main effect, its `then` steps.
+  effects: AeEffect[];
+  // Hidden layers the effects reference (layer params); they go in the
+  // same comp as the effected layer.
+  helpers: AeLayer[];
+}
+
+// The AE effects for a node through its calibration map (or its first
+// variant that applies), or why none applies, or undefined with no map.
+export function mapEffects(scope: Scope, id: string): MappedEffects | { refusal: string } | undefined {
   const { ctx } = scope;
   const n = ctx.graph.node(id)!;
-  const map = aeEffectMap(n.type);
-  if (!map) return null;
   const values = ctx.graph.params(id);
-  if (map.applies && !map.applies(values)) return null;
   const ectx = effectContext(ctx);
-  const props: Record<string, AeProp> = {};
-  for (const [k, v] of Object.entries(map.fixed ?? {})) props[k] = { v };
-  for (const [param, m] of Object.entries(map.params)) props[m.prop] = mapParam(scope, id, param, m, ectx);
+  const res = resolveAeEffectMap(n.type, values, ectx);
+  if (!res || "refusal" in res) return res;
+  const map = res.map;
+  if (map.project?.linearizeWorkingSpace === false) {
+    // The scene's project keeps the working space un-linearized (index.ts);
+    // say why on the node.
+    ctx.projectNeeds.linearizeWorkingSpace = false;
+    ctx.report.note(id, "measured with the working space un-linearized — the project keeps Linearize Working Space off");
+  }
+  const helpers: AeLayer[] = [];
+  const name = ctx.graph.name(id);
+  const steps: AeEffectStep[] = [...(map.before ?? []), map, ...(map.then ?? [])];
+  // A measured exact form (sharpen's unsharp → Unsharp Mask) beats the plan
+  // table's approx guess for the node type; keyed params may still add theirs.
+  if (map.measured && map.fidelity === "exact") ctx.report.exactAfterAll(id, `${steps.map((x) => x.match).join(" → ")} (exact, measured)`);
+  const effects = steps.map((st): AeEffect => {
+    const props: Record<string, AeProp> = {};
+    for (const [k, v] of Object.entries(st.fixed ?? {})) props[k] = { v };
+    for (const [param, m] of Object.entries(st.params ?? {})) props[m.prop] = mapParam(scope, id, param, m, ectx);
+    for (const d of st.derived ?? []) {
+      if (d.kind === "layer") {
+        const ref = inputLayer(scope, id, d.map(values, ectx) as AeInputLayer);
+        props[d.prop] = ref.prop;
+        helpers.push(...ref.layers);
+      } else props[d.prop] = derivedProp(scope, id, d, ectx);
+    }
+    return { match: st.match, name: st === map ? name : `${name} (${st.match.replace(/^ADBE /, "")})`, props };
+  });
   if (!map.measured) ctx.report.approx(id, `approx, uncalibrated: ${map.match}${map.note ? ` — ${map.note}` : ""}`);
-  else if (map.fidelity === "approx") ctx.report.approx(id, `${map.match}${map.note ? ` — ${map.note}` : ""}`);
-  void pn;
-  return { match: map.match, name: ctx.graph.name(id), props };
+  else if (map.fidelity === "approx") ctx.report.approx(id, `${steps.map((x) => x.match).join(" → ")}${map.note ? ` — ${map.note}` : ""}`);
+  else if (map.note) ctx.report.note(id, map.note);
+  return { effects, helpers };
 }
 
 // A node with no AE effect: its own shader region (opts.fused) or a bake.
@@ -384,26 +473,32 @@ export function emitRaster(scope: Scope, endpoint: string, pn: AePlanNode, em: E
     return maskedOver(scope, id, t, scope.render(input), maskEp);
   }
 
-  const fx = mapEffect(scope, id, pn);
-  if (!fx) return shaderOrBake(scope, endpoint, pn, em, aeEffectMap(node.type) ? "the AE effect map refuses these params" : "no AE effect map (calibration.ts) for this node");
+  const mapped = mapEffects(scope, id);
+  if (!mapped || "refusal" in mapped) return shaderOrBake(scope, endpoint, pn, em, mapped ? mapped.refusal : "no AE effect map (calibration.ts) for this node");
 
-  const base = effectTarget(scope, scope.render(input), ctx.graph.name(input.split(":")[0]));
-  // A spline mask on an AE effect: its Compositing Options mask (one layer).
-  if (maskEp && isSplineEndpoint(scope, maskEp)) {
-    const masks = splineMasks(scope, maskEp, { name: `${ctx.graph.name(id)} mask` });
+  let base = effectTarget(scope, scope.render(input), ctx.graph.name(input.split(":")[0]));
+  // A spline mask on an AE effect: its Compositing Options mask on every
+  // step (one layer); each step then acts only inside the mask.
+  const splineMask = maskEp && isSplineEndpoint(scope, maskEp);
+  for (const fx of mapped.effects) {
+    if (SOURCE_READERS.has(fx.match) && base.main.effects?.length) {
+      ctx.report.note(id, `${fx.match} reads its layer's source: the layer with effects before it is precomposed first`);
+      base = collapse(scope, { layers: base.layers }, ctx.graph.name(id)) as Rendered & { main: AeLayer };
+    }
+    base.main.effects = [...(base.main.effects ?? []), fx];
+  }
+  base.main.origin = [...new Set([...(base.main.origin ?? []), id])];
+  if (splineMask) {
+    const masks = splineMasks(scope, maskEp!, { name: `${ctx.graph.name(id)} mask` });
     const first = (base.main.masks?.length ?? 0) + 1;
     base.main.masks = [...(base.main.masks ?? []), ...masks];
     if (masks.length > 1) ctx.report.approx(id, "a multi-subpath spline mask: Compositing Options references its first subpath only");
-    fx.compositingMask = { mask: first };
+    for (const fx of mapped.effects) fx.compositingMask = { mask: first };
     ctx.report.note(id, "spline mask → the effect's Compositing Options mask");
-    base.main.effects = [...(base.main.effects ?? []), fx];
-    base.main.origin = [...(base.main.origin ?? []), id];
-    return withNodeOpacity(scope, id, base);
   }
-  base.main.effects = [...(base.main.effects ?? []), fx];
-  base.main.origin = [...(base.main.origin ?? []), id];
-  if (!maskEp) return withNodeOpacity(scope, id, base);
-  return withNodeOpacity(scope, id, maskedOver(scope, id, base, scope.render(input), maskEp));
+  const withHelpers: Rendered = { layers: [...mapped.helpers, ...base.layers], main: base.main };
+  if (!maskEp || splineMask) return withNodeOpacity(scope, id, withHelpers);
+  return withNodeOpacity(scope, id, maskedOver(scope, id, withHelpers, scope.render(input), maskEp));
 }
 
 // mix(input, output, mask): the effected layer, matted, over the input.

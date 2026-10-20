@@ -543,6 +543,41 @@ SCENE_FIXTURES.push({
   },
 });
 
+// --- calibrated effect chains: Levels → Posterize, a displacement map layer ------------
+SCENE_FIXTURES.push({
+  name: "o-calibrated",
+  title: "O calibrated",
+  comp,
+  build(g) {
+    // Black → white along x, posterized to 4 levels: toolbox rounds v·3.
+    const A = g.layer("LO0", "Posterized");
+    g.node(A, "ramp", "gradient", { mode: "linear", start_x: 0, start_y: 0.5, end_x: 1, end_y: 0.5, color_a: "#000000", color_b: "#ffffff" });
+    g.node(A, "bands", "posterize", { levels: 4 });
+    g.wire("ramp:out", "bands:in:image");
+    g.out(A, "bands:out");
+    // A slab pushed left by a white map: (1 − 0.5)·0.05·W = 32 px.
+    const B = g.layer("LO1", "Displaced");
+    g.node(B, "slab", "rectangle", { originX: 500 / W, originY: cy(W, H, 660), width: 200 / W, height: 80 / W, stroke_enabled: false, fill_enabled: true, fill_color: "#ff0000" });
+    g.node(B, "map", "solid-color", { color: "#ffffff" });
+    g.node(B, "push", "displace", { amountX: 0.05, amountY: 0 });
+    g.wire("slab:aux:image", "push:in:image");
+    g.wire("map:out", "push:in:displacement");
+    g.out(B, "push:out");
+  },
+  probe: {
+    frames: [0],
+    pixels: [
+      { frame: 0, x: 100, y: 200, want: [0, 0, 0, 255], tol: 3, label: "posterize: v 0.08 → level 0" },
+      { frame: 0, x: 300, y: 200, want: [85, 85, 85, 255], tol: 3, label: "posterize: v 0.23 → 1/3 (Levels makes AE's floor round like toolbox)" },
+      { frame: 0, x: 900, y: 200, want: [170, 170, 170, 255], tol: 3, label: "posterize: v 0.70 → 2/3" },
+      { frame: 0, x: 1200, y: 200, want: [255, 255, 255, 255], tol: 3, label: "posterize: v 0.94 → 1" },
+      { frame: 0, x: 380, y: 660, want: [255, 0, 0, 255], tol: 3, label: "displaced slab: its left edge moved from 400 to 368" },
+      // v = 585.5/1280 = 0.46 → level 1/3: the ramp, not the red slab.
+      { frame: 0, x: 585, y: 660, want: [85, 85, 85, 255], tol: 3, label: "…and its right edge from 600 to 568 (the ramp shows through)" },
+    ],
+  },
+});
+
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");
   const g = new GraphBuilder({ makeInstanceNode, makeLayerNodes });

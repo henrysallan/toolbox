@@ -1,0 +1,486 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Solid-Color-displacement",
+    "name": "O calibrated · Solid Color → displacement",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "map",
+      "name": "Solid Color",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "map"
+      ],
+      "solid": {
+       "color": [
+        1,
+        1,
+        1
+       ],
+       "width": 1280,
+       "height": 720
+      }
+     }
+    ]
+   },
+   {
+    "id": "comp:Rectangle",
+    "name": "O calibrated · Rectangle",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "slab",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            200,
+            80
+           ]
+          },
+          "position": {
+           "v": [
+            500,
+            660
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "O calibrated",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Solid-Color-displacement",
+      "name": "Solid Color → displacement",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "map"
+      ],
+      "source": "comp:Solid-Color-displacement",
+      "enabled": false
+     },
+     {
+      "id": "pre:Rectangle",
+      "name": "Displaced",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab",
+       "push"
+      ],
+      "source": "comp:Rectangle",
+      "effects": [
+       {
+        "match": "ADBE Displacement Map",
+        "name": "Displace",
+        "props": {
+         "ADBE Displacement Map-0006": {
+          "v": 2
+         },
+         "ADBE Displacement Map-0007": {
+          "v": 0
+         },
+         "ADBE Displacement Map-0008": {
+          "v": 0
+         },
+         "ADBE Displacement Map-0002": {
+          "v": 1
+         },
+         "ADBE Displacement Map-0004": {
+          "v": 2
+         },
+         "ADBE Displacement Map-0003": {
+          "v": 32
+         },
+         "ADBE Displacement Map-0005": {
+          "v": 0
+         },
+         "ADBE Displacement Map-0001": {
+          "v": {
+           "layerRef": "pre:Solid-Color-displacement"
+          }
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "ramp",
+      "name": "Posterized",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ramp",
+       "bands"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      },
+      "effects": [
+       {
+        "match": "ADBE Ramp",
+        "name": "Gradient Ramp",
+        "props": {
+         "ADBE Ramp-0001": {
+          "v": [
+           0,
+           360
+          ]
+         },
+         "ADBE Ramp-0002": {
+          "v": [
+           0,
+           0,
+           0
+          ]
+         },
+         "ADBE Ramp-0003": {
+          "v": [
+           1280,
+           360
+          ]
+         },
+         "ADBE Ramp-0004": {
+          "v": [
+           1,
+           1,
+           1
+          ]
+         },
+         "ADBE Ramp-0005": {
+          "v": 1
+         },
+         "ADBE Ramp-0006": {
+          "v": 0
+         },
+         "ADBE Ramp-0007": {
+          "v": 0
+         }
+        }
+       },
+       {
+        "match": "ADBE Easy Levels2",
+        "name": "Posterize (Easy Levels2)",
+        "props": {
+         "ADBE Easy Levels2-0001": {
+          "v": 1
+         },
+         "ADBE Easy Levels2-0003": {
+          "v": 0
+         },
+         "ADBE Easy Levels2-0004": {
+          "v": 1
+         },
+         "ADBE Easy Levels2-0005": {
+          "v": 1
+         },
+         "ADBE Easy Levels2-0006": {
+          "v": 0.125
+         },
+         "ADBE Easy Levels2-0007": {
+          "v": 0.875
+         }
+        }
+       },
+       {
+        "match": "ADBE Posterize",
+        "name": "Posterize",
+        "props": {
+         "ADBE Posterize-0001": {
+          "v": 4
+         }
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "ramp",
+     "type": "gradient",
+     "class": "effect",
+     "fidelity": "exact",
+     "note": "Gradient Ramp linear (Ramp Scatter 0)"
+    },
+    {
+     "id": "slab",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "map",
+     "type": "solid-color",
+     "class": "effect",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LO0",
+     "type": "layer",
+     "name": "Posterized",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LO1",
+     "type": "layer",
+     "name": "Displaced",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "bands",
+     "type": "posterize",
+     "class": "effect",
+     "fidelity": "approx",
+     "note": "ADBE Easy Levels2 → ADBE Posterize — Exact: AE's Posterize bins at floor(v·L)/(L − 1), toolbox rounds; a Levels whose output is [0.5/L, (L − 0.5)/L] first makes the floor land on the rounding. Refuses gamma ≠ 1 and luma mode."
+    },
+    {
+     "id": "push",
+     "type": "displace",
+     "class": "effect",
+     "fidelity": "approx",
+     "note": "Displacement Map (Stretch Map to Fit, no wrap) with the map as a hidden layer: Max H = amountX·W/2, Max V = −amountY·H/2 (≤ 0.008 mean). AE leaves pixels pushed past the edge transparent where toolbox's default clamps (an alpha band ≤ 0.06); midlevel ≠ 0.5, rotate, mirror edges → shader. · displacement → a hidden precomp layer the effect references · ADBE Displacement Map — Displacement Map with the `displacement` input as a hidden layer, Stretch Map to Fit: Max Horizontal = amountX·W/2, Max Vertical = −amountY·H/2 (toolbox's Y is up; AE offsets by (v − 0.5)·2·max). Wrap off = transparent past the edge, so toolbox's default clamp shows an alpha band there (α mean 0.016 at amount 0.05, 0.058 at 0.2); the luminance channel's weights differ slightly. AE reads the map layer's source: precompose a map with effects. Refuses midlevel ≠ 0.5, rotate and mirror edges."
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}
