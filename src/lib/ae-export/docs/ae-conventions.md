@@ -97,10 +97,14 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 
 ## Gradients
 
-- AE scripting can't set gradient stop colors. The verified route is an
-  SVG imported as cropped shape layers (native, editable Gradient Fills);
-  a synthesized `.ffx` preset also exists but only applies inside the AE
-  app, not headless.
+- AE scripting can't set gradient stop colors directly. Two routes, both
+  verified in AE 26.5:
+  - **In the AE app** (build.jsx run there): a synthesized `.ffx` preset
+    applied to the gradient's Colors. AE applies a preset to the selected
+    property, so it works for gradients nested in shape groups. Stops land
+    within 2/255 (*measured*).
+  - **Headless** (aerender, which hangs on `applyPreset`): an SVG imported as
+    cropped shape layers, giving native, editable Gradient Fills.
 - Animated gradient stops can't be scripted at all: shader region or bake.
 
 ## Text

@@ -29,9 +29,9 @@ Numbers first, diff shape second, the picture last.
 6. **Easing shape** — position or value off mid-segment, exact on the
    keys. Editable fits are within 0.3%; use the Exact policy.
 7. **Hash noise** — speckled differences in noise built from
-   `fract(sin(x)·43758.5…)`. Metal's IEEE `sin` and toolbox's fast-math
-   `sin` disagree after the multiply; compare the plug-in's math mode with
-   toolbox's.
+   `fract(sin(x)·43758.5…)`. Both sides compile with fast math, so this
+   should be near zero; if it isn't, check the installed plug-in is the
+   fast-math build (`tbxshader-check --json` reports its version).
 8. **LUT precision / edge fetches** — ≤ ~5e-4 on ramp channels, or a
    one-pixel border difference from `texelFetch` clamping.
 9. **Text** — glyph positions shift with the font AE has installed. Text is

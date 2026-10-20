@@ -80,6 +80,9 @@ and `compare_renders`, then validate again.
   RGBA; nothing is premultiplied on either side.
 - Out-of-range `texelFetch` clamps to the edge (WebGL2 returns 0).
 - LUTs are float in the plug-in and RGBA16F in toolbox: up to ~5e-4 apart.
+- Bundles compile with Metal's **fast math**, as toolbox's WebGL does
+  (ANGLE on Metal), so hash noise like `fract(sin(x)·43758.5…)` matches;
+  the plug-in keeps a NaN / infinity guard fast math can't remove.
 - 8, 16 and 32 bpc all work; 32 bpc keeps over-range values.
 - A shader that fails to compile renders transparent and the effect's
   status line shows "Compile error: msl <line>:<col>: …".
