@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": { "bitsPerChannel": 8, "workingSpace": "sRGB IEC61966-2.1", "linearBlending": false, "linearizeWorkingSpace": false, "expressionEngine": "javascript-1.0" },
+  "footage": [],
+  "presets": [],
+  "comps": [
+    {
+      "id": "compB",
+      "name": "B Matte Blur",
+      "width": 1280,
+      "height": 720,
+      "fps": 25,
+      "duration": 2,
+      "bgColor": [0, 0, 0],
+      "layers": [
+        {
+          "id": "rig",
+          "name": "Rig",
+          "kind": "null",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": {
+              "dims": 2,
+              "keys": [
+                { "t": 0, "v": [640, 360], "inInterp": "linear", "outInterp": "linear" },
+                { "t": 2, "v": [640, 420], "inInterp": "linear", "outInterp": "linear" }
+              ]
+            },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "origin": ["gizmo1"]
+        },
+        {
+          "id": "matte",
+          "name": "Matte",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "parent": "rig",
+          "enabled": false,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [0, -150] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Matte rect",
+              "contents": [
+                { "kind": "rect", "size": { "v": [1280, 420] }, "position": { "v": [0, 0] }, "roundness": { "v": 0 } },
+                { "kind": "fill", "color": { "v": [1, 1, 1] }, "opacity": { "v": 100 }, "rule": "nonzero" }
+              ]
+            }
+          ],
+          "origin": ["rect1", "fill2"]
+        },
+        {
+          "id": "glow",
+          "name": "Glow",
+          "kind": "solid",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "screen",
+          "matte": { "layer": "matte", "type": "LUMA" },
+          "solid": { "color": [1, 0.5, 0.1], "width": 400, "height": 300 },
+          "transform": {
+            "anchor": { "v": [200, 150] },
+            "position": { "v": [640, 360] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "masks": [
+            {
+              "name": "Blur region",
+              "path": {
+                "v": {
+                  "vertices": [[-10, -10], [200, -10], [200, 310], [-10, 310]],
+                  "inTangents": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                  "outTangents": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                  "closed": true
+                }
+              },
+              "mode": "add",
+              "inverted": false,
+              "feather": { "v": [0, 0] },
+              "expansion": { "v": 0 },
+              "opacity": { "v": 100 }
+            }
+          ],
+          "effects": [
+            {
+              "match": "ADBE Gaussian Blur 2",
+              "name": "Blur",
+              "props": {
+                "ADBE Gaussian Blur 2-0001": { "v": 30 },
+                "ADBE Gaussian Blur 2-0002": { "v": 1 },
+                "ADBE Gaussian Blur 2-0003": { "v": 0 }
+              },
+              "compositingMask": { "mask": 1, "opacity": { "v": 100 } }
+            }
+          ],
+          "origin": ["solid1", "blur1", "merge1"]
+        },
+        {
+          "id": "bg",
+          "name": "Background",
+          "kind": "solid",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "solid": { "color": [0.05, 0.1, 0.3], "width": 1280, "height": 720 },
+          "transform": {
+            "anchor": { "v": [640, 360] },
+            "position": { "v": [640, 360] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "origin": ["solid2"]
+        }
+      ]
+    }
+  ],
+  "main": "compB",
+  "report": {
+    "route": "direct",
+    "native": [
+      { "id": "merge1", "type": "merge", "class": "layer", "fidelity": "exact" },
+      { "id": "gizmo1", "type": "gizmo", "class": "transform", "fidelity": "exact" }
+    ],
+    "approx": [{ "id": "blur1", "type": "blur", "class": "effect", "fidelity": "approx", "note": "Gaussian Blur 2, radius map uncalibrated" }],
+    "shader": [],
+    "baked": [],
+    "blocked": [],
+    "warnings": [],
+    "requires": { "fonts": [] }
+  }
+}

@@ -1,0 +1,204 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": { "bitsPerChannel": 8, "workingSpace": "sRGB IEC61966-2.1", "linearBlending": false, "linearizeWorkingSpace": false, "expressionEngine": "javascript-1.0" },
+  "footage": [{ "id": "svg1", "path": "footage/gradient.svg", "kind": "svg", "alpha": "straight", "name": "SVG gradient source" }],
+  "presets": [
+    { "id": "bar", "path": "presets/bar.ffx" },
+    { "id": "ring", "path": "presets/ring.ffx" },
+    { "id": "nested", "path": "presets/nested.ffx" }
+  ],
+  "comps": [
+    {
+      "id": "compC",
+      "name": "Gradient",
+      "width": 800,
+      "height": 600,
+      "fps": 30,
+      "duration": 1,
+      "layers": [
+        {
+          "id": "svgShape",
+          "name": "SVG as shape layer",
+          "kind": "shape",
+          "source": "svg1",
+          "inPoint": 0,
+          "outPoint": 1,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [100, 50] },
+            "position": { "v": [600, 540] },
+            "scale": { "v": [50, 50] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Added by the scene",
+              "contents": [
+                { "kind": "ellipse", "size": { "v": [40, 40] }, "position": { "v": [100, 130] } },
+                { "kind": "fill", "color": { "v": [1, 1, 1] }, "opacity": { "v": 100 }, "rule": "nonzero" }
+              ]
+            }
+          ],
+          "origin": ["svg-source2"]
+        },
+        {
+          "id": "svgLayer",
+          "name": "SVG gradient",
+          "kind": "precomp",
+          "source": "svg1",
+          "inPoint": 0,
+          "outPoint": 1,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [100, 50] },
+            "position": { "v": [600, 480] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "origin": ["svg-source1"]
+        },
+        {
+          "id": "nestedLayer",
+          "name": "Nested gradient",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 1,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [650, 330] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Outer",
+              "contents": [
+                {
+                  "kind": "group",
+                  "name": "Inner",
+                  "contents": [
+                    { "kind": "ellipse", "size": { "v": [120, 120] }, "position": { "v": [0, 0] } },
+                    {
+                      "kind": "gradient-fill",
+                      "type": "linear",
+                      "start": { "v": [-60, 0] },
+                      "end": { "v": [60, 0] },
+                      "stops": { "colors": [{ "offset": 0, "color": [0, 0, 0] }, { "offset": 1, "color": [1, 1, 1] }], "opacities": [] },
+                      "preset": "nested",
+                      "opacity": { "v": 100 },
+                      "rule": "nonzero"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "origin": ["circle2", "ramp-fill1"]
+        },
+        {
+          "id": "ringLayer",
+          "name": "Gradient ring",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 1,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [200, 420] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Ring",
+              "contents": [
+                { "kind": "ellipse", "size": { "v": [300, 300] }, "position": { "v": [0, 0] } },
+                {
+                  "kind": "gradient-stroke",
+                  "type": "radial",
+                  "start": { "v": [0, 0] },
+                  "end": { "v": [200, 0] },
+                  "stops": {
+                    "colors": [{ "offset": 0, "color": [1, 1, 0] }, { "offset": 1, "color": [1, 0, 1] }],
+                    "opacities": [{ "offset": 0, "opacity": 1 }, { "offset": 1, "opacity": 1 }]
+                  },
+                  "preset": "ring",
+                  "opacity": { "v": 100 },
+                  "width": { "v": 40 },
+                  "cap": "butt",
+                  "join": "miter",
+                  "miterLimit": 4
+                }
+              ]
+            }
+          ],
+          "origin": ["circle3", "ramp-stroke1"]
+        },
+        {
+          "id": "barLayer",
+          "name": "Gradient rect",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 1,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [400, 150] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Bar",
+              "contents": [
+                { "kind": "rect", "size": { "v": [600, 160] }, "position": { "v": [0, 0] }, "roundness": { "v": 0 } },
+                {
+                  "kind": "gradient-fill",
+                  "type": "linear",
+                  "start": { "v": [-300, 0] },
+                  "end": { "v": [300, 0] },
+                  "stops": {
+                    "colors": [{ "offset": 0, "color": [1, 0, 0] }, { "offset": 0.5, "color": [0, 1, 0] }, { "offset": 1, "color": [0, 0, 1] }],
+                    "opacities": [{ "offset": 0, "opacity": 1 }, { "offset": 1, "opacity": 1 }]
+                  },
+                  "preset": "bar",
+                  "opacity": { "v": 100 },
+                  "rule": "nonzero"
+                }
+              ]
+            }
+          ],
+          "origin": ["rectangle2", "ramp-fill2"]
+        }
+      ]
+    }
+  ],
+  "main": "compC",
+  "report": {
+    "route": "direct",
+    "native": [{ "id": "ramp-fill2", "type": "spline-fill", "class": "style", "fidelity": "exact" }],
+    "approx": [],
+    "shader": [],
+    "baked": [],
+    "blocked": [],
+    "warnings": [],
+    "requires": { "fonts": [] }
+  }
+}

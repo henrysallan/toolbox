@@ -237,16 +237,20 @@ export interface AeEase {
 
 export interface AeKey<T = unknown> {
   // Seconds, in the time of the comp that contains the layer (setValueAtTime's
-  // convention). M0 confirms AE's behavior for a startTime-shifted layer.
+  // convention). Confirmed in AE 26.5 (spec §13): keys written at comp time t
+  // on a layer with startTime 0.5 read back keyTime() = t.
   t: number;
   v: T;
   inInterp: AeInterp;
   outInterp: AeInterp;
   // Length 1 for 1-D, color and spatial properties; `dims` for non-spatial
-  // 2-D / 3-D ones (AE's own rule, §1 follow-ups).
+  // 2-D / 3-D ones (AE's own rule, §1 follow-ups). AE's Scale is ThreeD even
+  // on a 2-D layer: build.jsx completes a short list with its last entry.
   easeIn?: AeEase[];
   easeOut?: AeEase[];
   // Spatial tangents (position-like properties only), relative, layer px.
+  // Omitted = zero (a straight motion path; build.jsx turns AE's auto-bezier
+  // off). [x, y] on a 2-D layer's Position gets z = 0.
   spatialIn?: number[];
   spatialOut?: number[];
 }
@@ -362,7 +366,10 @@ export type AeShapeItem =
       start: AeProp<[number, number]>;
       end: AeProp<[number, number]>;
       // Static only — stop colors are not scriptable; applied via `preset`
-      // (a synthesized .ffx under presets/) or an SVG import fallback.
+      // (a synthesized .ffx under presets/, runtime/ffx.ts) or an SVG import
+      // fallback (an SVG-seeded shape layer, see AeLayer.source). A preset
+      // needs the After Effects app: applyPreset hangs aerender's core, so a
+      // headless build leaves AE's default gradient and says so.
       stops: AeGradientStops;
       preset?: string;
       highlightLength?: AeProp<number>;
@@ -410,6 +417,10 @@ export interface AeEffect {
   // Toolbox Shader only: bundle id under shaders/.
   bundle?: string;
   // Compositing Options → mask reference (1-based mask index on the layer).
+  // Measured in AE 26.5 (spec §13): the effect follows the mask's mode — add
+  // = inside, subtract = outside, "none" is IGNORED — and a mask an effect
+  // references stops masking the layer. So an effect-only mask is mode
+  // "add" (or "subtract" for the inverse), never "none".
   compositingMask?: { mask: number; opacity?: AeProp<number> };
   enabled?: boolean;
 }
@@ -482,7 +493,9 @@ export interface AeLayer {
   contents?: AeShapeItem[];
   effects?: AeEffect[];
   text?: { document: AeProp<AeTextDocument>; animators?: AeTextAnimator[]; pathMask?: number };
-  // Footage id or comp id (precomp / footage layers).
+  // Footage id or comp id (precomp / footage layers). On a shape layer: an
+  // "svg" footage id whose imported shapes (native, editable Gradient Fills
+  // included) seed the contents; `contents` are then added after them.
   source?: string;
   // Solid / adjustment layers.
   solid?: { color: AeRGB; width: number; height: number };

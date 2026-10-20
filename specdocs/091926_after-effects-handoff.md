@@ -832,6 +832,119 @@ Owner answers, 2026-10-19. Items 1 and 7 are still open.
 - Version drift on the AE side (match names are stable for a decade; the
   builder is versioned per AE release and reports the host version).
 
+## 13. Results — M0 (AE runtime)
+
+Run 2026-10-19 in After Effects **26.5 (26.5x89)** on macOS 26.6.2 (Apple
+silicon), headless through `aerender`, with the owner's AE GUI open the whole
+time and never scripted. Harness: `scripts/ae-export-spike/run.mts`; offline
+gate: `scripts/ae-export/check-runtime.mts` (`npx tsx scripts/check-ae-export.mts runtime`).
+Runtime: `src/lib/ae-export/runtime/` (`build.jsx`, `ffx.ts`, `validate.ts`).
+Fixtures `scripts/fixtures/ae-export/`: A circle (keyed transform +
+spline mask), B two layers (luma matte by reference, Screen, Gaussian Blur
+with a compositing mask, parented matte), C gradients (+ SVG), D text, E a
+kitchen sink (precomp + time remap, 3-D, camera, light, adjustment +
+expression, footage, spatial tangents, path keys, every shape modifier).
+**All five build headless with 0 problems; 141 checks pass, 6 are GUI-only.**
+
+### How AE runs headless on macOS (corrects §1 and §5.3)
+
+- **There is no `aerender -r`** in a stock 26.5: Adobe's
+  `Scripts/Startup/commandLineRenderer.jsx` rejects unknown flags; nexrender's
+  `-r` is a patch it writes into that file. Not done here.
+- aerender launches its own render core, `aerendercore -noui <args> -port …
+  -aerenderpid …` (bundle `com.adobe.aerendercore`, a separate process from
+  the GUI's `com.adobe.AfterEffects.application`). The core evaluates
+  `gAECommandLineRenderer.Render(<args>)` and quits, so it never idles for
+  `DoScriptFile` Apple Events. Its arguments are pasted into that JavaScript
+  **unescaped** — a `"` in `-project` hangs the core — so the desktop app must
+  never pass untrusted paths to aerender.
+- What does run: the core evaluates the **user** Startup folder
+  (`~/Library/Preferences/Adobe/After Effects/26.5/Scripts/Startup/`) after
+  `commandLineRenderer.jsx` loads, with all 449 effects available and the
+  parent's environment. The spike copies `hook.jsx` there for one aerender
+  launch, gated on `TBX_AE_SPIKE_DRIVER` (set only in aerender's environment),
+  and deletes it on exit. AE ignores a `HOME` override.
+- In that context `app.newProject()` **blocks forever** (build.jsx closes the
+  current project with `PROMPT_TO_SAVE_CHANGES` instead, or builds into a
+  pristine one), `renderQueue.render()` returns without rendering (renders
+  run from the saved queue in a second plain `aerender -project` launch), and
+  **`layer.applyPreset()` hangs or crashes the core** (`EXC_BAD_ACCESS` in
+  `CEffectsV2::ApplyFavorite`) with *any* preset — Adobe's shipped
+  `Compress-Expand Dynamic Range.ffx` included — with or without
+  `openInViewer()`, also when deferred into `Render()`. `app.isUISuppressed` is
+  true there (`isRenderEngine` is false); build.jsx keys on it.
+- Timings: one aerender launch that builds + probes all five packages 6.1 s;
+  rendering a project's queued frames 4.1 s per launch; build.jsx itself
+  0.03–0.11 s per fixture (0.93 s with an SVG import).
+
+### Measured
+
+| check | result |
+|---|---|
+| easeOutBack as its exact cubic `(1/3, 1.5672, 2/3, 1)` — max \|AE − easeOf\| over 31 frames | **0.00000%** (AE ≡ the cubic) |
+| easeInOutSine, §4.2's 3-decimal fit `(0.380, 0.016, 0.640, 1.010)` | **0.2501%** — misses ≤ 0.25% |
+| easeInOutSine, minimax refit `(0.362822, −0.001570, 0.637178, 1.001570)` | **0.0076%** (31 frames; 0.00765% analytic); AE ≡ the cubic |
+| easeOutCubic on a 2-D Scale, 2 scene eases | 0.00000% both dims — AE's Scale is **ThreeD** on a 2-D layer and wants 3 eases; build.jsx pads |
+| hold keys | exact (100 until the key, 40 from it) |
+| key times on a layer with startTime 0.5 | **comp time**: keys written at 0.5 / 1.5 read back 0.5 / 1.5; valueAtTime(1.0) = 45 |
+| interpolation / ease read back | exact — after re-asserting: `setTemporalEaseAtKey` turns a LINEAR side into BEZIER |
+| spatial Position, no tangents | straight path; 0.00047 px off linear at the midpoint (AE's arc-length sampling) |
+| spatial tangents `[x, y]` on a 2-D layer | AE wants 3 values (Position is ThreeD_SPATIAL); padded with z = 0, read back exactly |
+| JSON reader (in AE) | fixtures with `\u` escapes and raw UTF-8 build identically to JSON.parse |
+| JSON reader (Node, gate) | 13 tricky strings, 13 numbers, 8 documents, 26 malformed inputs rejected (incl. `__proto__`, depth > 256), 400 fuzz docs both ways; 2.5 MB in 28 ms |
+| headless build + save | 5/5 packages, 0 problems, `<name>.aep` saved next to `<name>.aepkg`, `build-log.json` written |
+| TIFF with alpha, `-s N -e N` | "TIFF Sequence with Alpha" = TIFF, RGB + Alpha, Millions of Colors+, **Premultiplied (Matted)**; 8-bit RGBA via sharp; pixel checks within ±1–3/255 after unpremultiplying |
+| aerender CLI frame vs render-queue frame | `compareRgba` meanAbs 0, alphaMeanAbs 0, **match** |
+| render queue | each queued item needs its own output name (else AE skips it: "name of an output module … already in use"); files are numbered by comp frame |
+| `canImportAs` on an SVG | FOOTAGE true, COMP **false**, COMP_CROPPED_LAYERS **true** |
+| SVG as cropped layers | `importFile()` **returns null** but creates the comp: one `ADBE Vector Layer`, Group → Path + native `ADBE Vector Graphic - G-Fill` with start/end points; renders cyan → orange within ±8/255; survives `copyToComp` |
+| `setTrackMatte(layer, LUMA)` | reads back LUMA, `isTrackMatte` true; a matte parented to a keyed null moves with it (pixels at frames 0 / 25) |
+| Screen blend, 8 bpc | [255, 141, 95] ±3 — the sRGB screen formula |
+| project color settings | bitsPerChannel 8 / 16, workingSpace "sRGB IEC61966-2.1", linearBlending, linearizeWorkingSpace, expressionEngine "javascript-1.0" all read back as written |
+
+Also found, all handled in build.jsx and noted in types.ts:
+
+- **Compositing Options masks follow the mask's mode**: Add = effect inside,
+  Subtract = effect outside, **None = ignored** (same pixels as no reference),
+  and a mask an effect references stops masking the layer. Effect-only masks
+  are therefore mode "add", not "none" (§4.4's wording); the validator rejects
+  "none".
+- **New text layers inherit the Character panel's last-used settings** — here
+  the owner's InterBrex Medium 196 px, All Caps, tracking −50, fixed leading.
+  build.jsx sets every attribute the scene implies (caps, faux styles, scales,
+  baseline, auto leading); `horizontal/verticalScale` are fractions (1 = 100%).
+- Stroke / Offset Paths miter limit is hidden (refuses values) once the join
+  is not Miter — set it first. `Property.isSpatial` is true for paths, which
+  the spatial-tangent calls reject. Removing all Time Remap keys switches
+  remapping off. Camera / light Scale and Opacity are hidden. `"str" + File`
+  throws in ExtendScript.
+
+### The gradient route
+
+- **`.ffx` (synthesized, `runtime/ffx.ts`)**: written from structure; its
+  container is byte-identical to the AEUX-derived templates production CEP
+  panels ship (0 differing bytes outside sizes and the XML), golden bytes are
+  gated, and stops parse back exactly. **Not verified in AE**: `applyPreset`
+  cannot run headless (above), and the GUI was off limits without the owner's
+  OK. Headless builds skip presets with a warning instead of crashing.
+- **SVG fallback**: verified headless — native, editable Gradient Fills. A
+  shape layer may now take an SVG footage `source`; build.jsx copies the
+  imported shape layer in and adds the scene's contents after it.
+- **Verdict: SVG won for M0** — the only route verified in 26.5 and the only
+  one that works headless. `.ffx` stays implemented for gradients inside a
+  composed shape layer (a property cannot move between layers, so only a
+  preset puts stops into toolbox's own contents) and needs one run of the
+  spike's C fixture in the AE app before M2 relies on it.
+
+### Not verified
+
+- `.ffx` in the GUI (see above) — and whether AE resolves a preset by its
+  property path or by the selected property (fixture C tests both).
+- The shape-content blend-mode numbers (`SHAPE_BLEND`, menu order) and the
+  Repeater composite numbers — set and read back, not render-checked.
+- osascript `DoScriptFile` into the GUI (§5.3's desktop route), 32 bpc,
+  Windows, the Advanced 3D renderer id (§9).
+
 ## Appendix A — easing conversion, worked
 
 For a 1 s, 100 px segment: easeOutCubic → out `(influence 33.33, speed 300)`,

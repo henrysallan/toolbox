@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": { "bitsPerChannel": 8, "workingSpace": "sRGB IEC61966-2.1", "linearBlending": false, "linearizeWorkingSpace": false, "expressionEngine": "javascript-1.0" },
+  "footage": [],
+  "presets": [],
+  "comps": [
+    {
+      "id": "compD",
+      "name": "Text",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 2,
+      "layers": [
+        {
+          "id": "title",
+          "name": "Title",
+          "kind": "text",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [640, 260] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "text": {
+            "document": {
+              "v": {
+                "text": "Toolbox \u2192 AE \"quoted\"",
+                "font": "Arial-BoldMT",
+                "fontSize": 96,
+                "fillColor": [1, 1, 1],
+                "strokeColor": [0, 0, 0],
+                "strokeWidth": 4,
+                "strokeOverFill": false,
+                "tracking": 50,
+                "justification": "center"
+              }
+            },
+            "animators": [
+              {
+                "name": "Fade in",
+                "properties": { "ADBE Text Opacity": { "v": 0 } },
+                "selector": {
+                  "basedOn": "characters",
+                  "units": "percentage",
+                  "start": {
+                    "dims": 1,
+                    "keys": [
+                      { "t": 0, "v": 0, "inInterp": "linear", "outInterp": "linear" },
+                      { "t": 1, "v": 100, "inInterp": "linear", "outInterp": "linear" }
+                    ]
+                  },
+                  "end": { "v": 100 },
+                  "offset": { "v": 0 },
+                  "shape": "square",
+                  "easeHigh": { "v": 0 },
+                  "easeLow": { "v": 0 }
+                }
+              }
+            ]
+          },
+          "origin": ["text1"]
+        },
+        {
+          "id": "body",
+          "name": "Body",
+          "kind": "text",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [640, 520] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "text": {
+            "document": {
+              "v": {
+                "text": "Paragraph text wraps inside its box. A second sentence makes it wrap.",
+                "font": "ArialMT",
+                "fontSize": 36,
+                "fillColor": [0.9, 0.9, 0.2],
+                "tracking": 0,
+                "leading": 44,
+                "justification": "left",
+                "box": { "size": [600, 200], "position": [-300, -100] }
+              }
+            }
+          },
+          "origin": ["text2"]
+        },
+        {
+          "id": "onPath",
+          "name": "On path",
+          "kind": "text",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [640, 680] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "masks": [
+            {
+              "name": "Text path",
+              "path": {
+                "v": {
+                  "vertices": [[-300, 0], [300, 0]],
+                  "inTangents": [[0, 0], [100, -120]],
+                  "outTangents": [[100, -120], [0, 0]],
+                  "closed": false
+                }
+              },
+              "mode": "none",
+              "inverted": false,
+              "feather": { "v": [0, 0] },
+              "expansion": { "v": 0 },
+              "opacity": { "v": 100 }
+            }
+          ],
+          "text": {
+            "document": {
+              "v": {
+                "text": "Along a path",
+                "font": "ArialMT",
+                "fontSize": 40,
+                "fillColor": [0.4, 1, 0.6],
+                "tracking": 0,
+                "justification": "left",
+                "allCaps": true
+              }
+            },
+            "pathMask": 1
+          },
+          "origin": ["text3"]
+        }
+      ]
+    }
+  ],
+  "main": "compD",
+  "report": {
+    "route": "direct",
+    "native": [],
+    "approx": [
+      { "id": "text1", "type": "text", "class": "text", "fidelity": "approx", "note": "glyph metrics depend on the installed font" },
+      { "id": "text2", "type": "text", "class": "text", "fidelity": "approx" },
+      { "id": "text3", "type": "text", "class": "text", "fidelity": "approx" }
+    ],
+    "shader": [],
+    "baked": [],
+    "blocked": [],
+    "warnings": [],
+    "requires": { "fonts": ["Arial-BoldMT", "ArialMT"] }
+  }
+}

@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-19T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": { "bitsPerChannel": 16, "workingSpace": "sRGB IEC61966-2.1", "linearBlending": false, "linearizeWorkingSpace": false, "expressionEngine": "javascript-1.0" },
+  "footage": [{ "id": "dot", "path": "footage/dot.png", "kind": "image", "alpha": "straight" }],
+  "presets": [],
+  "comps": [
+    {
+      "id": "inner",
+      "name": "Inner",
+      "width": 400,
+      "height": 400,
+      "fps": 24,
+      "duration": 2,
+      "layers": [
+        {
+          "id": "star",
+          "name": "Star",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [200, 200] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Star",
+              "contents": [
+                {
+                  "kind": "polystar",
+                  "type": "star",
+                  "points": { "v": 5 },
+                  "position": { "v": [0, 0] },
+                  "rotation": { "v": 0 },
+                  "outerRadius": { "v": 150 },
+                  "outerRoundness": { "v": 0 },
+                  "innerRadius": { "v": 60 },
+                  "innerRoundness": { "v": 10 }
+                },
+                { "kind": "round-corners", "radius": { "v": 4 } },
+                { "kind": "offset", "amount": { "v": 2 }, "join": "round", "miterLimit": 4, "copies": { "v": 1 }, "copyOffset": { "v": 0 } },
+                {
+                  "kind": "trim",
+                  "start": { "v": 0 },
+                  "end": {
+                    "dims": 1,
+                    "keys": [
+                      { "t": 0, "v": 0, "inInterp": "linear", "outInterp": "linear" },
+                      { "t": 1, "v": 100, "inInterp": "linear", "outInterp": "linear" }
+                    ]
+                  },
+                  "offset": { "v": 0 },
+                  "mode": "simultaneous"
+                },
+                {
+                  "kind": "stroke",
+                  "color": { "v": [1, 1, 1] },
+                  "opacity": { "v": 100 },
+                  "width": { "v": 8 },
+                  "cap": "round",
+                  "join": "round",
+                  "miterLimit": 4,
+                  "dashes": [
+                    { "dash": { "v": 20 }, "gap": { "v": 10 } },
+                    { "dash": { "v": 5 }, "gap": { "v": 10 } },
+                    { "dash": { "v": 2 }, "gap": { "v": 4 } }
+                  ],
+                  "dashOffset": { "v": 3 },
+                  "taper": {
+                    "startLength": { "v": 10 },
+                    "endLength": { "v": 10 },
+                    "startWidth": { "v": 50 },
+                    "endWidth": { "v": 50 },
+                    "startEase": { "v": 0 },
+                    "endEase": { "v": 0 }
+                  }
+                },
+                { "kind": "fill", "color": { "v": [1, 0.3, 0.3] }, "opacity": { "v": 100 }, "rule": "evenodd" }
+              ],
+              "transform": { "anchor": { "v": [0, 0] }, "position": { "v": [0, 0] }, "scale": { "v": [100, 100] }, "rotation": { "v": 0 }, "opacity": { "v": 100 }, "skew": { "v": 0 }, "skewAxis": { "v": 0 } }
+            },
+            {
+              "kind": "group",
+              "name": "Hex",
+              "blendMode": "multiply",
+              "contents": [
+                {
+                  "kind": "polystar",
+                  "type": "polygon",
+                  "points": { "v": 6 },
+                  "position": { "v": [0, 0] },
+                  "rotation": { "v": 30 },
+                  "outerRadius": { "v": 40 },
+                  "outerRoundness": { "v": 0 }
+                },
+                { "kind": "rect", "size": { "v": [30, 120] }, "position": { "v": [0, 0] }, "roundness": { "v": 6 } },
+                { "kind": "merge", "mode": "add" },
+                { "kind": "fill", "color": { "v": [0.3, 0.6, 1] }, "opacity": { "v": 100 }, "rule": "nonzero" }
+              ]
+            },
+            {
+              "kind": "repeater",
+              "copies": { "v": 3 },
+              "offset": { "v": 0 },
+              "composite": "below",
+              "transform": {
+                "anchor": { "v": [0, 0] },
+                "position": { "v": [10, 0] },
+                "scale": { "v": [90, 90] },
+                "rotation": { "v": 15 },
+                "startOpacity": { "v": 100 },
+                "endOpacity": { "v": 50 }
+              }
+            }
+          ],
+          "origin": ["star1", "stroke1", "repeat1"]
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Kitchen sink",
+      "width": 1000,
+      "height": 1000,
+      "fps": 24,
+      "duration": 2,
+      "bgColor": [0.2, 0.2, 0.2],
+      "layers": [
+        {
+          "id": "cam",
+          "name": "Camera",
+          "kind": "camera",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [500, 500, 0] },
+            "position": { "v": [500, 500, -1500] },
+            "scale": { "v": [100, 100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          }
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "kind": "light",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [500, 500, 0] },
+            "position": { "v": [300, 300, -600] },
+            "scale": { "v": [100, 100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          }
+        },
+        {
+          "id": "adjust",
+          "name": "Adjust",
+          "kind": "adjustment",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "solid": { "color": [1, 1, 1], "width": 1000, "height": 1000 },
+          "transform": {
+            "anchor": { "v": [500, 500] },
+            "position": { "v": [500, 500] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100, "expression": "50 + 25 * Math.sin(time * 2)" }
+          },
+          "effects": [
+            { "match": "ADBE Tint", "props": { "#3": { "v": 40 } } }
+          ],
+          "origin": ["color-correction1"]
+        },
+        {
+          "id": "pre",
+          "name": "Inner precomp",
+          "kind": "precomp",
+          "source": "inner",
+          "threeD": true,
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "transform": {
+            "anchor": { "v": [200, 200, 0] },
+            "position": { "v": [500, 500, 0] },
+            "scale": { "v": [100, 100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 },
+            "orientation": { "v": [0, 0, 0] },
+            "xRotation": { "v": 10 },
+            "yRotation": { "v": 20 }
+          },
+          "timeRemap": {
+            "dims": 1,
+            "keys": [
+              { "t": 0, "v": 0, "inInterp": "linear", "outInterp": "linear" },
+              { "t": 2, "v": 1.5, "inInterp": "linear", "outInterp": "linear" }
+            ]
+          },
+          "origin": ["layer2", "time-offset1"]
+        },
+        {
+          "id": "dotLayer",
+          "name": "Dot",
+          "kind": "footage",
+          "source": "dot",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "classic-color-dodge",
+          "transform": {
+            "anchor": { "v": [32, 32] },
+            "position": {
+              "dims": 2,
+              "keys": [
+                { "t": 0, "v": [100, 900], "inInterp": "linear", "outInterp": "bezier", "easeOut": [{ "speed": 400, "influence": 50 }], "spatialIn": [0, 0], "spatialOut": [200, 0] },
+                { "t": 2, "v": [900, 900], "inInterp": "bezier", "outInterp": "linear", "easeIn": [{ "speed": 0, "influence": 50 }], "spatialIn": [-200, -300], "spatialOut": [0, 0] }
+              ]
+            },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "origin": ["image-source1"]
+        },
+        {
+          "id": "blob",
+          "name": "Path anim · café ✓",
+          "kind": "shape",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "silhouette-alpha",
+          "transform": {
+            "anchor": { "v": [0, 0] },
+            "position": { "v": [800, 200] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          },
+          "contents": [
+            {
+              "kind": "group",
+              "name": "Blob",
+              "contents": [
+                {
+                  "kind": "path",
+                  "path": {
+                    "dims": 1,
+                    "keys": [
+                      {
+                        "t": 0,
+                        "v": { "vertices": [[0, -60], [60, 40], [-60, 40]], "inTangents": [[-30, 0], [20, 20], [-20, 20]], "outTangents": [[30, 0], [-20, 20], [20, 20]], "closed": true },
+                        "inInterp": "linear",
+                        "outInterp": "linear"
+                      },
+                      {
+                        "t": 1,
+                        "v": { "vertices": [[0, -90], [80, 60], [-80, 60]], "inTangents": [[-40, 0], [30, 30], [-30, 30]], "outTangents": [[40, 0], [-30, 30], [30, 30]], "closed": true },
+                        "inInterp": "linear",
+                        "outInterp": "linear"
+                      }
+                    ]
+                  }
+                },
+                { "kind": "fill", "color": { "v": [0.2, 1, 0.4] }, "opacity": { "v": 100 }, "rule": "nonzero" }
+              ]
+            }
+          ],
+          "origin": ["spline-draw1"]
+        },
+        {
+          "id": "hidden",
+          "name": "Hidden",
+          "kind": "solid",
+          "enabled": false,
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "solid": { "color": [1, 0, 0], "width": 1000, "height": 1000 },
+          "transform": {
+            "anchor": { "v": [500, 500] },
+            "position": { "v": [500, 500] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          }
+        },
+        {
+          "id": "base",
+          "name": "Base",
+          "kind": "solid",
+          "inPoint": 0,
+          "outPoint": 2,
+          "startTime": 0,
+          "blendingMode": "normal",
+          "solid": { "color": [0.1, 0.1, 0.1], "width": 1000, "height": 1000 },
+          "transform": {
+            "anchor": { "v": [500, 500] },
+            "position": { "v": [500, 500] },
+            "scale": { "v": [100, 100] },
+            "rotation": { "v": 0 },
+            "opacity": { "v": 100 }
+          }
+        }
+      ]
+    }
+  ],
+  "main": "main",
+  "report": {
+    "route": "direct",
+    "native": [],
+    "approx": [],
+    "shader": [],
+    "baked": [],
+    "blocked": [],
+    "warnings": [],
+    "requires": { "fonts": [] }
+  }
+}
