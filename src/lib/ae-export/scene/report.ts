@@ -67,6 +67,25 @@ export class AeReport {
     this.fidelity(id, "approx", text);
   }
 
+  // The plan's static approximations for a node (its class-table note),
+  // seeded so the report names them even where the walk adds nothing.
+  private seeded = new Map<string, string[]>();
+  seedApprox(id: string, text: string): void {
+    this.approx(id, text);
+    this.seeded.set(id, [...(this.seeded.get(id) ?? []), text]);
+  }
+
+  // The walk found the node exact where the plan's table guessed approx (a
+  // measured exact variant): drop the plan's seed, keep everything else.
+  exactAfterAll(id: string, text: string): void {
+    const l = this.line(id);
+    const seed = this.seeded.get(id) ?? [];
+    l.notes = l.notes.filter((n) => !seed.includes(n));
+    if (l.fidelity === "approx" && !l.notes.length) l.fidelity = "exact";
+    this.seeded.delete(id);
+    this.note(id, text);
+  }
+
   sampled(id: string, text: string): void {
     this.fidelity(id, "sampled", text);
   }

@@ -84,9 +84,10 @@ export default async function run(): Promise<number> {
     const blurred = layer(b, "pre:Circle")!;
     c.check("(B) mask:<id> fed an image → LUMA track matte by reference", blurred.matte?.layer === "band" && blurred.matte.type === "LUMA" && layer(b, "band")!.enabled === false);
     const blur = blurred.effects?.[0];
-    c.check("(B) blur → ADBE Gaussian Blur 2 through aeEffectMap (Blurriness 6, Repeat Edge Pixels on)", blur?.match === "ADBE Gaussian Blur 2" && (blur.props["ADBE Gaussian Blur 2-0001"] as any).v === 6 && (blur.props["ADBE Gaussian Blur 2-0003"] as any).v === 1, blur);
+    c.check("(B) blur → ADBE Gaussian Blur 2 through the calibrated map (Blurriness = 1.746349·6, both dimensions, Repeat Edge Pixels on)", blur?.match === "ADBE Gaussian Blur 2" && near((blur.props["ADBE Gaussian Blur 2-0001"] as any).v, 1.746349 * 6) && (blur.props["ADBE Gaussian Blur 2-0002"] as any).v === 1 && (blur.props["ADBE Gaussian Blur 2-0003"] as any).v === 1, blur);
     c.check("(B) …on a comp-sized precomp of the circle (AE crops a shape layer's effect buffer to its content)", blurred.kind === "precomp" && compOf(b, blurred.source!)!.layers.map((l) => l.id).join() === "dot");
-    c.check("(B) the placeholder map is reported approx, uncalibrated", b.scene.report.approx.some((l) => l.id === "soft" && /approx, uncalibrated/.test(l.note ?? "")));
+    c.check("(B) the measured map is reported approx with its note — no longer \"uncalibrated\"", b.scene.report.approx.some((l) => l.id === "soft" && /Blurriness = 1\.7464/.test(l.note ?? "") && !/uncalibrated/.test(l.note ?? "")), b.scene.report.approx.find((l) => l.id === "soft"));
+    c.check("(B) the project keeps Linearize Working Space off (the blur was measured that way)", b.scene.project.linearizeWorkingSpace === false && b.scene.project.linearBlending === false && /un-linearized/.test(line(b, "soft")?.note ?? ""));
     c.check("(B) a transparent base solid keeps alpha 0 as opacity 0", (layer(b, "clear")!.transform.opacity as any).v === 0);
   }
 
@@ -393,7 +394,7 @@ export default async function run(): Promise<number> {
       g.out(A, "bl:out");
     });
     const bk = all(keyed).find((l) => l.effects?.length)?.effects?.[0]?.props["ADBE Gaussian Blur 2-0001"] as any;
-    c.check("(effect keys) a keyed effect param → AE keys through the map's linear rule (0 → 10, eased)", bk?.keys?.length >= 2 && bk.keys[0].v === 0 && bk.keys[bk.keys.length - 1].v === 10 && !!bk.keys[0].easeOut, bk);
+    c.check("(effect keys) a keyed effect param → AE keys through the map's linear rule (0 → 1.746349·10, eased)", bk?.keys?.length >= 2 && bk.keys[0].v === 0 && near(bk.keys[bk.keys.length - 1].v, 17.46349) && !!bk.keys[0].easeOut, bk);
 
     const inv = await adhoc("inv", (g) => {
       const A = g.layer("LW2", "Inverted");
@@ -421,6 +422,68 @@ export default async function run(): Promise<number> {
     const sz = (shapes(shifted).find((i) => i.kind === "ellipse") as any)?.size;
     c.check("(time offset) a constant Time Offset shifts the branch's keys by offset / fps (+5 frames)", sz?.keys?.length === 2 && near(sz.keys[0].t, 5 / 30) && near(sz.keys[1].t, 15 / 30), sz?.keys?.map((k: any) => k.t));
     for (const b of [poly, drawn, waved, bool, taper, pic, keyed, inv, shifted]) c.check(`(${b.scene.comps.at(-1)!.name}) valid, no problems`, b.problems.length === 0 && validateAeScene(b.scene).length === 0, [...b.problems, ...validateAeScene(b.scene)].slice(0, 3));
+  }
+
+  // --- the calibrated maps' extended contract -----------------------------------------------------------
+  {
+    const adhoc = (name: string, build: (g: any) => void, opts: Record<string, unknown> = {}) => sceneOf({ name, title: name, comp: { width: 1280, height: 720, fps: 30, frames: 30 }, build, opts } as any);
+    const all = (b: AeSceneBuild) => b.scene.comps.flatMap((x) => x.layers);
+    const fxOf = (b: AeSceneBuild) => all(b).flatMap((l) => l.effects ?? []);
+    const chain = (src: string, type: string, params: Record<string, unknown> = {}, animation?: Record<string, unknown>) => (g: any) => {
+      const A = g.layer("LE0", "Chain");
+      g.node(A, "src", src, src === "rectangle" ? { stroke_enabled: false, fill_enabled: true } : {});
+      g.node(A, "fx", type, params, animation);
+      g.wire(src === "rectangle" ? "src:aux:image" : "src:out", "fx:in:image");
+      g.out(A, "fx:out");
+    };
+    const unsharp = await adhoc("unsharp", chain("rectangle", "sharpen", { algorithm: "unsharp", amount: 2 }));
+    const um = fxOf(unsharp).find((f) => f.match === "ADBE Unsharp Mask2");
+    c.check("(variants) sharpen unsharp → the Unsharp Mask variant (Amount 100·2, radius 0.5), reported exact", !!um && (um.props["ADBE Unsharp Mask2-0001"] as any).v === 200 && (um.props["ADBE Unsharp Mask2-0002"] as any).v === 0.5 && !unsharp.scene.report.approx.some((l) => l.id === "fx"), um);
+    const box = await adhoc("sharpbox", chain("rectangle", "sharpen", { algorithm: "box", amount: 1 }));
+    c.check("(variants) sharpen box → Sharpen (Amount 50·1)", fxOf(box).some((f) => f.match === "ADBE Sharpen" && (f.props["ADBE Sharpen-0001"] as any).v === 50));
+    const diamond = await adhoc("diamond", chain("rectangle", "sharpen", { algorithm: "diamond" }));
+    c.check("(refusal) sharpen diamond → no AE effect; the bake reason is the map's refusal", diamond.bakes.length === 1 && /diamond kernel is not Sharpen's/.test(diamond.bakes[0].reason ?? "") && /only the unsharp kernel/.test(diamond.bakes[0].reason ?? ""), diamond.bakes.map((x) => x.reason));
+    const post = await adhoc("post", chain("gradient", "posterize", { levels: 4 }));
+    const pf = fxOf(post).map((f) => f.match);
+    c.check("(before) posterize → Easy Levels then Posterize on the same layer, after the Gradient Ramp", JSON.stringify(pf) === JSON.stringify(["ADBE Ramp", "ADBE Easy Levels2", "ADBE Posterize"]), pf);
+    const lv = fxOf(post).find((f) => f.match === "ADBE Easy Levels2")!;
+    c.check("(derived) Levels output range [0.5/L, 1 − 0.5/L] for L = 4", near((lv.props["ADBE Easy Levels2-0006"] as any).v, 0.125) && near((lv.props["ADBE Easy Levels2-0007"] as any).v, 0.875), lv.props);
+    const pix = await adhoc("pix", chain("rectangle", "pixelate", { aspect: 1 }, { size: track([[0, 16, "linear"], [20, 32, "linear"]]) }));
+    const mos = fxOf(pix).find((f) => f.match === "ADBE Mosaic")?.props["ADBE Mosaic-0001"] as any;
+    c.check("(derived, keyed) a keyed param a derived prop reads → that prop per frame (Mosaic blocks = W / size), reported sampled", mos?.keys?.length === 30 && near(mos.keys[0].v, 80) && near(mos.keys[20].v, 40) && pix.scene.report.native.some((l) => l.id === "fx" && l.fidelity === "sampled") === false && [...pix.scene.report.approx, ...pix.scene.report.native].some((l) => l.id === "fx" && /per frame/.test(l.note ?? "")), mos?.keys?.slice(0, 2));
+    const disp = await adhoc("disp", (g) => {
+      const A = g.layer("LE1", "Displaced");
+      g.node(A, "slab", "rectangle", { stroke_enabled: false, fill_enabled: true });
+      g.node(A, "map", "solid-color", { color: "#ffffff" });
+      g.node(A, "push", "displace", { amountX: 0.05, amountY: 0 });
+      g.wire("slab:aux:image", "push:in:image");
+      g.wire("map:out", "push:in:displacement");
+      g.out(A, "push:out");
+    });
+    const dmLayer = all(disp).find((l) => l.effects?.some((f) => f.match === "ADBE Displacement Map"))!;
+    const dm = dmLayer.effects!.find((f) => f.match === "ADBE Displacement Map")!;
+    const mref = (dm.props["ADBE Displacement Map-0001"] as any)?.v?.layerRef;
+    const mapL = all(disp).find((l) => l.id === mref);
+    c.check("(layer input) displace's displacement socket → an AeLayerRef to a hidden comp-sized precomp in the same comp", !!mapL && mapL.kind === "precomp" && mapL.enabled === false && disp.scene.comps.some((cc) => cc.layers.includes(mapL) && cc.layers.includes(dmLayer)), { mref, kind: mapL?.kind });
+    c.near("(layer input) Max Horizontal Displacement = amountX·W/2", (dm.props["ADBE Displacement Map-0003"] as any).v, 32, 1e-9);
+    c.check("(layer input) the displaced shape sits on a precomp (a source reader on a comp-sized layer)", dmLayer.kind === "precomp" && validateAeScene(disp.scene).length === 0, validateAeScene(disp.scene));
+    const echo = await adhoc("echo", (g) => {
+      const A = g.layer("LE2", "Echoed");
+      g.node(A, "dot", "circle", { stroke_enabled: false, fill_enabled: true }, { centerX: track([[0, 0.3, "linear"], [29, 0.7, "linear"]]) });
+      g.node(A, "soft", "blur", { radius: 4 });
+      g.node(A, "tail", "trails", { decay: 0.8 });
+      g.wire("dot:aux:image", "soft:in:image");
+      g.wire("soft:out", "tail:in:image");
+      g.out(A, "tail:out");
+    });
+    const echoL = all(echo).find((l) => l.effects?.some((f) => f.match === "ADBE Echo"))!;
+    const blurL = all(echo).find((l) => l.effects?.some((f) => f.match === "ADBE Gaussian Blur 2"))!;
+    c.check("(source readers) Echo after a blur: the blurred layer is precomposed, Echo goes on the precomp", echoL !== blurL && echoL.kind === "precomp" && echoL.effects!.length === 1 && echo.scene.comps.find((cc) => cc.id === echoL.source)!.layers.includes(blurL), { echo: echoL.id, blur: blurL.id });
+    const eo = echoL.effects![0].props;
+    c.check("(fps in the effect context) Echo Time = −1/fps, echoes from the decay (0.8 → ⌈ln(0.5/255)/ln 0.8⌉ = 28)", near((eo["ADBE Echo-0001"] as any).v, -1 / 30) && (eo["ADBE Echo-0002"] as any).v === 28, eo);
+    const cc = await adhoc("cc", chain("rectangle", "color-correction", { brightness: 0.1, hue: 30 }));
+    c.check("(before) color-correction → Brightness & Contrast (legacy) before Hue/Saturation", JSON.stringify(fxOf(cc).map((f) => f.match)) === JSON.stringify(["ADBE Brightness & Contrast 2", "ADBE HUE SATURATION"]), fxOf(cc).map((f) => f.match));
+    for (const b of [unsharp, box, diamond, post, pix, disp, echo, cc]) c.check(`(${b.scene.comps.at(-1)!.name}) valid, no problems`, b.problems.length === 0 && validateAeScene(b.scene).length === 0, [...b.problems, ...validateAeScene(b.scene)].slice(0, 3));
   }
 
   // --- overrides on a native graph -------------------------------------------------------------------

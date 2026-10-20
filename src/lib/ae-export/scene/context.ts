@@ -82,6 +82,9 @@ export interface WalkCtx {
   name: string;
   report: AeReport;
   out: WalkOut;
+  // Project settings an emitter's measured mapping depends on (calibration
+  // maps: Gaussian Blur 2 was measured with Linearize Working Space off).
+  projectNeeds: { linearizeWorkingSpace?: boolean };
   // Layers whose transform is the comp's identity frame (anchor = position,
   // scale 100, rotation 0): a toolbox layer's TRS can go straight onto them.
   free: WeakSet<AeLayer>;
