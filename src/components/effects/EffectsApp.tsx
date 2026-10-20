@@ -254,6 +254,7 @@ import { enclosingSkiaLayer } from "@/engine/skia/layer-target";
 import type { SkiaExportReport } from "@/lib/skia-export/editor";
 import type { BakeFrameRenderer } from "@/lib/skia-export/bake";
 import type { AeExportOptions, AeExportProgress, AeExportResult, AeFrameRenderer } from "@/lib/ae-export/package";
+import type { AeAssetCopy } from "@/lib/ae-export/scene";
 import type { AeExportPolicy } from "@/lib/ae-export/types";
 import type { AeExportContext } from "./mcp-handlers";
 import ExportAeModal from "./ExportAeModal";
@@ -12264,13 +12265,12 @@ function EffectsShell({
     };
   }, []);
 
-  // Image / video / SVG sources the scene copies into footage/: their asset
-  // URL as the scene lane records it (blob:, data:, http(s), same-origin).
-  const readAeAsset = useCallback(async (copy: { source: { ref: string } }) => {
-    const ref = copy.source.ref;
-    if (!/^(?:https?:|blob:|data:|\/)/.test(ref)) return null;
-    const res = await fetch(ref);
-    return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+  // Image / video sources the scene copies into footage/: `source.ref` is
+  // the node whose `file` param holds the media (or already a URL).
+  const readAeAsset = useCallback(async (copy: AeAssetCopy) => {
+    const { aeAssetBytes } = await import("@/lib/ae-export/package/assets");
+    const node = nodesRef.current.find((n) => n.id === copy.source.ref);
+    return aeAssetBytes(copy, node?.data.params.file);
   }, []);
 
   const runAeExport = useCallback(

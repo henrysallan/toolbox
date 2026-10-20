@@ -68,6 +68,9 @@ export function effectContext(ctx: WalkCtx): AeEffectContext {
 // a layer that already carries effects collapses into a precomp first.
 const SOURCE_READERS = new Set(["ADBE Echo", "ADBE Displacement Map"]);
 
+// Video containers After Effects imports (no WebM).
+const AE_VIDEO_EXTS = new Set(["mov", "mp4", "m4v"]);
+
 // One layer an effect / transform can go on: collapsed when its transform
 // or track matte is already taken. An effect also needs a comp-sized buffer:
 // toolbox filters canvas-sized images, while AE hands a shape or text
@@ -230,13 +233,18 @@ function footage(scope: Scope, id: string, type: string): Rendered | null {
   if (isVideo && (p.source_kind ?? "video") === "sequence") throw new BakeSignal("image sequences are not mapped yet");
   if (isVideo && (staticNumber(ctx, id, "speed", 1) !== 1 || staticNumber(ctx, id, "start_offset", 0) !== 0 || isAnimatedParam(ctx, id, "speed")))
     throw new BakeSignal("video speed / start offset → time remap is not mapped yet");
-  const file = (isVideo ? p.file : p.file) as { width?: number; height?: number; videoWidth?: number; videoHeight?: number; name?: string } | null | undefined;
+  const file = p.file as { width?: number; height?: number; videoWidth?: number; videoHeight?: number; filename?: string; kind?: string } | null | undefined;
   if (!file) {
     ctx.report.note(id, "no file loaded — nothing to export");
     return { layers: [] };
   }
+  if (!isVideo && file.kind === "exr") throw new BakeSignal("EXR stills (float pixels) are not copied as footage yet");
+  // Videos keep their container (the package copies the original bytes);
+  // images are copied as PNG (the original when it is one, else re-encoded).
+  const videoExt = isVideo ? /\.([A-Za-z0-9]+)$/.exec(file.filename ?? "")?.[1]?.toLowerCase() ?? "mov" : "";
+  if (isVideo && !AE_VIDEO_EXTS.has(videoExt)) throw new BakeSignal(`After Effects can't import .${videoExt} video`);
   const fid = ctx.uid(`footage:${id}`);
-  const ext = isVideo ? "mov" : "png";
+  const ext = isVideo ? videoExt : "png";
   const path = `footage/${fid.replace(/[^A-Za-z0-9_.-]+/g, "_")}.${ext}`;
   ctx.out.footage.push({ id: fid, path, kind: isVideo ? "video" : "image", alpha: "straight", name: ctx.graph.name(id) });
   ctx.out.assets.push({ id: fid, path, source: { kind: isVideo ? "video" : "image", ref: id } });

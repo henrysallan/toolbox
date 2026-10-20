@@ -386,6 +386,17 @@ export default async function run(): Promise<number> {
     const ft = all(pic).find((l) => l.kind === "footage")!;
     c.check("(footage) Image Source → a footage layer + an AeAssetCopy keyed by the node id; contain fit → Scale", pic.assets.length === 1 && pic.assets[0].source.kind === "image" && pic.assets[0].source.ref === "img" && ft.source === pic.assets[0].id && near((ft.transform.scale as any).v[0], 112.5) && JSON.stringify((ft.transform.anchor as any).v) === "[320,320]", { assets: pic.assets, t: ft.transform });
 
+    const clip = (filename: string) =>
+      adhoc(`clip-${filename}`, (g) => {
+        const A = g.layer("LC", "Clip");
+        g.node(A, "vid", "video-source", { file: { width: 1280, height: 720, filename }, fit: "cover" });
+        g.out(A, "vid:out");
+      });
+    const mp4 = await clip("take.MP4");
+    c.check("(footage) a video keeps its container: take.MP4 → footage/<id>.mp4", mp4.assets.length === 1 && mp4.assets[0].source.kind === "video" && /^footage\/.+\.mp4$/.test(mp4.assets[0].path) && mp4.bakes.length === 0, mp4.assets);
+    const webm = await clip("take.webm");
+    c.check("(footage) AE can't import WebM: the video bakes, with the reason", webm.assets.length === 0 && webm.bakes.length === 1 && webm.scene.report.baked.some((l) => l.id === "vid" && /\.webm/.test(l.note ?? "")), webm.scene.report);
+
     const keyed = await adhoc("keyed", (g) => {
       const A = g.layer("LV", "Keyed blur");
       g.node(A, "sq", "rectangle", { stroke_enabled: false, fill_enabled: true });
