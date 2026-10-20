@@ -437,14 +437,14 @@
      "type": "circle",
      "class": "vector",
      "fidelity": "exact",
-     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill)"
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
     },
     {
      "id": "paint",
      "type": "rasterize-spline",
      "class": "style",
      "fidelity": "exact",
-     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill)"
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
     },
     {
      "id": "bars",
@@ -476,7 +476,7 @@
      "type": "merge",
      "class": "layer",
      "fidelity": "exact",
-     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill)"
+     "note": "gradient → an SVG-seeded shape layer (native, editable Gradient Fill; builds headless too)"
     },
     {
      "id": "LF",

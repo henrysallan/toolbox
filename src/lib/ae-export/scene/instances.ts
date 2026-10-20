@@ -8,7 +8,8 @@
 //   otherwise → the instance collapsed into ONE precomp, placed once per
 //   point (anchor = the instance's content center, position = the point,
 //   rotation / scale from the point), up to policy.layerBudget; past it a
-//   warning and a bake.
+//   warning and a bake — or, with the "keep procedural" override, the
+//   layers anyway.
 // Spline mode copies are geometry: the vector emitter writes their evaluated
 // paths (shape.ts), or the same Repeaters (repeaterGeom below).
 // Modulated copies (pick / scale / rotate fields, tint / opacity attributes)
@@ -201,8 +202,12 @@ export function emitInstances(scope: Scope, endpoint: string, pn: AePlanNode): R
   const pts = pointsAt(scope, pointsEp);
   const count = pts.count;
   if (count > ctx.policy.layerBudget) {
-    // The plan already warned about the budget; the report says it baked.
-    throw new BakeSignal(`${count} copies exceed the layer budget (${ctx.policy.layerBudget})`);
+    // The plan already warned about the budget. "Keep procedural" (the
+    // modal's override) explodes past it; otherwise the copies bake.
+    if (ctx.overrides[id] !== "procedural") throw new BakeSignal(`${count} copies exceed the layer budget (${ctx.policy.layerBudget})`);
+    const w = `${name} (${id}): ${count} copies exploded past the ${ctx.policy.layerBudget}-layer budget ("keep procedural").`;
+    ctx.report.warn(w);
+    ctx.out.warnings.push(w);
   }
   // One precomp of the instance, placed per point.
   const inst = collapse(scope, scope.render(instanceEp), `${name} instance`);

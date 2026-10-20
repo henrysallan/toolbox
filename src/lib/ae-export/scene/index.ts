@@ -10,7 +10,8 @@
 //   3. emitters  vector (shape.ts + style.ts) · source / raster (effects.ts)
 //                · composite (composite.ts) · text · instances · shader ·
 //                bake; masks.ts for every matte
-//   4. gradients .ffx presets or SVG seeds (gradients.ts)
+//   4. gradients SVG seeds where the gradient owns its layer, else .ffx
+//                presets (gradients.ts)
 //   5. report    the plan's verdict per node, corrected by the walk
 //                (report.ts); validateAeScene on the result
 //
@@ -155,7 +156,7 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     main: main.id,
     report: { route: plan.route, native: [], approx: [], shader: [], baked: [], blocked: [], warnings: [], requires: { fonts: [] } },
   };
-  routeGradients(ctx, scene, opts.gradientRoute ?? "ffx");
+  routeGradients(ctx, scene, opts.gradientRoute ?? "svg");
   // Distinct comp names, and distinct layer names per comp: AE allows
   // duplicates, but expressions and people address both by name.
   const compNames = new Map<string, number>();

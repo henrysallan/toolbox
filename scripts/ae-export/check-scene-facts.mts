@@ -146,6 +146,7 @@ export default async function run(): Promise<number> {
   {
     const svg = await build("f-gradient");
     const paint = layer(svg, "paint")!;
+    c.check("(gradient, default route) no presets, no headless caveat when every gradient owns its layer", svg.presets.length === 0 && !svg.warnings.some((w) => /AE app build/.test(w)), svg.warnings);
     c.check("(gradient, svg route) the gradient layer is seeded from an SVG", !!paint.source && svg.scene.footage.some((f) => f.id === paint.source && f.kind === "svg") && svg.files.some((f) => /<linearGradient[^>]*x1="384"[^>]*x2="896"/.test(f.text)), svg.files.map((f) => f.text.slice(0, 200)));
     const ink = layer(svg, "ink")!;
     const strokes = items(ink.contents).filter((i) => i.kind === "stroke") as any[];
@@ -155,6 +156,41 @@ export default async function run(): Promise<number> {
     c.check("(gradient, ffx route) a Gradient Fill spanning the disc (canvas frame: the outline's extent, 384 → 896 px) with a preset", g && g.type === "linear" && near(g.start.v[0], 384) && near(g.end.v[0], 896) && ffx.scene.presets.some((p) => p.id === g.preset), g);
     c.check("(gradient, ffx route) the preset bytes parse back as RIFX, and the build warns it needs the AE app", ffx.presets.length === 1 && parseRifx(ffx.presets[0].bytes).id === "RIFX" && ffx.warnings.some((w) => /After Effects app/.test(w)), ffx.warnings);
     c.check("(gradient, ffx route) still a valid scene", validateAeScene(ffx.scene).length === 0, validateAeScene(ffx.scene));
+    // A gradient inside composed contents (a Trim inside the fill's group)
+    // cannot own its layer: .ffx by default, with the caveat in the report.
+    const composed = await sceneOf({
+      name: "composed",
+      title: "composed",
+      comp: { width: 1280, height: 720, fps: 30, frames: 30 },
+      build: (g: any) => {
+        const A = g.layer("LG2", "Trimmed gradient");
+        g.node(A, "disc", "circle", { radiusX: 0.2, radiusY: 0.2, stroke_enabled: false });
+        g.node(A, "cut", "trim-path", { trim_end: 0.75 });
+        g.node(A, "paint", "rasterize-spline", { enable_stroke: false, fill_source: "gradient", gradient_frame: "canvas" });
+        g.wire("disc:out", "cut:in:path");
+        g.wire("cut:out", "paint:in:path");
+        g.out(A, "paint:out");
+      },
+    } as any);
+    const cg = items(layer(composed, "paint")!.contents).find((i) => i.kind === "gradient-fill") as any;
+    const caveat = "gradient stops need the AE app build; headless builds show AE's default gradient";
+    c.check("(gradient, composed contents) → .ffx even on the default route", !layer(composed, "paint")!.source && !!cg?.preset && composed.presets.length === 1, { source: layer(composed, "paint")!.source, preset: cg?.preset });
+    c.check("(gradient, composed contents) the report carries the headless caveat", composed.scene.report.warnings.some((w) => w.includes(caveat)) && composed.scene.report.approx.some((l) => l.id === "paint" && (l.note ?? "").includes(caveat)), composed.scene.report.warnings);
+    // Gradient group on top, a native group under it: the top moves into the SVG.
+    const split = await sceneOf({
+      name: "split",
+      title: "split",
+      comp: { width: 1280, height: 720, fps: 30, frames: 30 },
+      build: (g: any) => {
+        const A = g.layer("LG3", "Gradient over dashes");
+        g.node(A, "disc", "circle", { radiusX: 0.2, radiusY: 0.2, stroke_enabled: false });
+        g.node(A, "paint", "rasterize-spline", { enable_stroke: true, style: "dashed", fill_source: "gradient", gradient_frame: "canvas" });
+        g.wire("disc:out", "paint:in:path");
+        g.out(A, "paint:out");
+      },
+    } as any);
+    const sp = layer(split, "paint")!;
+    c.check("(gradient) a dashed stroke in the gradient's own group keeps the layer native (.ffx)", !sp.source && split.presets.length === 1, { source: sp.source, presets: split.presets.length });
   }
 
   // --- dashes + trim ---------------------------------------------------------------------------
@@ -205,6 +241,8 @@ export default async function run(): Promise<number> {
     const over = await build("k-copies-over");
     c.check("(copies, over budget) 300 copies → a warning and a bake, not 300 layers", over.bakes.length === 1 && over.bakes[0].output === "copy:out" && over.warnings.some((w) => /200-layer budget/.test(w)) && mainOf(over).layers.length === 1, over.warnings);
     c.check("(copies, over budget) static → one frame, a still (no fps)", over.bakes[0].frames.join() === "0,0" && !over.scene.footage[0].fps);
+    const kept = await build("k-copies-over", { overrides: { copy: "procedural" } });
+    c.check("(copies, over budget, keep procedural) the copies explode past the budget, with a warning", kept.bakes.length === 0 && kept.problems.length === 0 && kept.warnings.some((w) => /past the 200-layer budget/.test(w)), kept.warnings);
     const raised = await build("k-copies-over", { policy: { layerBudget: 400 } });
     const rc = raised.scene.comps.flatMap((x) => x.layers).filter((l) => l.kind === "precomp" && l.origin?.includes("copy"));
     c.check("(copies) a raised budget explodes the 300 copies instead", raised.bakes.length === 0 && rc.length >= 300, [raised.bakes.length, rc.length]);

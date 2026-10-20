@@ -12,7 +12,8 @@ import type { AeBakeCodec, AeExportPlan, AeScene, AeShaderBundle } from "../type
 //   bake        render the node's output to footage (and everything feeding it)
 //   skip        drop the node: its main input passes through (a source → nothing)
 //   procedural  never bake it — a region containing it that would bake is a
-//               problem instead (the export is refused with the reason)
+//               problem instead (the export is refused with the reason); a
+//               Copy to Points over the layer budget explodes anyway (warned)
 export type AeNodeOverride = "bake" | "skip" | "procedural";
 
 export interface AeSceneOptions {
@@ -31,12 +32,12 @@ export interface AeSceneOptions {
   // scene.generatedAt (ISO). Default: now. Gates pin it for snapshots.
   generatedAt?: string;
   // How gradient stops reach AE (spec §13 "The gradient route"):
-  //   ffx  (default) synthesized .ffx presets applied to toolbox's own shape
-  //        contents — needs build.jsx to run in the After Effects app; a
-  //        headless aerender build keeps AE's default gradient (warned)
-  //   svg  a shape layer whose contents are all static paths with flat or
-  //        gradient fills / strokes is seeded from an SVG import instead
-  //        (headless-safe); other gradient layers still use .ffx
+  //   svg  (default) an SVG-seeded shape layer wherever the gradient can own
+  //        its layer (works headless and in the app); synthesized .ffx presets
+  //        for gradients inside composed contents
+  //   ffx  .ffx presets everywhere (toolbox's own shape structure kept)
+  // Every .ffx preset needs build.jsx to run in the After Effects app: a
+  // headless aerender build shows AE's default gradient (reported).
   gradientRoute?: "ffx" | "svg";
 }
 

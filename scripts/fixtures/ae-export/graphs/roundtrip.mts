@@ -10,8 +10,9 @@
 // The package writer (package lane) renders bakes; here each bake is a
 // placeholder clip (ffmpeg, a flat translucent color) so AE has real footage
 // to import. Shader bundles go to shaders/<id>.tbxfx; the runner points the
-// Toolbox Shader host at them (TBX_SHADER_BUNDLES). Gradients take the SVG
-// route (presets cannot apply headless — spec §13). Needs After Effects 26.x
+// Toolbox Shader host at them (TBX_SHADER_BUNDLES). Gradients that own their
+// layer take the SVG route (the default); .ffx presets cannot apply headless
+// (spec §13), so the fixtures probe only SVG-seeded ones. Needs After Effects 26.x
 // (AE_DIR) and never touches the After Effects GUI.
 
 import { spawnSync } from "node:child_process";
@@ -35,7 +36,7 @@ mkdirSync(OUT, { recursive: true });
 let n = 0;
 for (const f of SCENE_FIXTURES) {
   if (filters.length && !filters.some((x) => f.name.includes(x))) continue;
-  const b = await sceneOf({ ...f, opts: { ...f.opts, gradientRoute: "svg" } });
+  const b = await sceneOf(f);
   if (b.problems.length) {
     console.log(`${f.name}: ${b.problems.length} problem(s) — skipped:\n  ${b.problems.join("\n  ")}`);
     continue;

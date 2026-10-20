@@ -298,11 +298,13 @@ export const SCENE_FIXTURES: SceneFixture[] = [
       g.wire("ink:out", "both:in:layer:L1");
       g.out(L, "both:out");
     },
-    opts: { gradientRoute: "svg" },
     probe: {
       frames: [0],
       pixels: [
-        { frame: 0, x: 400, y: 360, want: [null, null, null, 255], label: "gradient disc covers its left edge" },
+        // The disc spans x 384–896: t = (x − 384) / 512 along red → blue (sRGB).
+        { frame: 0, x: 400, y: 360, want: [247, 0, 8, 255], tol: 8, label: "SVG-seeded gradient: red at the disc's left" },
+        { frame: 0, x: 640, y: 360, want: [128, 0, 127, 255], tol: 8, label: "…the sRGB midpoint at its center" },
+        { frame: 0, x: 880, y: 360, want: [8, 0, 247, 255], tol: 8, label: "…blue at its right" },
         { frame: 0, x: 40, y: 40, want: [null, null, null, 0], label: "corner: transparent" },
       ],
     },
