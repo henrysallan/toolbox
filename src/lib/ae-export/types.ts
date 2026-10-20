@@ -405,12 +405,19 @@ export interface AeMask {
   opacity: AeProp<number>;
 }
 
+// An effect property value that names another layer (PF_Param_LAYER inputs,
+// Displacement Map's map layer, the Toolbox Shader's layer slots). build.jsx
+// resolves the id to the layer's index in the same comp.
+export interface AeLayerRef {
+  layerRef: string;
+}
+
 export interface AeEffect {
   // AE match name, e.g. "ADBE Gaussian Blur 2", or TBX_SHADER_MATCH_NAME.
   match: string;
   name?: string;
   // Keyed by property match name (or "#<index>" when an effect's params have
-  // no stable match names).
+  // no stable match names). Values may be AeLayerRef for layer params.
   props: Record<string, AeProp>;
   // A synthesized preset under presets/ applied after the effect is added.
   preset?: string;
@@ -576,13 +583,52 @@ export interface AeScene {
 // §7.3 — shader bundles for the Toolbox Shader host
 // ---------------------------------------------------------------------------
 
+// Host decision (§11.1, 2026-10-19): a C++/Metal AE effect built from the
+// owner's AE_Plugins/dither skeleton (../AE_Plugins/toolbox-shader). toolbox
+// translates the fused GLSL ES 3.00 to Metal Shading Language and the host
+// compiles that at runtime (newLibraryWithSource), as Dither does.
+
 export const TBX_SHADER_BUNDLE_VERSION = 1;
+
+// The host's fixed parameter pool. Unused slots are hidden and used ones
+// renamed per bundle (PF_UpdateParamUI), so scripts must address params by
+// MATCH name, never by display name.
+export const TBX_SHADER_POOL = { layers: 4, sliders: 32, colors: 8, points: 8, checkboxes: 8 } as const;
+
+export type TbxShaderParamKind = "bundle" | "time" | "timeOffset" | "loopFrames" | "layer" | "slider" | "color" | "point" | "checkbox";
+
+// Param disk IDs, fixed forever once a host ships (projects store them):
+//   1 Bundle ID · 2 Time · 3 Time Offset · 4 Loop Frames
+//   10–13 layers a–d · 20–51 sliders 1–32 · 60–67 colors · 70–77 points · 80–87 checkboxes
+const TBX_DISK_ID_BASE: Record<TbxShaderParamKind, number> = {
+  bundle: 1,
+  time: 2,
+  timeOffset: 3,
+  loopFrames: 4,
+  layer: 10,
+  slider: 20,
+  color: 60,
+  point: 70,
+  checkbox: 80,
+};
+
+export function tbxShaderDiskId(kind: TbxShaderParamKind, slot = 1): number {
+  return TBX_DISK_ID_BASE[kind] + (slot - 1);
+}
+
+// AE names a third-party effect param "<effect match name>-<4-digit disk id>".
+// The host lane confirms this in AE 26.5 (M3); if AE differs, fix it here only.
+export function tbxShaderParamMatch(kind: TbxShaderParamKind, slot = 1): string {
+  return `${TBX_SHADER_MATCH_NAME}-${String(tbxShaderDiskId(kind, slot)).padStart(4, "0")}`;
+}
 
 export interface AeShaderParam {
   // Channel name in the fused GLSL (uniform name).
   name: string;
   label: string;
   kind: "slider" | "color" | "point" | "checkbox";
+  // 1-based slot in the pool of this kind (TBX_SHADER_POOL).
+  slot: number;
   default: number | number[] | boolean;
   min?: number;
   max?: number;
@@ -591,14 +637,18 @@ export interface AeShaderParam {
 export interface AeShaderBundle {
   format: "tbxfx";
   version: typeof TBX_SHADER_BUNDLE_VERSION;
+  // The value build.jsx writes into the effect's Bundle ID param (a float
+  // slider; keep it < 2^24). The host loads `shaders/<id>.tbxfx` relative to
+  // the .aep on first use and then keeps the bundle in its sequence data, so
+  // a saved project no longer needs the file.
+  id: number;
   // Minimum Toolbox Shader host version that can run this bundle: an older
   // host refuses with "update Toolbox Shader" instead of rendering wrong.
   hostMin: string;
   name: string;
-  // Target language → source text. Which targets are present depends on the
-  // host (owner decision §11.1); `glsl` (GLSL ES 3.00 body as fused) is kept
-  // for traceability.
-  source: Partial<Record<"glsl" | "glsl450" | "msl" | "wgsl" | "hlsl", string>>;
+  // Target language → source text. `msl` is what the host compiles; `glsl`
+  // (the fused GLSL ES 3.00 as proven in toolbox) is kept for traceability.
+  source: Partial<Record<"glsl" | "msl", string>>;
   // Layer inputs a..d actually sampled.
   inputs: ("a" | "b" | "c" | "d")[];
   params: AeShaderParam[];

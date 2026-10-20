@@ -781,14 +781,18 @@ the Advanced 3D renderer id) get confirmed in M0.
 
 ## 11. Decisions (owner)
 
-Owner answers, 2026-10-19. Items 1 and 7 are still open.
+Owner answers, 2026-10-19.
 
-1. **Host plugin language/base** — *open, under discussion.* Fork
-   tweak_shader (Rust + wgpu; the crate generates the PiPL and Gyroflow/
-   ntsc-rs prove the stack) vs ISF4AE (C++/OpenGL) vs SDK Skeleton C++.
-   Recommended: fork tweak_shader in a sibling repo. (Correction to the
-   2026-09-19 draft: Rust is not new to the project —
-   `rust/toolbox-vector-kernel` has shipped as WASM since v0.4.6.)
+1. **Host plugin language/base** — **decided 2026-10-19: C++/Metal, built
+   from the owner's `AE_Plugins/dither` skeleton** as
+   `../AE_Plugins/toolbox-shader` (same SDK 26.5, Makefile, ad-hoc signing,
+   install and aerender harness; Dither already renders through AE's GPU
+   device suite and compiles Metal at runtime). This replaces the
+   tweak_shader fork of §7.2: toolbox translates the fused GLSL ES 3.00 to
+   MSL (`src/lib/ae-export/shader/`), the host compiles it with
+   `newLibraryWithSource`. The param pool and bundle contract are in
+   `src/lib/ae-export/types.ts` (`TBX_SHADER_POOL`, `tbxShaderParamMatch`,
+   `AeShaderBundle`). Mac-only until a Windows backend exists (item 7).
 2. **Direct-export carrier** — **decided: `.jsx` + JSON.** (Rejected: `py-aep`,
    a Python dependency that cannot add effects; Lottie through the
    LottieFiles plugin, which needs a third-party login and whose importer
@@ -803,7 +807,9 @@ Owner answers, 2026-10-19. Items 1 and 7 are still open.
 6. **Where AE runs** — **decided:** designer machines with AE installed (the
    desktop app spawns it) now; a render box with `aerender` for CI-style
    parity later.
-7. **Windows** timing for the host build — *open, under discussion.*
+7. **Windows** — **decided: Mac only for now.** No AE recipients on
+   Windows; the Windows host stays in M4 or later, and a Windows AE user
+   gets shader regions as baked footage until then.
 8. **Scope of v1 coverage** — **confirmed:** transform a spline, layers with
    masks, fills/strokes, blur, gradient, text. This puts three things in M2
    that the §10 draft had elsewhere: static gradients via `.ffx` (or SVG
