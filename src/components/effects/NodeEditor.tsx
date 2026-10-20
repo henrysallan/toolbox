@@ -3600,6 +3600,17 @@ function NodeEditor({
                 new CustomEvent("effect-node-export", { detail: { id, kind: "skia" } })
               );
           })()}
+          onExportAe={(() => {
+            // Output nodes — EffectsApp's effect-node-export listener opens
+            // ExportAeModal (091926_after-effects-handoff.md §5.4).
+            const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
+            if (d?.defType !== "output") return undefined;
+            const id = contextMenu.nodeId;
+            return () =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-export", { detail: { id, kind: "ae" } })
+              );
+          })()}
         />
       )}
     </div>
@@ -3620,6 +3631,7 @@ function NodeContextMenu({
   onEditWithAI,
   onMakeEditable,
   onExportSkia,
+  onExportAe,
   tint,
   bold,
   onSetTint,
@@ -3668,6 +3680,8 @@ function NodeContextMenu({
   onEditWithAI?: () => void;
   onMakeEditable?: () => void;
   onExportSkia?: () => void;
+  // Output nodes only (gating at the call site) — opens Export to After Effects.
+  onExportAe?: () => void;
   // Cosmetic styling (073026): current values of the clicked node, shown
   // as the checked swatch / Bold check. Absent handlers hide the rows.
   tint?: string | null;
@@ -3721,6 +3735,9 @@ function NodeContextMenu({
     // site) — downloads the React Native Skia bundle as a zip.
     ...(onExportSkia
       ? [{ label: "Export for React Native Skia…", onClick: onExportSkia }]
+      : []),
+    ...(onExportAe
+      ? [{ label: "Export to After Effects…", onClick: onExportAe }]
       : []),
     ...(wireMode
       ? [

@@ -1262,6 +1262,22 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               }
             />
           )}
+          {data.defType === "output" && (
+            <HeaderToggle
+              on={false}
+              label="Ae"
+              title="Export to After Effects — a .jsx + scene.json package that builds an editable AE project"
+              activeBg="var(--tb-a-violet-400)"
+              activeFg="var(--tb-n-16)"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-export", {
+                    detail: { id, kind: "ae" },
+                  })
+                )
+              }
+            />
+          )}
           {data.defType === "trails" && (
             <HeaderToggle
               on={false}

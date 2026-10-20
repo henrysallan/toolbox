@@ -1383,6 +1383,34 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
               Export App →
             </button>
           )}
+          {/* After Effects package (091926_after-effects-handoff.md §5.4) —
+              EffectsApp's effect-node-export listener opens ExportAeModal. */}
+          {def.type === "output" && (
+            <button
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-export", {
+                    detail: { id: selected.id, kind: "ae" },
+                  })
+                )
+              }
+              style={{
+                background: "transparent",
+                border: "1px solid var(--tb-n-9)",
+                color: "var(--tb-n-16)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "6px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+                textAlign: "center",
+                letterSpacing: 0.3,
+              }}
+              title="Export an After Effects package: editable shape layers, masks and keyframes, with baked footage where AE has no equivalent"
+            >
+              Export to After Effects →
+            </button>
+          )}
           {/* Output's vector product: the same action as the node's on-canvas
               "SVG" button, surfaced next to the styling rows it uses. Only
               once the `spline` tap is wired — see outputSplineWired. */}
