@@ -113,20 +113,32 @@ export function animationKeyParamType(k: AeAnimationKey, defType?: ParamType): P
 // along the path), color, and shape paths.
 export type AeEaseMode = "perDim" | "spatial" | "color" | "shape";
 
-// One-ease speed units for properties whose value has no natural length.
-// Spatial is AE-documented (px/s along the motion path). For COLOR we assume
-// the Euclidean length of the 0–1 RGB(A) delta per second, and for SHAPE
-// (path) keys progress through the morph per second (the whole morph = 1).
-// Neither was keyed in M0 — the runtime lane should confirm both; fix them
-// here only. Linear and hold keys do not depend on them, and the color
+// One-ease speed units, measured in AE 26.5 (spec §14, calibrate/keys.mts):
+// spatial is px/s along the motion path; COLOR is the Euclidean length of the
+// RGB(A) delta in 0–255 units per second (AE divides speeds by 255·|Δ| with
+// Δ in 0–1); SHAPE (path) keys are progress through the morph per second (the
+// whole morph = 1). Linear and hold keys do not depend on them, and the color
 // expression / dense modes never emit eased color keys.
+export const AE_COLOR_EASE_SCALE = 255;
 export const AE_SHAPE_EASE_MAGNITUDE = 1;
 
 function magnitude(mode: AeEaseMode, d: readonly number[]): number {
   if (mode === "shape") return AE_SHAPE_EASE_MAGNITUDE;
   let s = 0;
   for (const x of d) s += x * x;
-  return Math.sqrt(s);
+  return mode === "color" ? AE_COLOR_EASE_SCALE * Math.sqrt(s) : Math.sqrt(s);
+}
+
+// What AE plays for a one-ease (spatial / color / shape) handle, measured in
+// AE 26.5: a negative speed is stored as 0, and a handle whose control point
+// would leave the segment's value range has its influence shortened to
+// L / (speed·D), slope kept — a one-ease segment never overshoots its keys.
+// Per-dimension eases overshoot freely.
+function oneEaseAsPlayed(e: AeEase, L: number, D: number): AeEase {
+  const speed = Math.max(0, e.speed);
+  let influence = e.influence;
+  if (L > 0 && speed * (influence / 100) * D > L) influence = (100 * L) / (speed * D);
+  return { speed, influence };
 }
 
 const asArray = (v: unknown): number[] => (Array.isArray(v) ? (v as number[]) : [v as number]);
@@ -173,8 +185,8 @@ export function evaluateAeKeys(keys: readonly AeKey<unknown>[], t: number, mode:
   }
   const d = va.map((x, i) => vb[i] - x);
   const L = magnitude(mode, d);
-  const o = ease(a.easeOut, 0, a.outInterp, L);
-  const p = ease(b.easeIn, 0, b.inInterp, L);
+  const o = oneEaseAsPlayed(ease(a.easeOut, 0, a.outInterp, L), L, D);
+  const p = oneEaseAsPlayed(ease(b.easeIn, 0, b.inInterp, L), L, D);
   const s = cubicAt(a.t, 0, b.t, L, o, p, t);
   if (!(L > 0)) return va.slice();
   return va.map((x, i) => x + d[i] * (s / L));
@@ -837,7 +849,8 @@ export function spatialTrackToAe(
     const pa = valueAtKey(i);
     const pb = valueAtKey(i + 1);
     const dp = pb.map((x, d) => x - pa[d]);
-    const L = Math.hypot(...dp);
+    // The progress dimension in AE's speed units (AE_COLOR_EASE_SCALE).
+    const L = (mode === "color" ? AE_COLOR_EASE_SCALE : 1) * Math.hypot(...dp);
     const D = tb - ta;
     const plan = planSegmentEase(a, b, paramType, opts.fidelity);
     const lin = (t0: number, t1: number, v0: number[], v1: number[], kind: Interval["kind"], s0: number, s1: number, c?: Seg["c"], reason?: string): Interval => ({
@@ -927,8 +940,10 @@ function flattenDips(pieces: readonly AeEasePiece[]): AeEasePiece[] {
 // A color's one ease may carry a fit's slight over/undershoot (the in-out
 // cubic fit dips 4% of the way at its control point, ~0.6% on the curve):
 // pieces that each move forward and whose controls stay within 5% of [0, 1].
-// Back, bounce and elastic do not qualify. AE's handling of a one-ease color
-// past its keys is unverified; the verifier models it as extrapolation.
+// Back, bounce and elastic do not qualify. AE never plays a one-ease color
+// past its keys (it clamps the speed at 0 and shortens the handle, measured);
+// the verifier models exactly that, so a fit that leans on the overshoot is
+// checked as AE will draw it.
 function smallOvershoot(pieces: readonly AeEasePiece[]): boolean {
   return pieces.every((p) => {
     if (!(p.v1 > p.v0)) return false;

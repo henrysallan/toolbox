@@ -117,8 +117,16 @@ export default async function run(): Promise<number> {
   c.check("auto elsewhere → dense (§11.4)", colorTrackToAe(rb, { fps: 60, fidelity: "editable", policy: "auto" }).report.mode === "dense");
 
   // --- accept RGB -------------------------------------------------------------
-  const rgbRb = colorTrackToAe(block([k(0, "#ff0000", "easeInOutCubic"), k(60000, "#0000ff")]), { fps: 60, fidelity: "editable", policy: "rgb" });
+  const rgbRb = colorTrackToAe(block([k(0, "#ff0000", "easeInOutSine"), k(60000, "#0000ff")]), { fps: 60, fidelity: "editable", policy: "rgb" });
   c.check(`accept-RGB red→blue: reports the worst ΔE_OK (${rgbRb.report.worstDeltaE?.toFixed(1)}) and ${rgbRb.report.maxError255.toFixed(0)}/255`, (rgbRb.report.worstDeltaE ?? 0) > 5 && rgbRb.report.fidelity === "approx" && "keys" in rgbRb.prop && rgbRb.prop.keys.length === 2);
+  // AE 26.5 stores a one-ease color's negative speed as 0 (calibrate/keys.mts,
+  // spec §14), so the easeInOutCubic fit's dip is not what AE plays: verified
+  // as played, it misses the tolerance and that segment goes dense.
+  const rgbCubic = colorTrackToAe(block([k(0, "#ff0000", "easeInOutCubic"), k(60000, "#0000ff")]), { fps: 60, fidelity: "editable", policy: "rgb" });
+  c.check(
+    `accept-RGB easeInOutCubic: verified as AE plays it (negative speed → 0), so the segment is dense (${"keys" in rgbCubic.prop ? rgbCubic.prop.keys.length : 0} keys)`,
+    rgbCubic.report.dense.length === 1 && /AE curve misses/.test(rgbCubic.report.dense[0].reason)
+  );
   const mid = "keys" in rgbRb.prop ? evaluateAeKeys(rgbRb.prop.keys, 0.5, "color").map((x) => Math.round(x * 255)) : [];
   c.check(`…AE's RGB midpoint is [128, 0, 128] (got ${mid.join(", ")})`, mid.join() === "128,0,128");
   const native = colorTrackToAe(block([k(0, "#ff0000", "easeOutBack"), k(30000, "#0000ff", "easeInOutSine"), k(60000, "#00ff00")], "rgb"), { fps: 60, fidelity: "editable", policy: "dense" });

@@ -1,0 +1,243 @@
+{
+ "ae": "26.5x89",
+ "measured": "2026-10-20",
+ "comp": [
+  1000,
+  1000
+ ],
+ "kappa": 0.55,
+ "roundCorners": [
+  {
+   "shape": "square",
+   "radiusPx": 100,
+   "aeVsLottie": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeVsToolbox": {
+    "areaPx2": 39.9,
+    "maxPx": 0.1608
+   },
+   "plan": "uniform",
+   "planDeviationPx": 0.1212
+  },
+  {
+   "shape": "triangle",
+   "radiusPx": 100,
+   "aeVsLottie": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeVsToolbox": {
+    "areaPx2": 1236.83,
+    "maxPx": 1
+   },
+   "plan": "baked"
+  },
+  {
+   "shape": "pentagon",
+   "radiusPx": 80,
+   "aeVsLottie": {
+    "areaPx2": 0.01,
+    "maxPx": 0.0039
+   },
+   "aeVsToolbox": {
+    "areaPx2": 602.96,
+    "maxPx": 1
+   },
+   "plan": "baked"
+  },
+  {
+   "shape": "thinRect",
+   "radiusPx": 100,
+   "aeVsLottie": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeVsToolbox": {
+    "areaPx2": 2079.52,
+    "maxPx": 1
+   },
+   "plan": "baked"
+  },
+  {
+   "shape": "lShape",
+   "radiusPx": 90,
+   "aeVsLottie": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeVsToolbox": {
+    "areaPx2": 48.49,
+    "maxPx": 0.1647
+   },
+   "plan": "uniform",
+   "planDeviationPx": 0.1091
+  },
+  {
+   "shape": "openZigzag",
+   "radiusPx": 60,
+   "aeVsLottie": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeVsToolbox": {
+    "areaPx2": 1081.36,
+    "maxPx": 1
+   },
+   "plan": "baked"
+  }
+ ],
+ "kappaScan": [
+  {
+   "shape": "square",
+   "kappa": 0.53,
+   "signedAreaPx2": 350.05
+  },
+  {
+   "shape": "square",
+   "kappa": 0.545,
+   "signedAreaPx2": 87.35
+  },
+  {
+   "shape": "square",
+   "kappa": 0.55,
+   "signedAreaPx2": 0
+  },
+  {
+   "shape": "square",
+   "kappa": 0.5519,
+   "signedAreaPx2": -33.01
+  },
+  {
+   "shape": "square",
+   "kappa": 0.5523,
+   "signedAreaPx2": -40.07
+  },
+  {
+   "shape": "square",
+   "kappa": 0.56,
+   "signedAreaPx2": -173.18
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.53,
+   "signedAreaPx2": 227.9
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.545,
+   "signedAreaPx2": 56.81
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.55,
+   "signedAreaPx2": 0
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.5519,
+   "signedAreaPx2": -21.37
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.5523,
+   "signedAreaPx2": -26.1
+  },
+  {
+   "shape": "triangle",
+   "kappa": 0.56,
+   "signedAreaPx2": -112.78
+  }
+ ],
+ "polystar": [
+  {
+   "shape": "pent0",
+   "type": "polygon",
+   "points": 5,
+   "rotationDeg": 0,
+   "fill": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "trimmed": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeTrimCentroid": [
+    553.26,
+    218.69
+   ],
+   "toolboxTrimCentroid": [
+    553.26,
+    218.69
+   ]
+  },
+  {
+   "shape": "hex17",
+   "type": "polygon",
+   "points": 6,
+   "rotationDeg": 17,
+   "fill": {
+    "areaPx2": 0.01,
+    "maxPx": 0.0039
+   },
+   "trimmed": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeTrimCentroid": [
+    639.39,
+    243.13
+   ],
+   "toolboxTrimCentroid": [
+    639.39,
+    243.13
+   ]
+  },
+  {
+   "shape": "star5",
+   "type": "star",
+   "points": 5,
+   "rotationDeg": 0,
+   "fill": {
+    "areaPx2": 0.04,
+    "maxPx": 0.0039
+   },
+   "trimmed": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeTrimCentroid": [
+    528.8,
+    239.36
+   ],
+   "toolboxTrimCentroid": [
+    528.8,
+    239.36
+   ]
+  },
+  {
+   "shape": "star7m40",
+   "type": "star",
+   "points": 7,
+   "rotationDeg": -40,
+   "fill": {
+    "areaPx2": 0.04,
+    "maxPx": 0.0039
+   },
+   "trimmed": {
+    "areaPx2": 0,
+    "maxPx": 0
+   },
+   "aeTrimCentroid": [
+    366.78,
+    281.7
+   ],
+   "toolboxTrimCentroid": [
+    366.78,
+    281.7
+   ]
+  }
+ ]
+}

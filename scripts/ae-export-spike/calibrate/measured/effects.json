@@ -1,0 +1,5653 @@
+{
+ "ae": "26.5x89",
+ "installed": 450,
+ "verified": {
+  "ADBE Gaussian Blur 2": {
+   "displayName": "Gaussian Blur",
+   "category": "Blur & Sharpen"
+  },
+  "ADBE Camera Lens Blur": {
+   "displayName": "Camera Lens Blur",
+   "category": "Blur & Sharpen"
+  },
+  "ADBE Mosaic": {
+   "displayName": "Mosaic",
+   "category": "Stylize"
+  },
+  "ADBE Geometry2": {
+   "displayName": "Transform",
+   "category": "Distort"
+  },
+  "ADBE Posterize": {
+   "displayName": "Posterize",
+   "category": "Stylize"
+  },
+  "ADBE Threshold2": {
+   "displayName": "Threshold",
+   "category": "Stylize"
+  },
+  "ADBE Mirror": {
+   "displayName": "Mirror",
+   "category": "Distort"
+  },
+  "ADBE Polar Coordinates": {
+   "displayName": "Polar Coordinates",
+   "category": "Distort"
+  },
+  "ADBE Displacement Map": {
+   "displayName": "Displacement Map",
+   "category": "Distort"
+  },
+  "ADBE Glo2": {
+   "displayName": "Glow",
+   "category": "Stylize"
+  },
+  "VISINF Grain Implant": {
+   "displayName": "Add Grain",
+   "category": "Noise & Grain"
+  },
+  "ADBE Noise": {
+   "displayName": "Noise",
+   "category": "_Obsolete"
+  },
+  "ADBE Find Edges": {
+   "displayName": "Find Edges",
+   "category": "Stylize"
+  },
+  "ADBE HUE SATURATION": {
+   "displayName": "Hue/Saturation",
+   "category": "Color Correction"
+  },
+  "ADBE Brightness & Contrast 2": {
+   "displayName": "Brightness & Contrast",
+   "category": "Color Correction"
+  },
+  "ADBE Sharpen": {
+   "displayName": "Sharpen",
+   "category": "Blur & Sharpen"
+  },
+  "ADBE Unsharp Mask2": {
+   "displayName": "Unsharp Mask",
+   "category": "Blur & Sharpen"
+  },
+  "ADBE Tile": {
+   "displayName": "Motion Tile",
+   "category": "Stylize"
+  },
+  "ADBE Echo": {
+   "displayName": "Echo",
+   "category": "Time"
+  },
+  "Mettle SkyBox Chromatic Aberrat": {
+   "displayName": "VR Chromatic Aberrations",
+   "category": "Immersive Video"
+  },
+  "ADBE Apply Color LUT2": {
+   "displayName": "Apply Color LUT",
+   "category": "Utility"
+  },
+  "ADBE Linear Color Key2": {
+   "displayName": "Linear Color Key",
+   "category": "Keying"
+  },
+  "ADBE Color Key": {
+   "displayName": "Color Key",
+   "category": "Obsolete"
+  },
+  "ADBE Extract": {
+   "displayName": "Extract",
+   "category": "Keying"
+  },
+  "Keylight 906": {
+   "displayName": "Keylight (1.2)",
+   "category": "Keying"
+  },
+  "ADBE Bevel Alpha": {
+   "displayName": "Bevel Alpha",
+   "category": "Perspective"
+  },
+  "ADBE Ramp": {
+   "displayName": "Gradient Ramp",
+   "category": "Generate"
+  },
+  "ADBE Shift Channels": {
+   "displayName": "Shift Channels",
+   "category": "Channel"
+  },
+  "ADBE Offset": {
+   "displayName": "Offset",
+   "category": "Distort"
+  },
+  "ADBE Easy Levels2": {
+   "displayName": "Levels",
+   "category": "Color Correction"
+  },
+  "ADBE Emboss": {
+   "displayName": "Emboss",
+   "category": "Stylize"
+  },
+  "ADBE Color Emboss": {
+   "displayName": "Color Emboss",
+   "category": "Stylize"
+  },
+  "ADBE Exposure2": {
+   "displayName": "Exposure",
+   "category": "Color Correction"
+  },
+  "ADBE Tint": {
+   "displayName": "Tint",
+   "category": "Color Correction"
+  },
+  "ADBE Fill": {
+   "displayName": "Fill",
+   "category": "Generate"
+  },
+  "ADBE Invert": {
+   "displayName": "Invert",
+   "category": "Channel"
+  },
+  "ADBE Set Matte3": {
+   "displayName": "Set Matte",
+   "category": "Channel"
+  },
+  "ADBE CHANNEL MIXER": {
+   "displayName": "Channel Mixer",
+   "category": "Color Correction"
+  },
+  "ADBE Pro Levels2": {
+   "displayName": "Levels (Individual Controls)",
+   "category": "Color Correction"
+  },
+  "CC Threshold RGB": {
+   "displayName": "CC Threshold RGB",
+   "category": "Stylize"
+  }
+ },
+ "dialogOnApply": [
+  "ADBE Apply Color LUT2"
+ ],
+ "trees": {
+  "ADBE Gaussian Blur 2": {
+   "name": "Gaussian Blur",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Gaussian Blur 2-0001",
+     "name": "Blurriness",
+     "type": "OneD",
+     "value": 25,
+     "min": 0,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Gaussian Blur 2-0002",
+     "name": "Blur Dimensions",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Gaussian Blur 2-0003",
+     "name": "Repeat Edge Pixels",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Camera Lens Blur": {
+   "name": "Camera Lens Blur",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Camera Lens Blur-0001",
+     "name": "Blur Radius",
+     "type": "OneD",
+     "value": 5,
+     "min": 0,
+     "max": 500,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Camera Lens Blur-0002",
+     "name": "Iris Properties",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Camera Lens Blur-0003",
+     "name": "Shape",
+     "type": "OneD",
+     "value": 4,
+     "min": 1,
+     "max": 8,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Camera Lens Blur-0004",
+     "name": "Roundness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Camera Lens Blur-0005",
+     "name": "Aspect Ratio",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.00999999977648,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Camera Lens Blur-0006",
+     "name": "Rotation",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Camera Lens Blur-0007",
+     "name": "Diffraction Fringe",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 500,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Camera Lens Blur-0008",
+     "name": "Iris Properties",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Camera Lens Blur-0009",
+     "name": "Blur Map",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Camera Lens Blur-0010",
+     "name": "Layer",
+     "type": "LAYER_INDEX",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Camera Lens Blur-0011",
+     "name": "Channel",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "ADBE Camera Lens Blur-0012",
+     "name": "Placement",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "ADBE Camera Lens Blur-0013",
+     "name": "Blur Focal Distance",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "ADBE Camera Lens Blur-0014",
+     "name": "Invert Blur Map",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "ADBE Camera Lens Blur-0015",
+     "name": "Blur Map",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 16,
+     "mn": "ADBE Camera Lens Blur-0016",
+     "name": "Highlight",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 17,
+     "mn": "ADBE Camera Lens Blur-0017",
+     "name": "Gain",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 18,
+     "mn": "ADBE Camera Lens Blur-0018",
+     "name": "Threshold",
+     "type": "OneD",
+     "value": 0.80000001192093,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 19,
+     "mn": "ADBE Camera Lens Blur-0019",
+     "name": "Saturation",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 20,
+     "mn": "ADBE Camera Lens Blur-0020",
+     "name": "Highlight",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 21,
+     "mn": "ADBE Camera Lens Blur-0021",
+     "name": "Edge Behavior",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 22,
+     "mn": "ADBE Camera Lens Blur-0022",
+     "name": "Use Linear Working Space",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 23,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Mosaic": {
+   "name": "Mosaic",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Mosaic-0001",
+     "name": "Horizontal Blocks",
+     "type": "OneD",
+     "value": 10,
+     "min": 1,
+     "max": 4000,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Mosaic-0002",
+     "name": "Vertical Blocks",
+     "type": "OneD",
+     "value": 10,
+     "min": 1,
+     "max": 4000,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Mosaic-0003",
+     "name": "Sharp Colors",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Geometry2": {
+   "name": "Transform",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Geometry2-0001",
+     "name": "Anchor Point",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Geometry2-0002",
+     "name": "Position",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Geometry2-0011",
+     "name": "Uniform Scale",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Geometry2-0003",
+     "name": "Scale Height",
+     "type": "OneD",
+     "value": 100,
+     "min": -30000,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Geometry2-0004",
+     "name": "Scale Width",
+     "type": "OneD",
+     "value": 100,
+     "min": -30000,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Geometry2-0005",
+     "name": "Skew",
+     "type": "OneD",
+     "value": 0,
+     "min": -70,
+     "max": 70,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Geometry2-0006",
+     "name": "Skew Axis",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Geometry2-0007",
+     "name": "Rotation",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Geometry2-0008",
+     "name": "Opacity",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Geometry2-0009",
+     "name": "Use Composition’s Shutter Angle",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Geometry2-0010",
+     "name": "Shutter Angle",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 360,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "ADBE Geometry2-0012",
+     "name": "Sampling",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Posterize": {
+   "name": "Posterize",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Posterize-0001",
+     "name": "Level",
+     "type": "OneD",
+     "value": 7,
+     "min": 2,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Threshold2": {
+   "name": "Threshold",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Threshold2-0001",
+     "name": "Level",
+     "type": "OneD",
+     "value": 0.5,
+     "min": -30000,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Mirror": {
+   "name": "Mirror",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Mirror-0001",
+     "name": "Reflection Center",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      64,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Mirror-0002",
+     "name": "Reflection Angle",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Polar Coordinates": {
+   "name": "Polar Coordinates",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Polar Coordinates-0001",
+     "name": "Interpolation",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Polar Coordinates-0002",
+     "name": "Type of Conversion",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Displacement Map": {
+   "name": "Displacement Map",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Displacement Map-0001",
+     "name": "Displacement Map Layer",
+     "type": "LAYER_INDEX",
+     "value": 1,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Displacement Map-0002",
+     "name": "Use For Horizontal Displacement",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 11,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Displacement Map-0003",
+     "name": "Max Horizontal Displacement",
+     "type": "OneD",
+     "value": 5,
+     "min": -32000,
+     "max": 32000,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Displacement Map-0004",
+     "name": "Use For Vertical Displacement",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 11,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Displacement Map-0005",
+     "name": "Max Vertical Displacement",
+     "type": "OneD",
+     "value": 5,
+     "min": -32000,
+     "max": 32000,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Displacement Map-0006",
+     "name": "Displacement Map Behavior",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Displacement Map-0007",
+     "name": "Edge Behavior",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Displacement Map-0008",
+     "name": "Expand Output",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Glo2": {
+   "name": "Glow",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Glo2-0001",
+     "name": "Glow Based On",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Glo2-0002",
+     "name": "Glow Threshold",
+     "type": "OneD",
+     "value": 153,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Glo2-0003",
+     "name": "Glow Radius",
+     "type": "OneD",
+     "value": 10,
+     "min": 0,
+     "max": 1000,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Glo2-0004",
+     "name": "Glow Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Glo2-0005",
+     "name": "Composite Original",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Glo2-0006",
+     "name": "Glow Operation",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 25,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Glo2-0007",
+     "name": "Glow Colors",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Glo2-0008",
+     "name": "Color Looping",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 4,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Glo2-0009",
+     "name": "Color Loops",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 127,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Glo2-0010",
+     "name": "Color Phase",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Glo2-0011",
+     "name": "A & B Midpoint",
+     "type": "OneD",
+     "value": 0.5,
+     "min": 0.00999450683594,
+     "max": 0.99000549316406,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "ADBE Glo2-0012",
+     "name": "Color A",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "ADBE Glo2-0013",
+     "name": "Color B",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "ADBE Glo2-0014",
+     "name": "Glow Dimensions",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "VISINF Grain Implant": {
+   "name": "Add Grain",
+   "props": [
+    {
+     "i": 1,
+     "mn": "VISINF Grain Implant-0021",
+     "name": "Viewing Mode",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "VISINF Grain Implant-0027",
+     "name": "Preset",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 15,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "VISINF Grain Implant-0102",
+     "name": "Preview Region",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 4,
+     "mn": "VISINF Grain Implant-0022",
+     "name": "Center",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "VISINF Grain Implant-0023",
+     "name": "Width",
+     "type": "OneD",
+     "value": 200,
+     "min": 50,
+     "max": 1024,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "VISINF Grain Implant-0024",
+     "name": "Height",
+     "type": "OneD",
+     "value": 200,
+     "min": 50,
+     "max": 1024,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "VISINF Grain Implant-0028",
+     "name": "Show Box",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "VISINF Grain Implant-0029",
+     "name": "Box Color",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "VISINF Grain Implant-0103",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 10,
+     "mn": "VISINF Grain Implant-0110",
+     "name": "Tweaking",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 11,
+     "mn": "VISINF Grain Implant-0008",
+     "name": "Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "VISINF Grain Implant-0007",
+     "name": "Size",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "VISINF Grain Implant-0130",
+     "name": "Softness",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "VISINF Grain Implant-0030",
+     "name": "Aspect Ratio",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "VISINF Grain Implant-0100",
+     "name": "Channel Intensities",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 16,
+     "mn": "VISINF Grain Implant-0002",
+     "name": "Red Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 17,
+     "mn": "VISINF Grain Implant-0003",
+     "name": "Green Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 18,
+     "mn": "VISINF Grain Implant-0004",
+     "name": "Blue Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 19,
+     "mn": "VISINF Grain Implant-0101",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 20,
+     "mn": "VISINF Grain Implant-0114",
+     "name": "Channel Size",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 21,
+     "mn": "VISINF Grain Implant-0032",
+     "name": "Red Size",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 22,
+     "mn": "VISINF Grain Implant-0033",
+     "name": "Green Size",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 23,
+     "mn": "VISINF Grain Implant-0034",
+     "name": "Blue Size",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 24,
+     "mn": "VISINF Grain Implant-0115",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 25,
+     "mn": "VISINF Grain Implant-0111",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 26,
+     "mn": "VISINF Grain Implant-0122",
+     "name": "Color",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 27,
+     "mn": "VISINF Grain Implant-0005",
+     "name": "Monochromatic",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 28,
+     "mn": "VISINF Grain Implant-0006",
+     "name": "Saturation",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 29,
+     "mn": "VISINF Grain Implant-0011",
+     "name": "Tint Amount",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 30,
+     "mn": "VISINF Grain Implant-0010",
+     "name": "Tint Color",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 31,
+     "mn": "VISINF Grain Implant-0123",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 32,
+     "mn": "VISINF Grain Implant-0108",
+     "name": "Application",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 33,
+     "mn": "VISINF Grain Implant-0014",
+     "name": "Blending Mode",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 34,
+     "mn": "VISINF Grain Implant-0040",
+     "name": "Shadows",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 35,
+     "mn": "VISINF Grain Implant-0041",
+     "name": "Midtones",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 36,
+     "mn": "VISINF Grain Implant-0042",
+     "name": "Highlights",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 37,
+     "mn": "VISINF Grain Implant-0043",
+     "name": "Midpoint",
+     "type": "OneD",
+     "value": 0.5,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 38,
+     "mn": "VISINF Grain Implant-0106",
+     "name": "Channel Balance",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 39,
+     "mn": "VISINF Grain Implant-0044",
+     "name": "Red Shadows",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 40,
+     "mn": "VISINF Grain Implant-0045",
+     "name": "Red Midtones",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 41,
+     "mn": "VISINF Grain Implant-0046",
+     "name": "Red Highlights",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 42,
+     "mn": "VISINF Grain Implant-0047",
+     "name": "Green Shadows",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 43,
+     "mn": "VISINF Grain Implant-0048",
+     "name": "Green Midtones",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 44,
+     "mn": "VISINF Grain Implant-0049",
+     "name": "Green Highlights",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 45,
+     "mn": "VISINF Grain Implant-0050",
+     "name": "Blue Shadows",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 46,
+     "mn": "VISINF Grain Implant-0051",
+     "name": "Blue Midtones",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 47,
+     "mn": "VISINF Grain Implant-0052",
+     "name": "Blue Highlights",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 48,
+     "mn": "VISINF Grain Implant-0107",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 49,
+     "mn": "VISINF Grain Implant-0109",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 50,
+     "mn": "VISINF Grain Implant-0120",
+     "name": "Animation",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 51,
+     "mn": "VISINF Grain Implant-0039",
+     "name": "Animation Speed",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 52,
+     "mn": "VISINF Grain Implant-0038",
+     "name": "Animate Smoothly",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 53,
+     "mn": "VISINF Grain Implant-0013",
+     "name": "Random Seed",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 54,
+     "mn": "VISINF Grain Implant-0121",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 55,
+     "mn": "VISINF Grain Implant-0112",
+     "name": "Blend with Original",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 56,
+     "mn": "VISINF Grain Implant-0053",
+     "name": "Amount",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 57,
+     "mn": "VISINF Grain Implant-0063",
+     "name": "Combine Match and Mask Using",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 58,
+     "mn": "VISINF Grain Implant-0059",
+     "name": "Blur Matte",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 59,
+     "mn": "VISINF Grain Implant-0124",
+     "name": "Color Matching",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 60,
+     "mn": "VISINF Grain Implant-0057",
+     "name": "Match Color Using",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 9,
+     "canVary": true
+    },
+    {
+     "i": 61,
+     "mn": "VISINF Grain Implant-0054",
+     "name": "Matching Color",
+     "type": "COLOR",
+     "value": [
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 62,
+     "mn": "VISINF Grain Implant-0055",
+     "name": "Matching Tolerance",
+     "type": "OneD",
+     "value": 0.09999084472656,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 63,
+     "mn": "VISINF Grain Implant-0056",
+     "name": "Matching Softness",
+     "type": "OneD",
+     "value": 0.09999084472656,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 64,
+     "mn": "VISINF Grain Implant-0058",
+     "name": "Invert Match",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 65,
+     "mn": "VISINF Grain Implant-0125",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 66,
+     "mn": "VISINF Grain Implant-0126",
+     "name": "Masking Layer",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 67,
+     "mn": "VISINF Grain Implant-0060",
+     "name": "Mask Layer",
+     "type": "LAYER_INDEX",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 68,
+     "mn": "VISINF Grain Implant-0062",
+     "name": "Masking Mode",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 4,
+     "canVary": true
+    },
+    {
+     "i": 69,
+     "mn": "VISINF Grain Implant-0061",
+     "name": "If Mask Size Differs",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 70,
+     "mn": "VISINF Grain Implant-0127",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 71,
+     "mn": "VISINF Grain Implant-0113",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 72,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Noise": {
+   "name": "Noise",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Noise-0001",
+     "name": "Amount of Noise",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Noise-0002",
+     "name": "Noise Type",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Noise-0003",
+     "name": "Clipping",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Find Edges": {
+   "name": "Find Edges",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Find Edges-0001",
+     "name": "Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Find Edges-0002",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE HUE SATURATION": {
+   "name": "Hue/Saturation",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE HUE SATURATION-0002",
+     "name": "Channel Control",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 7,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE HUE SATURATION-0003",
+     "name": "Channel Range",
+     "type": "CUSTOM_VALUE",
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE HUE SATURATION-0004",
+     "name": "Master Hue",
+     "type": "OneD",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 4,
+     "mn": "ADBE HUE SATURATION-0005",
+     "name": "Master Saturation",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": false
+    },
+    {
+     "i": 5,
+     "mn": "ADBE HUE SATURATION-0006",
+     "name": "Master Lightness",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": false
+    },
+    {
+     "i": 6,
+     "mn": "ADBE HUE SATURATION-0007",
+     "name": "Colorize",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": false
+    },
+    {
+     "i": 7,
+     "mn": "ADBE HUE SATURATION-0008",
+     "name": "Colorize Hue",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE HUE SATURATION-0009",
+     "name": "Colorize Saturation",
+     "type": "OneD",
+     "value": 25,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE HUE SATURATION-0010",
+     "name": "Colorize Lightness",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Brightness & Contrast 2": {
+   "name": "Brightness & Contrast",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Brightness & Contrast 2-0001",
+     "name": "Brightness",
+     "type": "OneD",
+     "value": 0,
+     "min": -150,
+     "max": 150,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Brightness & Contrast 2-0002",
+     "name": "Contrast",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Brightness & Contrast 2-0003",
+     "name": "Use Legacy (supports HDR)",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Sharpen": {
+   "name": "Sharpen",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Sharpen-0001",
+     "name": "Sharpen Amount",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 4000,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Unsharp Mask2": {
+   "name": "Unsharp Mask",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Unsharp Mask2-0004",
+     "name": "Color Mode",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Unsharp Mask2-0001",
+     "name": "Amount",
+     "type": "OneD",
+     "value": 0,
+     "min": -500,
+     "max": 500,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Unsharp Mask2-0002",
+     "name": "Radius",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.10000610351562,
+     "max": 500,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Unsharp Mask2-0003",
+     "name": "Threshold",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Tile": {
+   "name": "Motion Tile",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Tile-0001",
+     "name": "Tile Center",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Tile-0002",
+     "name": "Tile Width",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Tile-0003",
+     "name": "Tile Height",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Tile-0004",
+     "name": "Output Width",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Tile-0005",
+     "name": "Output Height",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Tile-0006",
+     "name": "Mirror Edges",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Tile-0007",
+     "name": "Phase",
+     "type": "OneD",
+     "value": 0,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Tile-0008",
+     "name": "Horizontal Phase Shift",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Echo": {
+   "name": "Echo",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Echo-0001",
+     "name": "Echo Time (seconds)",
+     "type": "OneD",
+     "value": -0.0333333350718,
+     "min": -30000,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Echo-0002",
+     "name": "Number Of Echoes",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 30000,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Echo-0003",
+     "name": "Starting Intensity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Echo-0004",
+     "name": "Decay",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Echo-0005",
+     "name": "Echo Operator",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 7,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "Mettle SkyBox Chromatic Aberrat": {
+   "name": "VR Chromatic Aberrations",
+   "props": [
+    {
+     "i": 1,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0009",
+     "name": "Auto VR Properties",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0002",
+     "name": "Frame Layout",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0010",
+     "name": "Horizontal Field of View",
+     "type": "OneD",
+     "value": 360,
+     "min": 60,
+     "max": 360,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0011",
+     "name": "Vertical Field of View",
+     "type": "OneD",
+     "value": 180,
+     "min": 60,
+     "max": 180,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0003",
+     "name": "Point of Interest",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0004",
+     "name": "Aberration (Red)",
+     "type": "OneD",
+     "value": -10,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0005",
+     "name": "Aberration (Green)",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0006",
+     "name": "Aberration (Blue)",
+     "type": "OneD",
+     "value": 10,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0007",
+     "name": "Falloff Distance",
+     "type": "OneD",
+     "value": 50,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "Mettle SkyBox Chromatic Aberrat-0008",
+     "name": "Falloff Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Linear Color Key2": {
+   "name": "Linear Color Key",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Linear Color Key2-0001",
+     "name": "Preview",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Linear Color Key2-0002",
+     "name": "View",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Linear Color Key2-0003",
+     "name": "Key Color",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Linear Color Key2-0004",
+     "name": "Match colors",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Linear Color Key2-0005",
+     "name": "Matching Tolerance",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Linear Color Key2-0006",
+     "name": "Matching Softness",
+     "type": "OneD",
+     "value": 10,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Linear Color Key2-0007",
+     "name": "Key Operation",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Color Key": {
+   "name": "Color Key",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Color Key-0001",
+     "name": "Key Color",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Color Key-0002",
+     "name": "Color Tolerance",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Color Key-0003",
+     "name": "Edge Thin",
+     "type": "OneD",
+     "value": 0,
+     "min": -5,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Color Key-0004",
+     "name": "Edge Feather",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Extract": {
+   "name": "Extract",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Extract-0001",
+     "name": "Histogram",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Extract-0002",
+     "name": "Channel",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Extract-0003",
+     "name": "Black Point",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Extract-0004",
+     "name": "White Point",
+     "type": "OneD",
+     "value": 255,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Extract-0005",
+     "name": "Black Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Extract-0006",
+     "name": "White Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 255,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Extract-0007",
+     "name": "Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "Keylight 906": {
+   "name": "Keylight (1.2)",
+   "props": [
+    {
+     "i": 1,
+     "mn": "Keylight 906-0001",
+     "name": "About",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "Keylight 906-0002",
+     "name": "View",
+     "type": "OneD",
+     "value": 11,
+     "min": 1,
+     "max": 11,
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "Keylight 906-0003",
+     "name": "Unpremultiply Result",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "Keylight 906-0004",
+     "name": "Screen Colour",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "Keylight 906-0005",
+     "name": "Screen Gain",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "Keylight 906-0006",
+     "name": "Screen Balance",
+     "type": "OneD",
+     "value": 50,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "Keylight 906-0007",
+     "name": "Despill Bias",
+     "type": "COLOR",
+     "value": [
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "Keylight 906-0008",
+     "name": "Alpha Bias",
+     "type": "COLOR",
+     "value": [
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "Keylight 906-0009",
+     "name": "Lock Biases Together",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": false
+    },
+    {
+     "i": 10,
+     "mn": "Keylight 906-0010",
+     "name": "Screen Pre-blur",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "Keylight 906-0011",
+     "name": "Screen Matte",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 12,
+     "mn": "Keylight 906-0012",
+     "name": "Clip Black",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "Keylight 906-0013",
+     "name": "Clip White",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "Keylight 906-0014",
+     "name": "Clip Rollback",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "Keylight 906-0015",
+     "name": "Screen Shrink/Grow",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 16,
+     "mn": "Keylight 906-0016",
+     "name": "Screen Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 17,
+     "mn": "Keylight 906-0017",
+     "name": "Screen Despot Black",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 18,
+     "mn": "Keylight 906-0018",
+     "name": "Screen Despot White",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 19,
+     "mn": "Keylight 906-0019",
+     "name": "Replace Method",
+     "type": "OneD",
+     "value": 4,
+     "min": 1,
+     "max": 4,
+     "canVary": false
+    },
+    {
+     "i": 20,
+     "mn": "Keylight 906-0020",
+     "name": "Replace Colour",
+     "type": "COLOR",
+     "value": [
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 21,
+     "mn": "Keylight 906-0021",
+     "name": "Screen Matte",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 22,
+     "mn": "Keylight 906-0022",
+     "name": "Inside Mask",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 23,
+     "mn": "Keylight 906-0023",
+     "name": "Inside Mask",
+     "type": "MASK_INDEX",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 24,
+     "mn": "Keylight 906-0024",
+     "name": "Inside Mask Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 25,
+     "mn": "Keylight 906-0025",
+     "name": "Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 26,
+     "mn": "Keylight 906-0026",
+     "name": "Replace Method",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 4,
+     "canVary": false
+    },
+    {
+     "i": 27,
+     "mn": "Keylight 906-0027",
+     "name": "Replace Colour",
+     "type": "COLOR",
+     "value": [
+      0.49803921568627,
+      0.49803921568627,
+      0.49803921568627,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 28,
+     "mn": "Keylight 906-0028",
+     "name": "Source Alpha",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 3,
+     "canVary": false
+    },
+    {
+     "i": 29,
+     "mn": "Keylight 906-0029",
+     "name": "Inside Mask",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 30,
+     "mn": "Keylight 906-0030",
+     "name": "Outside Mask",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 31,
+     "mn": "Keylight 906-0031",
+     "name": "Outside Mask",
+     "type": "MASK_INDEX",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 32,
+     "mn": "Keylight 906-0032",
+     "name": "Outside Mask Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 33,
+     "mn": "Keylight 906-0033",
+     "name": "Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 34,
+     "mn": "Keylight 906-0034",
+     "name": "Outside Mask",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 35,
+     "mn": "Keylight 906-0035",
+     "name": "Foreground Colour Correction",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 36,
+     "mn": "Keylight 906-0036",
+     "name": "Enable Colour Correction",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 37,
+     "mn": "Keylight 906-0037",
+     "name": "Saturation",
+     "type": "OneD",
+     "value": 100,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 38,
+     "mn": "Keylight 906-0038",
+     "name": "Contrast",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 39,
+     "mn": "Keylight 906-0039",
+     "name": "Brightness",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 40,
+     "mn": "Keylight 906-0040",
+     "name": "Colour Suppression",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 41,
+     "mn": "Keylight 906-0041",
+     "name": "Suppress",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 7,
+     "canVary": false
+    },
+    {
+     "i": 42,
+     "mn": "Keylight 906-0042",
+     "name": "Suppression Balance",
+     "type": "OneD",
+     "value": 50,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 43,
+     "mn": "Keylight 906-0043",
+     "name": "Suppression Amount",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 44,
+     "mn": "Keylight 906-0044",
+     "name": "Colour Suppression",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 45,
+     "mn": "Keylight 906-0045",
+     "name": "Colour Balancing",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 46,
+     "mn": "Keylight 906-0046",
+     "name": "Hue",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 47,
+     "mn": "Keylight 906-0047",
+     "name": "Sat",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 48,
+     "mn": "Keylight 906-0048",
+     "name": "Colour Balance Wheel",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 49,
+     "mn": "Keylight 906-0049",
+     "name": "Colour Balancing",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 50,
+     "mn": "Keylight 906-0050",
+     "name": "Foreground Colour Correction",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 51,
+     "mn": "Keylight 906-0051",
+     "name": "Edge Colour Correction",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 52,
+     "mn": "Keylight 906-0052",
+     "name": "Enable Edge Colour Correction",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 53,
+     "mn": "Keylight 906-0053",
+     "name": "Edge Hardness",
+     "type": "OneD",
+     "value": 50,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 54,
+     "mn": "Keylight 906-0054",
+     "name": "Edge Softness",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 55,
+     "mn": "Keylight 906-0055",
+     "name": "Edge Grow",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 56,
+     "mn": "Keylight 906-0056",
+     "name": "Saturation",
+     "type": "OneD",
+     "value": 100,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 57,
+     "mn": "Keylight 906-0057",
+     "name": "Contrast",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 58,
+     "mn": "Keylight 906-0058",
+     "name": "Brightness",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 59,
+     "mn": "Keylight 906-0059",
+     "name": "Edge Colour Suppression",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 60,
+     "mn": "Keylight 906-0060",
+     "name": "Suppress",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 7,
+     "canVary": false
+    },
+    {
+     "i": 61,
+     "mn": "Keylight 906-0061",
+     "name": "Suppression Balance",
+     "type": "OneD",
+     "value": 50,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 62,
+     "mn": "Keylight 906-0062",
+     "name": "Suppression Amount",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 63,
+     "mn": "Keylight 906-0063",
+     "name": "Edge Colour Suppression",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 64,
+     "mn": "Keylight 906-0064",
+     "name": "Colour Balancing",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 65,
+     "mn": "Keylight 906-0065",
+     "name": "Hue",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 66,
+     "mn": "Keylight 906-0066",
+     "name": "Sat",
+     "type": "OneD",
+     "value": 0,
+     "min": -5000,
+     "max": 5000,
+     "canVary": true
+    },
+    {
+     "i": 67,
+     "mn": "Keylight 906-0067",
+     "name": "Colour Balance Wheel",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 68,
+     "mn": "Keylight 906-0068",
+     "name": "Colour Balancing",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 69,
+     "mn": "Keylight 906-0069",
+     "name": "Edge Colour Correction",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 70,
+     "mn": "Keylight 906-0070",
+     "name": "Source Crops",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 71,
+     "mn": "Keylight 906-0071",
+     "name": "X Method",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 4,
+     "canVary": false
+    },
+    {
+     "i": 72,
+     "mn": "Keylight 906-0072",
+     "name": "Y Method",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 4,
+     "canVary": false
+    },
+    {
+     "i": 73,
+     "mn": "Keylight 906-0073",
+     "name": "Edge Colour",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 74,
+     "mn": "Keylight 906-0074",
+     "name": "Edge Colour Alpha",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": false
+    },
+    {
+     "i": 75,
+     "mn": "Keylight 906-0075",
+     "name": "Left",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 76,
+     "mn": "Keylight 906-0076",
+     "name": "Right",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 77,
+     "mn": "Keylight 906-0077",
+     "name": "Top",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 78,
+     "mn": "Keylight 906-0078",
+     "name": "Bottom",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 79,
+     "mn": "Keylight 906-0079",
+     "name": "Source Crops",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 80,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Bevel Alpha": {
+   "name": "Bevel Alpha",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Bevel Alpha-0001",
+     "name": "Edge Thickness",
+     "type": "OneD",
+     "value": 2,
+     "min": 0,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Bevel Alpha-0002",
+     "name": "Light Angle",
+     "type": "OneD",
+     "value": -60,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Bevel Alpha-0003",
+     "name": "Light Color",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Bevel Alpha-0004",
+     "name": "Light Intensity",
+     "type": "OneD",
+     "value": 0.39999389648438,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Ramp": {
+   "name": "Gradient Ramp",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Ramp-0001",
+     "name": "Start of Ramp",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      0
+     ],
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Ramp-0002",
+     "name": "Start Color",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      0,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Ramp-0003",
+     "name": "End of Ramp",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      64
+     ],
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Ramp-0004",
+     "name": "End Color",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Ramp-0005",
+     "name": "Ramp Shape",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Ramp-0006",
+     "name": "Ramp Scatter",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 512,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Ramp-0007",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Ramp-0008",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Shift Channels": {
+   "name": "Shift Channels",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Shift Channels-0001",
+     "name": "Take Alpha From",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Shift Channels-0002",
+     "name": "Take Red From",
+     "type": "OneD",
+     "value": 2,
+     "min": 1,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Shift Channels-0003",
+     "name": "Take Green From",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Shift Channels-0004",
+     "name": "Take Blue From",
+     "type": "OneD",
+     "value": 4,
+     "min": 1,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Offset": {
+   "name": "Offset",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Offset-0001",
+     "name": "Shift Center To",
+     "type": "TwoD_SPATIAL",
+     "value": [
+      32,
+      32
+     ],
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Offset-0002",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Easy Levels2": {
+   "name": "Levels",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Easy Levels2-0001",
+     "name": "Channel:",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 5,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Easy Levels2-0002",
+     "name": "Histogram",
+     "type": "CUSTOM_VALUE",
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Easy Levels2-0003",
+     "name": "Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": false
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Easy Levels2-0004",
+     "name": "Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": false
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Easy Levels2-0005",
+     "name": "Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": false
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Easy Levels2-0006",
+     "name": "Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": false
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Easy Levels2-0007",
+     "name": "Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": false
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Easy Levels2-0008",
+     "name": "Clip To Output Black",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Easy Levels2-0009",
+     "name": "Clip To Output White",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Emboss": {
+   "name": "Emboss",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Emboss-0001",
+     "name": "Direction",
+     "type": "OneD",
+     "value": 45,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Emboss-0002",
+     "name": "Relief",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1000,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Emboss-0003",
+     "name": "Contrast",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 32767,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Emboss-0004",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Color Emboss": {
+   "name": "Color Emboss",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Color Emboss-0001",
+     "name": "Direction",
+     "type": "OneD",
+     "value": 45,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Color Emboss-0002",
+     "name": "Relief",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1000,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Color Emboss-0003",
+     "name": "Contrast",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 32767,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Color Emboss-0004",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Exposure2": {
+   "name": "Exposure",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Exposure2-0001",
+     "name": "Channels:",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Exposure2-0002",
+     "name": "Master",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Exposure2-0003",
+     "name": "Exposure",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Exposure2-0004",
+     "name": "Offset",
+     "type": "OneD",
+     "value": 0,
+     "min": -2,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Exposure2-0005",
+     "name": "Gamma Correction",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.10000000149012,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Exposure2-0006",
+     "name": "Master",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Exposure2-0007",
+     "name": "Red",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Exposure2-0008",
+     "name": "Red Exposure",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Exposure2-0009",
+     "name": "Red Offset",
+     "type": "OneD",
+     "value": 0,
+     "min": -2,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Exposure2-0010",
+     "name": "Red Gamma Correction",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.10000000149012,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Exposure2-0011",
+     "name": "Red",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 12,
+     "mn": "ADBE Exposure2-0012",
+     "name": "Green",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 13,
+     "mn": "ADBE Exposure2-0013",
+     "name": "Green Exposure",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "ADBE Exposure2-0014",
+     "name": "Green Offset",
+     "type": "OneD",
+     "value": 0,
+     "min": -2,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "ADBE Exposure2-0015",
+     "name": "Green Gamma Correction",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.10000000149012,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 16,
+     "mn": "ADBE Exposure2-0016",
+     "name": "Green",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 17,
+     "mn": "ADBE Exposure2-0017",
+     "name": "Blue",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 18,
+     "mn": "ADBE Exposure2-0018",
+     "name": "Blue Exposure",
+     "type": "OneD",
+     "value": 0,
+     "min": -100,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 19,
+     "mn": "ADBE Exposure2-0019",
+     "name": "Blue Offset",
+     "type": "OneD",
+     "value": 0,
+     "min": -2,
+     "max": 2,
+     "canVary": true
+    },
+    {
+     "i": 20,
+     "mn": "ADBE Exposure2-0020",
+     "name": "Blue Gamma Correction",
+     "type": "OneD",
+     "value": 1,
+     "min": 0.10000000149012,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 21,
+     "mn": "ADBE Exposure2-0021",
+     "name": "Blue",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 22,
+     "mn": "ADBE Exposure2-0022",
+     "name": "Bypass Linear Light Conversion",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 23,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Tint": {
+   "name": "Tint",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Tint-0001",
+     "name": "Map Black To",
+     "type": "COLOR",
+     "value": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Tint-0002",
+     "name": "Map White To",
+     "type": "COLOR",
+     "value": [
+      1,
+      1,
+      1,
+      0
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Tint-0003",
+     "name": "Amount to Tint",
+     "type": "OneD",
+     "value": 100,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Tint-0004",
+     "name": "",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Fill": {
+   "name": "Fill",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Fill-0001",
+     "name": "Fill Mask",
+     "type": "MASK_INDEX",
+     "value": 0,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Fill-0007",
+     "name": "All Masks",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Fill-0002",
+     "name": "Color",
+     "type": "COLOR",
+     "value": [
+      1,
+      0,
+      0,
+      1
+     ],
+     "min": -3921568.62745098,
+     "max": 3921568.62745098,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Fill-0006",
+     "name": "Invert",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Fill-0003",
+     "name": "Horizontal Feather",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 999,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Fill-0004",
+     "name": "Vertical Feather",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 999,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Fill-0005",
+     "name": "Opacity",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Invert": {
+   "name": "Invert",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Invert-0001",
+     "name": "Channel",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 16,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Invert-0002",
+     "name": "Blend With Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 100,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Set Matte3": {
+   "name": "Set Matte",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Set Matte3-0001",
+     "name": "Take Matte From Layer",
+     "type": "LAYER_INDEX",
+     "value": 1,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Set Matte3-0002",
+     "name": "Use For Matte",
+     "type": "OneD",
+     "value": 4,
+     "min": 1,
+     "max": 10,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Set Matte3-0003",
+     "name": "Invert Matte",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Set Matte3-0004",
+     "name": "If Layer Sizes Differ",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Set Matte3-0005",
+     "name": "Composite Matte with Original",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Set Matte3-0006",
+     "name": "Premultiply Matte Layer",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE CHANNEL MIXER": {
+   "name": "Channel Mixer",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE CHANNEL MIXER-0001",
+     "name": "Red-Red",
+     "type": "OneD",
+     "value": 100,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "ADBE CHANNEL MIXER-0002",
+     "name": "Red-Green",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "ADBE CHANNEL MIXER-0003",
+     "name": "Red-Blue",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "ADBE CHANNEL MIXER-0004",
+     "name": "Red-Const",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE CHANNEL MIXER-0005",
+     "name": "Green-Red",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE CHANNEL MIXER-0006",
+     "name": "Green-Green",
+     "type": "OneD",
+     "value": 100,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE CHANNEL MIXER-0007",
+     "name": "Green-Blue",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE CHANNEL MIXER-0008",
+     "name": "Green-Const",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE CHANNEL MIXER-0009",
+     "name": "Blue-Red",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 10,
+     "mn": "ADBE CHANNEL MIXER-0010",
+     "name": "Blue-Green",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 11,
+     "mn": "ADBE CHANNEL MIXER-0011",
+     "name": "Blue-Blue",
+     "type": "OneD",
+     "value": 100,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "ADBE CHANNEL MIXER-0012",
+     "name": "Blue-Const",
+     "type": "OneD",
+     "value": 0,
+     "min": -200,
+     "max": 200,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "ADBE CHANNEL MIXER-0013",
+     "name": "Monochrome",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "ADBE Pro Levels2": {
+   "name": "Levels (Individual Controls)",
+   "props": [
+    {
+     "i": 1,
+     "mn": "ADBE Pro Levels2-0001",
+     "name": "Channel:",
+     "type": "OneD",
+     "value": 1,
+     "min": 1,
+     "max": 5,
+     "canVary": false
+    },
+    {
+     "i": 2,
+     "mn": "ADBE Pro Levels2-0002",
+     "name": "Histogram",
+     "type": "CUSTOM_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 3,
+     "mn": "ADBE Pro Levels2-0003",
+     "name": "RGB",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 4,
+     "mn": "ADBE Pro Levels2-0004",
+     "name": "Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "ADBE Pro Levels2-0005",
+     "name": "Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "ADBE Pro Levels2-0006",
+     "name": "Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "ADBE Pro Levels2-0007",
+     "name": "Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Pro Levels2-0008",
+     "name": "Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 9,
+     "mn": "ADBE Pro Levels2-0009",
+     "name": "RGB",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 10,
+     "mn": "ADBE Pro Levels2-0010",
+     "name": "Red",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 11,
+     "mn": "ADBE Pro Levels2-0011",
+     "name": "Red Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 12,
+     "mn": "ADBE Pro Levels2-0012",
+     "name": "Red Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 13,
+     "mn": "ADBE Pro Levels2-0013",
+     "name": "Red Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 14,
+     "mn": "ADBE Pro Levels2-0014",
+     "name": "Red Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 15,
+     "mn": "ADBE Pro Levels2-0015",
+     "name": "Red Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 16,
+     "mn": "ADBE Pro Levels2-0016",
+     "name": "Red",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 17,
+     "mn": "ADBE Pro Levels2-0017",
+     "name": "Green",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 18,
+     "mn": "ADBE Pro Levels2-0018",
+     "name": "Green Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 19,
+     "mn": "ADBE Pro Levels2-0019",
+     "name": "Green Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 20,
+     "mn": "ADBE Pro Levels2-0020",
+     "name": "Green Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 21,
+     "mn": "ADBE Pro Levels2-0021",
+     "name": "Green Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 22,
+     "mn": "ADBE Pro Levels2-0022",
+     "name": "Green Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 23,
+     "mn": "ADBE Pro Levels2-0023",
+     "name": "Green",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 24,
+     "mn": "ADBE Pro Levels2-0024",
+     "name": "Blue",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 25,
+     "mn": "ADBE Pro Levels2-0025",
+     "name": "Blue Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 26,
+     "mn": "ADBE Pro Levels2-0026",
+     "name": "Blue Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 27,
+     "mn": "ADBE Pro Levels2-0027",
+     "name": "Blue Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 28,
+     "mn": "ADBE Pro Levels2-0028",
+     "name": "Blue Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 29,
+     "mn": "ADBE Pro Levels2-0029",
+     "name": "Blue Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 30,
+     "mn": "ADBE Pro Levels2-0030",
+     "name": "Blue",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 31,
+     "mn": "ADBE Pro Levels2-0031",
+     "name": "Alpha",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 32,
+     "mn": "ADBE Pro Levels2-0032",
+     "name": "Alpha Input Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 33,
+     "mn": "ADBE Pro Levels2-0033",
+     "name": "Alpha Input White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 34,
+     "mn": "ADBE Pro Levels2-0034",
+     "name": "Alpha Gamma",
+     "type": "OneD",
+     "value": 1,
+     "min": 0,
+     "max": 5,
+     "canVary": true
+    },
+    {
+     "i": 35,
+     "mn": "ADBE Pro Levels2-0035",
+     "name": "Alpha Output Black",
+     "type": "OneD",
+     "value": 0,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 36,
+     "mn": "ADBE Pro Levels2-0036",
+     "name": "Alpha Output White",
+     "type": "OneD",
+     "value": 1,
+     "min": -10000,
+     "max": 10000,
+     "canVary": true
+    },
+    {
+     "i": 37,
+     "mn": "ADBE Pro Levels2-0037",
+     "name": "Alpha",
+     "type": "NO_VALUE",
+     "canVary": false
+    },
+    {
+     "i": 38,
+     "mn": "ADBE Pro Levels2-0038",
+     "name": "Clip To Output Black",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 39,
+     "mn": "ADBE Pro Levels2-0039",
+     "name": "Clip To Output White",
+     "type": "OneD",
+     "value": 3,
+     "min": 1,
+     "max": 3,
+     "canVary": true
+    },
+    {
+     "i": 40,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  },
+  "CC Threshold RGB": {
+   "name": "CC Threshold RGB",
+   "props": [
+    {
+     "i": 1,
+     "mn": "CC Threshold RGB-0001",
+     "name": "Red Threshold",
+     "type": "OneD",
+     "value": 0.5,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 2,
+     "mn": "CC Threshold RGB-0002",
+     "name": "Green Threshold",
+     "type": "OneD",
+     "value": 0.5,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 3,
+     "mn": "CC Threshold RGB-0003",
+     "name": "Blue Threshold",
+     "type": "OneD",
+     "value": 0.5,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 4,
+     "mn": "CC Threshold RGB-0004",
+     "name": "Invert Red Channel",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 5,
+     "mn": "CC Threshold RGB-0005",
+     "name": "Invert Green Channel",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 6,
+     "mn": "CC Threshold RGB-0006",
+     "name": "Invert Blue Channel",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 7,
+     "mn": "CC Threshold RGB-0007",
+     "name": "Blend w. Original",
+     "type": "OneD",
+     "value": 0,
+     "min": 0,
+     "max": 1,
+     "canVary": true
+    },
+    {
+     "i": 8,
+     "mn": "ADBE Effect Built In Params",
+     "name": "Compositing Options",
+     "props": [
+      {
+       "i": 1,
+       "mn": "ADBE Effect Mask Parade",
+       "name": "Masks",
+       "props": []
+      },
+      {
+       "i": 2,
+       "mn": "ADBE Effect Mask Opacity",
+       "name": "Effect Opacity",
+       "type": "OneD",
+       "value": 100,
+       "min": 0,
+       "max": 100,
+       "canVary": true
+      },
+      {
+       "i": 3,
+       "mn": "ADBE Force CPU GPU",
+       "name": "GPU Rendering",
+       "type": "OneD",
+       "value": 1,
+       "min": 1,
+       "max": 3,
+       "canVary": false
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

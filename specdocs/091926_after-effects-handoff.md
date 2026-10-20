@@ -968,6 +968,183 @@ Also found, all handled in build.jsx and noted in types.ts:
   project encoded white at 0.1 in `saveFrameToPng` (its bit depth / working
   space were not recorded).
 
+## 14. Results — effect calibration and AE behaviours
+
+Run 2026-10-20 in After Effects **26.5 (26.5x89)**, headless through
+`aerender`. The owner's AE GUI was never scripted. The calibration harness
+is `scripts/ae-export-spike/calibrate/`; its recorded measurements are
+`calibrate/measured/*.json`. The offline gate is
+`scripts/ae-export/check-calibration.mts`
+(`npx tsx scripts/check-ae-export.mts calibration`). It re-derives the fits
+from the recorded data, replays the AE samples through `convert/`, and fails
+when a map in `src/lib/ae-export/calibration.ts` drifts from the props it was
+measured with.
+
+### Method
+
+- **Toolbox side.** The real node code runs headless: Electron with
+  toolbox's engine (`calibrate/tbx-render.cjs` + `tbx-page.ts`).
+  - A test-only source node, `calib-input`, uploads each test image exactly
+    as floats.
+  - The node under test is evaluated as the terminal and read back as
+    floats (straight alpha).
+  - History-dependent nodes (trails) are evaluated frame by frame from 0.
+- **AE side.** The same images as 16-bit PNGs (8-bit values, so 8 and 16 bpc
+  see identical input). One comp per case; effects set by match name.
+  - 16 bpc renders use the hidden output template **`_HIDDEN X-Factor 16`**
+    (PNG Sequence, Trillions of Colors+, straight alpha). An output module's
+    Depth is read-only to scripts: `setSettings` refuses every value.
+  - 8 bpc renders use "TIFF Sequence with Alpha", unpremultiplied.
+- **Metrics.** `compareRgba` (mean / p95 / α, 8-bit) plus the max |Δ| after
+  clamping both renders to 0–1.
+  - Grain is compared by statistics: per-luminance-band std and
+    autocorrelation.
+  - Geometry (Round Corners, Polystar) is compared by rendering AE's object
+    next to candidate plain paths in the same comp, so the rasterizer
+    cancels out.
+- **Test images:** a hard-edged disc on black, a 1-px line grid, photo-like
+  noise, a transparent disc, a grey ramp, a hue / value sweep, and a disc
+  moving over 16 frames.
+- **Library traps.** sharp narrows 16-bit PNGs to 8-bit values both ways
+  (even with `raw({ depth: "ushort" })`), so the harness reads and writes
+  them itself.
+
+### Corrections to earlier sections
+
+- **Built-in effect param match names are `<match>-<4-digit param ID>`, not
+  the position** (§13). Usually the two coincide, but Transform's Uniform
+  Scale is `ADBE Geometry2-0011` at position 3, and Add Grain's params are
+  `-0021`, `-0027`, `-0008`… This is the same rule as third-party effects.
+- **Match names** (verified against `app.effects`, 450 installed):
+  - `ADBE Linear Color Key` → **`ADBE Linear Color Key2`**.
+  - `ADBE VR Chromatic Aberrations` → **`Mettle SkyBox Chromatic Aberrat`**,
+    a 360° effect, so unused.
+  - Levels is **`ADBE Easy Levels2`**.
+  - `VISINF Grain Implant` (Add Grain) and `ADBE Apply Color LUT2` exist.
+- **Adding Apply Color LUT by script opens a file dialog.** Sampled:
+  `FILE_DoOpenDialog` under `AE_APPLYCOLORLUT::EffectMainShared`. It hangs
+  aerender's core for good, and the LUT is not a property, so `lut` cannot be
+  built.
+- **ExtendScript parses nested ternaries left-associatively.**
+  `a ? x : b ? y : z` is read as `(a ? x : b) ? y : z`: `f(true, false)`
+  returned 2, and a `a < b ? -1 : a > b ? 1 : 0` comparator doesn't sort.
+  `build.jsx` has none today. Never nest a ternary in the else branch of
+  `.jsx`.
+- **Gaussian Blur 2 blurs in linear light**, not on the encoded values (see
+  below). §3's "Gaussian Blur for `blur`" is right, but only for toolbox's
+  `linearize: on`.
+
+### Gaussian Blur (v1 scope)
+
+| quantity | measured |
+|---|---|
+| transfer, 16 bpc, working space None | stripes 0/v … 0.5/1 blurred flat: **pure power γ = 2.404** (2.4036–2.4079 over 10 pairs; piecewise sRGB and γ 2.2 both miss) |
+| transfer, 8 bpc | the same within quantization |
+| transfer, linearized sRGB working space | effective γ ≈ 5.0–5.5: Gaussian Blur 2 linearizes **again** |
+| obsolete Gaussian Blur (`ADBE Gaussian Blur`) | gamma space (γ 1.000); no Repeat Edge Pixels; σ = 0.385·B + 0.56 (not proportional) |
+| kernel, Gaussian Blur 2 | σ = **0.28580·Blurriness** in linear light (= B/3.50; B ≥ 4, max relative residual 2.05%, R² 0.9999998); a Gaussian to ≤ 2.6e-4 RMS |
+| kernel, toolbox `blur` | σ = 0.49910·radius (= r/2 to 0.18%) up to r = 42.67, then the 64-tap cap |
+| **map** | **Blurriness = 1.746349·radius** (affine fit 1.74601·r + 0.0087, R² 0.999999996) |
+
+Validation: toolbox `linearize: on` against AE at the mapped Blurriness,
+radius 1–42 at 8 and 16 bpc.
+
+| image | mean | p95 | max |
+|---|---|---|---|
+| hard disc | ≤ 0.013 | ≤ 0.035 | 0.111 (edge pixels at r = 1) |
+| 1-px grid | ≤ 0.033 | ≤ 0.051 | 0.060 |
+| noise | ≤ 0.002 | ≤ 0.008 | 0.046 |
+| transparent disc | ≤ 0.005 (α ≤ 0.0023) | ≤ 0.051 | 0.067 |
+
+The grid's residual is the transfer curve, which no Blurriness can fix:
+toolbox decodes piecewise sRGB, AE a pure 2.4 power. Toolbox's
+`linearize: off` against the obsolete effect matches in the interior for
+radius ≥ 4. Below that its kernel isn't Gaussian (σ/B 0.80 at B = 1, 0.39 at
+120). It also loses alpha at the frame edge (α up to 0.10 at radius ≤ 42), so
+it routes to shader. Above
+radius 42.67 toolbox truncates its kernel (r = 60: disc mean 0.029).
+
+### Effect-class nodes
+
+Every map is in `calibration.ts`, with its worst measured error where it
+applies (`error`, held by the gate). The effects are those built by
+`aeEffectsFor(map, values, ctx)`.
+
+Errors are the worst over every recorded case where the map applies, at 8
+and 16 bpc: mean / p95 (compareRgba, 0–1) / max |Δ| after clamping to 0–1.
+The max usually sits on a few edge pixels:
+- `transform`: AE anti-aliases the layer edge, toolbox cuts hard;
+- `threshold`: pixels exactly on the threshold;
+- `sharpen`: the frame border;
+- `array`: tile edges of a transparent disc.
+
+| node | AE | fidelity | map | worst mean / p95 / max | falls back to shader when |
+|---|---|---|---|---|---|
+| `blur` | Gaussian Blur 2 | approx | Blurriness = 1.746349·radius; Repeat Edge Pixels on | 0.0333 / 0.0510 / 0.1110 | linearize off; bokeh / convolve; radius > 42.67 |
+| `pixelate` | Mosaic, Sharp Colors off | approx | Blocks = W/(size·aspect), H/size | 0.0351 / 0.1059 / 0.1322 | cells don't divide the comp; circle cells |
+| `transform` | Transform (`ADBE Geometry2`) | exact | Anchor = pivot px, Position = pivot + translate px, Scale ·100 %, Rotation °; bilinear | 0.0013 / 0.0039 / 0.3295 | tile; legacySkew (a wired skewed transform: not measured) |
+| `posterize` | Levels → Posterize | exact | Levels output [0.5/L, (L−0.5)/L], Level = L | 0.0003 / 0.0039 / 0.0022 | gamma ≠ 1; luma mode |
+| `threshold` | Channel Mixer (mono, 709) → Threshold | approx | Level = threshold (0–1); only pixels on the threshold differ | 0.0052 / 0 / 1 | softness; invert |
+| `mirror` | Mirror | approx | Center px; Angle −x 0° / −y 90° / x 180° / y 270° | 0.0054 / 0.0314 / 0.0633 (α ≤ 0.0055) | modes x / y / both / radial; Keep source off |
+| `displace` | Displacement Map | approx | Max H = amountX·W/2, Max V = −amountY·H/2; channels r g b a lum → 1–5; Stretch, no wrap | 0.0078 / 0.0353 / 0.1079 (α ≤ 0.0575) | midlevel ≠ 0.5; rotate; mirror edges (clamp → an α band) |
+| `bloom` | Glow | approx | Radius = 2^(levels+1), Intensity = 3·intensity, Threshold = 255·t (a look match) | 0.0284 / 0.1686 / 0.6706 | tint; anamorphic |
+| `grain` | Add Grain (Final Output, blend 5, mono) | approx | Intensity = 8.67·luminance; statistics only | std within 3.8% per band | anything but the custom fine 1-px overlay look |
+| `color-correction` | Brightness & Contrast (legacy) → Hue/Saturation | approx | Brightness ·255; Contrast 100(1−1/k) / 100(k−1); Master Hue ° | 0.0093 / 0.0118 / 0.0133 | saturation; wheels; temp / tint; pivot; curves |
+| `sharpen` | Sharpen (box) / Unsharp Mask (unsharp) | approx / **exact** | box: Amount 50·a (interior max 0.023; the outermost pixels differ); unsharp: Radius 0.5, Threshold 0, Amount 100·a | box 0.0076 / 0.0118 / 0.6196; unsharp 0.0014 / 0.0039 / 0.0067 | diamond; cross |
+| `array` | Motion Tile | approx | Tile W/H = 100/count %, centre on the bottom-left tile | 0.0134 / 0.0353 / 0.75 | step grid not covering the frame; offsets / per-copy TRS / modulators |
+| `trails` | Echo, Composite In Back | approx | Time −1/fps, Decay = decay, n = ⌈ln(0.5/255)/ln d⌉ (input precomposed) | 0.0079 / 0.051 / 0.0501 (α ≤ 0.0187) | ring, velocity (bake) |
+| `keyer` | Linear Color Key (RGB) | approx | Tolerance 100·tol, Softness 150·((tol+soft)²−tol²) | 0.0006 / 0.0039 / 0.0316 (α ≤ 0.0274) | chroma, luma, sample; spill |
+| `polar-coords` | — (shader) | — | AE's conventions fixed (top at centre, 12 o'clock, height = inscribed radius, transparent outside); best toolbox settings mean 0.19 | — | always |
+| `edge-detect` | — (shader) | — | Find Edges ≠ Sobel / Prewitt magnitude: noise mean 0.063 (Invert on) | — | always |
+| `chromatic-aberration` | — (shader) | — | no flat-image built-in (VR Chromatic Aberrations is 360°) | — | always |
+| `bevel-emboss` | — (shader) | — | Bevel Alpha ≠ the JFA bevel: mean 0.21 at every light angle | — | always |
+| `lut` | — (bake) | — | Apply Color LUT opens a file dialog on apply (hangs aerender) and its LUT is not a property; opaque in the GLSL table | — | always |
+
+### The convert constants and the Polystar question
+
+`calibrate/keys.mts`: properties keyed with known eases, `valueAtTime` read
+back at 121 times over 1.5 s; `keys.json` holds every sample. With the
+changes below, every sample replays through `evaluateAeKeys` /
+`evaluateAePathProp`:
+- color and scalar: 0 error;
+- paths: ≤ 2.8e-5 px;
+- spatial Position: ≤ 0.0103 px (AE's arc-length sampling).
+
+| behaviour | assumed | measured | change |
+|---|---|---|---|
+| one-ease COLOR speed units | ‖ΔRGB‖ in 0–1 per second | **‖ΔRGB‖ in 0–255 per second**: AE divides speeds by 360.62 for red → blue (√2 · 255), 441.67 for black → white, 76.5 for a 0.3 step | `AE_COLOR_EASE_SCALE = 255` in `magnitude()` and the color progress dimension; eased colors were 255× too fast |
+| SHAPE (path) ease units | morph progress per second, whole morph = 1 | 1.0000 (four geometries) | none (`AE_SHAPE_EASE_MAGNITUDE = 1` confirmed) |
+| influences summing past 100% | AE draws the plain cubic | plain cubic, 0 error at 125 / 150 / 190 % (rescaling to 100% would be 5–16° off) | none |
+| one-ease handles past the key range / negative speeds | modeled as extrapolation | **never overshoots**: a negative speed is stored as 0, and a handle with speed·influence·D > L has its influence shortened to L/(speed·D), slope kept (color, path and spatial alike; 1e-7) | `evaluateAeKeys` models it, so the verifier checks what AE plays |
+| Round Corners geometry | lottie-web's model, handle 0.5519 | the model holds on 90°, 60°, 108° and concave corners, capped insets and an open path; **κ = 0.5500** (signed area crosses zero at 0.5500 for the square and the triangle; AE ≡ model to 0.00 px² at 0.55) | `AE_ROUND_CORNER_KAPPA = 0.55` |
+| Polystar point 0 / direction | toolbox's (first vertex at 12 o'clock + rotation) | **identical**: fill ≤ 0.04 px², a 7% Trim Paths stroke lands on the same pixels, polygon 5 / 6 and star 5 / 7 at 0°, 17°, −40° | none; `polygon`'s "confirm" note can go |
+
+Consequences in `convert/`:
+- An accept-RGB `easeInOutCubic` color densifies: its fit's negative start
+  speed is clamped. The best non-negative cubic is 0.84% off, past the 0.66%
+  tolerance. `check-convert-color` was updated.
+- A Round Corners square lands 0.06–0.12 px from toolbox's circular fillet,
+  where 0.5519 had it under 0.05. `planCorners` still picks Round Corners
+  within its 0.25 px; `check-convert-coords` was updated.
+
+### Not measured
+
+- **32 bpc.** Every number here is 8 and 16 bpc.
+- **The AE app.** Every render was aerender's core, with GPU and software
+  renderers agreeing on Gaussian Blur. Apply Color LUT's dialog was seen
+  there.
+- **Windows.**
+- **Effects not tried:** Camera Lens Blur for `blur`'s bokeh mode, Keylight
+  for the keyer, Extract with a 709 pre-mix for luma keying.
+- **Parameter combinations outside the cases in `nodes.json`.**
+  - A `transform` fed a wired transform with skew.
+  - A displacement map layer with effects (AE reads its source).
+  - Grain models other than `fine`.
+  - Bloom much past levels 4–6 / intensity 0.5–2.
+  - Trails with ring / velocity modes.
+- **Keyed `derived` props.** The maps are static there; the scene walk
+  samples or refuses them.
+
 ## Appendix A — easing conversion, worked
 
 For a 1 s, 100 px segment: easeOutCubic → out `(influence 33.33, speed 300)`,
