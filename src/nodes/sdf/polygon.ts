@@ -53,15 +53,15 @@ export const sdfPolygonNode: NodeDefinition = {
     "SDF primitive — a regular N-gon. Sides 3 = triangle, 4 = square, 5 = pentagon, 6 = hexagon… Wire a scalar field into Sides Field for per-pixel / per-tile variation in side count (set Quantize Sides on for clean integer counts; pair with SDF Repeat.cell_id → Noise for per-tile randomness).",
   facts: {
     space: {
-      "in:position": "canvas01",
-      "in:center": "canvas01",
+      "in:center": "sdf01",
       "in:radius": "canvas01",
-      "param:x": "canvas01",
-      "param:y": "canvas01",
+      "param:x": "sdf01",
+      "param:y": "sdf01",
       "param:radius": "canvas01",
     },
     gotchas: [
       "Builds an SDF tree only; nothing is drawn until SDF Rasterize (or To Mask / To Distance Image) evaluates it per pixel.",
+      "y is Y-up (sdf01), the reverse of spline/points canvas01: y = 0.3 renders 0.2·W below the canvas centre; one vertex points straight up (12 o'clock).",
       "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the polygon is evaluated in.",
       "radius is width-relative only while SDF Rasterize aspect_correct is on; off, it becomes a per-axis UV fraction and the polygon squashes on non-square canvases.",
       "Wiring sides_field overrides the sides param entirely; quantize_sides then rounds each pixel's field value to the nearest integer >=3, otherwise the shape interpolates smoothly between side counts.",

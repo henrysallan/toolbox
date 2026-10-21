@@ -41,14 +41,10 @@ export const sdfTwistNode: NodeDefinition = {
   description:
     "SDF position-pipeline op — spiral the sample position around the center by Strength radians per unit distance. Strength accepts either a scalar (uniform per draw) or a scalar field (per-pixel; pair with SDF Repeat.cell_id → SDF Noise for per-tile variation). Large values violate the unit-gradient SDF property; a thin Rasterize contour line hides the resulting aliasing.",
   facts: {
-    space: {
-      "in:position": "canvas01",
-      "in:center": "canvas01",
-      "param:center_x": "canvas01",
-      "param:center_y": "canvas01",
-    },
+    space: { "in:center": "sdf01", "param:center_x": "sdf01", "param:center_y": "sdf01" },
     gotchas: [
       "strength is radians of twist per unit distance from center, growing unbounded with radius; large values break the SDF's unit-gradient property and alias the Rasterize edge.",
+      "Positive strength turns shapes farther from center clockwise on screen (sdf01 is Y-up); center_y is Y-up too.",
       "Precedence when multiple strength sources are wired: strength_field (scalar_field) beats strength (scalar) beats the strength param.",
       "Emits a position value only; nothing visibly changes until a downstream shape or field consumes this position.",
     ],

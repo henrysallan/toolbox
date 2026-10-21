@@ -161,7 +161,8 @@ export const BRIDGED_TOOLS = [
       "`# space:` (coordinate space per socket/param; out=in:x means the output " +
       "follows that input), `# reads:` / `# writes:` (point attributes), " +
       "`# flags:`, and `# !` gotchas — read them before wiring. canvas01 is " +
-      "Y-down; uv01 (Gradient, v_uv in GLSL) is Y-up. The space/" +
+      "Y-down; uv01 (Gradient, v_uv in GLSL) and sdf01 (SDF positions) are " +
+      "Y-up. The space/" +
       "flags preamble is on the index and on unfiltered/category dumps; " +
       "`types=` returns just those nodes (no repeated tables). " +
       '`target: "skia"` narrows any of these to the types a Skia layer ' +

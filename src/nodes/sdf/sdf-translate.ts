@@ -27,14 +27,10 @@ export const sdfTranslateNode: NodeDefinition = {
   description:
     "SDF position-pipeline op — translate the per-pixel sample position. Feeds into a shape's `position` input. Default upstream position is canvas UV.",
   facts: {
-    space: {
-      "in:position": "canvas01",
-      "in:offset": "canvas01",
-      "param:tx": "canvas01",
-      "param:ty": "canvas01",
-    },
+    space: { "in:offset": "sdf01", "param:tx": "sdf01", "param:ty": "sdf01" },
     gotchas: [
       "Internally the sample position is shifted by -offset so the visible shape moves by +offset (tx, ty), the intuitive direction.",
+      "ty is Y-up (sdf01): +ty moves shapes UP on screen, the reverse of a spline/points Transform; the pixel offset is (tx·W, −ty·W).",
       "Emits a position value only; nothing visibly changes until a downstream shape or field consumes this position.",
     ],
   },

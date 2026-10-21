@@ -35,9 +35,10 @@ export const sdfMirrorNode: NodeDefinition = {
   description:
     "SDF position-pipeline op — reflect the sample position about X, Y, or both axes through the center.",
   facts: {
-    space: { "in:center": "canvas01", "param:center_x": "canvas01", "param:center_y": "canvas01" },
+    space: { "in:center": "sdf01", "param:center_x": "sdf01", "param:center_y": "sdf01" },
     gotchas: [
       "Mirrors the SAMPLE position (inverse-domain fold), so downstream shapes appear reflected across the center rather than being flipped in place.",
+      "axis=x keeps the half right of center_x and reflects it leftward; axis=y keeps the half ABOVE center_y (sdf01 is Y-up) and reflects it downward; shapes on the other side vanish.",
       "Output type is `position`, meant to feed a shape's Position socket or chain into another position op (e.g. Polar) — wiring it directly as an SDF or mask does nothing.",
       "axis=both folds across X and Y simultaneously in one step, not as two independently weighted reflections.",
     ],

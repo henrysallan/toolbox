@@ -1938,12 +1938,14 @@ export type NodeSubcategory = "generator" | "modifier" | "utility";
 // source's type is already finalized by the time this is queried.
 // Coordinate / measurement space a socket or param lives in. The catalog
 // header states the per-socket-type default (spline/points → canvas01,
-// image/mask → raster, points3d/render → world3d, audio/notes → time,
+// sdf/position/scalar_field → sdf01, image/mask → raster,
+// points3d/render → world3d, audio/notes → time,
 // scalar/vecN/color/string → unitless); NodeFacts.space lists only what that
 // table cannot say — position/size params, polymorphic sockets, deviations.
 // Spec: specdocs/090626_node-facts.md.
 export type CoordSpace =
   | "canvas01" // authored 2D: [0,1]² Y-down in width units; y is scaled about 0.5 by W/H
+  | "sdf01" // the SDF sample space: canvas01 with y flipped (Y-up), px = (x·W, H/2 − (y − 0.5)·W)
   | "uv01" // per-axis [0,1] fraction of a raster's own width/height; not aspect-corrected
   | "raster" // per-pixel image domain, sampled at each pixel's own UV
   | "pixels" // absolute pixel units at the current render resolution

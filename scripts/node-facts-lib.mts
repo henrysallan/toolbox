@@ -11,6 +11,7 @@ import { BUILTIN_POINT_ATTR_NAMES, POINT_AGE_ATTR } from "@/engine/points";
 
 export const COORD_SPACES = [
   "canvas01",
+  "sdf01",
   "uv01",
   "raster",
   "pixels",
@@ -60,9 +61,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 export const SOCKET_TYPE_SPACE: Readonly<Record<string, (typeof COORD_SPACES)[number]>> = {
   spline: "canvas01",
   points: "canvas01",
-  sdf: "canvas01",
-  position: "canvas01",
-  scalar_field: "canvas01",
+  sdf: "sdf01",
+  position: "sdf01",
+  scalar_field: "sdf01",
   image: "raster",
   mask: "raster",
   uv: "raster",

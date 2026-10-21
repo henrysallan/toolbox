@@ -168,6 +168,44 @@ console.log("uv mapping");
   check(inside, "windowed march produced points outside uvOrigin/uvSize");
 }
 
+console.log("sdf-to-spline readback mapping");
+{
+  // sdf-to-spline marches a readPixels buffer: RGBA float rows bottom-up,
+  // R = the distance at each pixel CENTRE ((i + ½)/w in Y-up v_uv). Every
+  // traced anchor must land on the zero set in spline space (Y-down), in
+  // both axes. The [0, 1] window it used to pass scaled contours by
+  // w/(w − 1) about the centre: a circle at x = 1000 of 1280 traced 0.71 px
+  // right at resolution 512 (measured in the engine), anchors up to 1 px
+  // off (2.3 px at 256). With pixel centres the worst is ~0.025 px.
+  const { marchGrid } = await import("../src/nodes/sdf/to-spline.ts");
+  const W = 1280;
+  const r = 120 / W;
+  for (const res of [256, 512]) {
+    for (const [cx, cy] of [[1000 / W, 0.5], [0.2, 0.3], [0.55, 0.8]]) {
+      const data = new Float32Array(res * res * 4);
+      for (let j = 0; j < res; j++) {
+        for (let i = 0; i < res; i++) {
+          data[(j * res + i) * 4] = Math.hypot((i + 0.5) / res - cx, (j + 0.5) / res - cy) - r;
+        }
+      }
+      const subs = marchGrid(data, res, res, 0);
+      const label = `res ${res}, circle (${cx.toFixed(4)}, ${cy}) Y-up`;
+      // Per anchor, not per ring: the ring may come back as several chains
+      // (near-corner crossings share an endpoint key).
+      let n = 0;
+      let worst = 0;
+      for (const s of subs) {
+        for (const a of s.anchors) {
+          n++;
+          worst = Math.max(worst, Math.abs(Math.hypot(a.pos[0] - cx, 1 - a.pos[1] - cy) - r) * W);
+        }
+      }
+      check(n > 0, `${label}: nothing traced`);
+      check(worst < 0.05, `${label}: an anchor sits ${worst.toFixed(3)} px off the zero set at ${W} wide`);
+    }
+  }
+}
+
 console.log("degenerate grids");
 {
   check(marchingSquares(new Float32Array(4), 2, 2, { iso: 0 }).length === 0, "2x2 zero grid should yield nothing");

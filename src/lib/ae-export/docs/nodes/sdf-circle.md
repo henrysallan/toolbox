@@ -6,8 +6,8 @@ aliases: sdf-rectangle, sdf-polygon, sdf-star, sdf-triangle, sdf-line-segment, s
 ---
 
 - **SDF space is Y-up**: `X = x·W`, `Y = H/2 − (y − 0.5)·W`, lengths `·W`
-  (aspect-corrected consumers). Toolbox's own facts call these params
-  canvas01; the render says otherwise (*measured*).
+  (aspect-corrected consumers) — the `sdf01` space in toolbox's facts
+  (*measured*).
 - **circle** → Ellipse, size 2·(radius + offsets)·W.
 - **rectangle** → Rect, size (width, height)·W + 2·offset, Roundness =
   corner_radius·W (+ offset when growing; max(r − δ, 0) when shrinking — the
