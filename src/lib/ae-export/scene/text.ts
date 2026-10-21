@@ -13,10 +13,8 @@
 //   box         the toolbox text box (boxWidth/boxHeight are uv01 fractions
 //               of the canvas, centered); the block's vertical alignment is
 //               placed by line count (AE's box text starts at its top).
-//               Plain text (toolbox's fast path) aligns a line WITH its
-//               trailing letter spacing (canvas letterSpacing), AE without:
-//               the box moves by that much (½ of it centred); per-glyph
-//               text (animators) drops it like AE
+//               Toolbox and AE both align a line without the letter
+//               spacing after its last glyph, so the box needs no shift
 //   fill/stroke color (8-digit alpha → layer opacity), stroke width; toolbox
 //               draws the stroke under the fill (Fill Over Stroke)
 //   transform   translate / pivot are per-axis uv01, rotation rigid in px →
@@ -54,7 +52,6 @@ import { aspectCorrectY } from "@/engine/aspect";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
 import { parseAnimators, wordIndices, type AnimProp, type TextAnimators } from "@/engine/text-animators";
 import type { ParamType, SplineValue } from "@/engine/types";
-import { asAxisDict, isAxisDictAllConstant } from "@/lib/font-axis";
 import { colorToRgba, sampledTrackToAe } from "../convert";
 import { easeHeadroom, isLinearEase, planTextSelector, TEXT_EASE_FIT_TOLERANCE, textSelectorExpression, toolboxEase, type AeSelectorPlan, type TextDriveConfig } from "../convert/text";
 import type { AeKey, AeLayer, AeProp, AePlanNode, AeRGB, AeTextAnimator, AeTextDocument, AeTextSelector } from "../types";
@@ -165,7 +162,7 @@ interface PathRun {
 // AE's TextDocument tracking: an integer in ±1000 (setValue refuses the rest).
 export const AE_DOC_TRACKING_MAX = 1000;
 
-function buildDoc(ctx: WalkCtx, get: Getter, path: PathRun | null, fillColor: AeRGB, fastPath: boolean): DocOut {
+function buildDoc(ctx: WalkCtx, get: Getter, path: PathRun | null, fillColor: AeRGB): DocOut {
   const W = ctx.canvas.width;
   const H = ctx.canvas.height;
   const num = (name: string, fb: number) => {
@@ -218,7 +215,6 @@ function buildDoc(ctx: WalkCtx, get: Getter, path: PathRun | null, fillColor: Ae
   const va = String(get("vAlign") ?? "middle");
   const blockTop = va === "top" ? originY : va === "bottom" ? originY + boxH - total : originY + boxH / 2 - total / 2;
   const al = get("alignment");
-  const shift = fastPath ? (al === "left" ? 0 : al === "right" ? -spacing : -spacing / 2) : 0;
   const doc: AeTextDocument = {
     text: tc.text.replace(/\r\n|\n/g, "\r"),
     font: base.font,
@@ -234,7 +230,7 @@ function buildDoc(ctx: WalkCtx, get: Getter, path: PathRun | null, fillColor: Ae
     // firstBaselineEm below the box top (both measured, above). The box top
     // that lines the two up. The box is one em taller than the block: AE
     // drops a line that does not fit.
-    box: { size: [boxW, total + size], position: [originX + shift, blockTop + lineHeight / 2 + (middleEm(family) - firstBaselineEm(family)) * size] },
+    box: { size: [boxW, total + size], position: [originX, blockTop + lineHeight / 2 + (middleEm(family) - firstBaselineEm(family)) * size] },
   };
   return { doc, family, ps, size, lines, extra };
 }
@@ -315,10 +311,7 @@ export function emitText(scope: Scope, endpoint: string, pn: AePlanNode): Render
   const fillRgb = firstRgb(fill.color, "color", "#ffffff");
 
   // The document, and its keys when a document param animates.
-  // Toolbox draws plain text in one fillText per line (its fast path) unless
-  // an animator or a varying font axis asks for per-glyph layout.
-  const fastPath = !path && !enabled.length && isAxisDictAllConstant(asAxisDict(p.font_variations));
-  const docAt = (tick: number) => buildDoc(ctx, (name) => at(name, tick), path, fillRgb, fastPath);
+  const docAt = (tick: number) => buildDoc(ctx, (name) => at(name, tick), path, fillRgb);
   const first = docAt(tick0);
   const keyedDoc = DOC_PARAMS.filter((k) => (driverOf(ctx, id, k) || (isKeyframable(types.get(k) ?? "scalar") && isAnimatedParam(ctx, id, k))) && !(path && /^(box|wrap|vAlign|alignment|leading)/.test(k)));
   const stroke = p.strokeEnabled === true;

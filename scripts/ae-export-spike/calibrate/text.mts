@@ -81,9 +81,9 @@ const DIRS = ["forward", "backward", "center", "edges", "random"];
 const ARC = { type: "arc", params: { centerX: 0.5, centerY: 0.5 + (480 - H / 2) / W, radius: 420 / W, startAngle: 215, endAngle: 325, mode: "open", stroke_enabled: false } };
 
 // References: the same layout through toolbox's per-glyph draw path (an
-// identity opacity animator). Toolbox's plain-text fast path centres a line
-// WITH its trailing letter spacing (canvas letterSpacing), the per-glyph path
-// and AE without it — they differ by spacing / 2.
+// identity opacity animator), and ref_fastpath through its plain one. Both
+// paths, like AE, centre a line without the letter spacing after its last
+// glyph (until 2026-10-21 the plain path kept it and sat spacing / 2 left).
 const IDENTITY = { anim_opacity_enabled: true, anim_opacity_min: 1, anim_opacity_max: 1 };
 const CASES: Case[] = [
   { name: "ref_chars", ref: "ref_chars", params: { text: CHARS, ...IDENTITY }, frames: [0], measure: "anim" },

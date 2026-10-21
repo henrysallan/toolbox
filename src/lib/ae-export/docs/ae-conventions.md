@@ -220,9 +220,9 @@ group or layer input promoted to its shell.
 - A document's tracking must be an integer in −1000…1000: AE refuses
   anything else (*measured*). Letter spacing past that rides a px Tracking
   animator. An animator's Tracking Amount is **px**, not 1/1000 em.
-- Plain toolbox text centres a line *with* its trailing letter spacing; AE
-  and toolbox's per-glyph (animated) text centre it without. The builder
-  shifts plain text by that much.
+- Toolbox and AE both centre (or right-align) a line without the letter
+  spacing after its last glyph, so the box needs no shift. (Before
+  2026-10-21 toolbox's plain text kept that gap and the builder shifted it.)
 - Keyed size, spacing, leading, weight or box → Source Text hold keys, one
   per frame while a number moves (AE can't tween a TextDocument). A keyed
   colour → a Fill Color animator carrying the colour track.

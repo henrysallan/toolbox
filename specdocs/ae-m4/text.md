@@ -30,7 +30,9 @@ Three existing behaviours were wrong and are fixed here:
 
 - A document's tracking must be an integer in ±1000; AE refused the old values.
 - New text layers inherited **optical kerning**.
-- Toolbox's plain-text path centres a line with its trailing letter spacing.
+- Toolbox's plain-text path centred a line with its trailing letter spacing.
+  The export shifted it at first; since 2026-10-21 the engine aligns plain
+  text like the per-glyph path and the shift is gone.
 
 ## What maps
 
@@ -232,6 +234,9 @@ Documents (box text, plain, so toolbox's fast path):
 | keyed colour | 0.23 px, Δrgb ≤ 0.0013 |
 
 The fast path's −spacing/2 shift took the horizontal error from 15 px to 0.01 px.
+Since 2026-10-21 the engine draws plain text where the shift put it (centred
+without the trailing gap, ≤ 0.25 px from the per-glyph path in Chromium), so
+the export no longer shifts; AE was not re-run for that change.
 
 ## Exact vs approx
 
@@ -330,11 +335,12 @@ all four packages headless with 0 problems, and every probe passes.
   merging, then re-run `gen-runtime.mts` and update the hash pin.
 - **`AeTextAnimator.selector` is now optional** (`selectors` is the M4 form).
   Nothing outside text reads it.
-- **Toolbox bug, not fixed (engine, out of lane):** the plain-text fast path
-  (canvas `letterSpacing`) centres or right-aligns a line *including* its
-  trailing letter spacing. The per-glyph path (animators) excludes it, so
-  turning on an animator moves letter-spaced text by spacing / 2. The export
-  mirrors whichever path toolbox takes.
+- **Toolbox bug, fixed in the engine 2026-10-21:** the plain-text fast path
+  (canvas `letterSpacing`) centred or right-aligned a line *including* its
+  trailing letter spacing, while the per-glyph path (animators) excluded it,
+  so turning on an animator moved letter-spaced text by spacing / 2. Both
+  paths now wrap, measure and align by the visible width
+  (`text-raster.ts`), and the export's compensating shift is gone.
 - **Intermittent launch failure:** an aerender launch now and then never reaches
   the startup hook (no job JSON, exit 0), seen right after another checkout's
   run. `text.mts` retries up to three times.

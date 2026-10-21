@@ -1189,8 +1189,9 @@ Each lane's full results, numbers and open items are in `specdocs/ae-m4/`.
 - Engine bugs the lanes found but left alone (outside their files):
   - `model-cache.ts` `mergeSubtree` drops the captured material, so Import
     3D always renders three's default white (3d.md);
-  - Text's plain fast path aligns a line including its trailing letter
-    spacing, while the per-glyph path doesn't (text.md);
+  - ~~Text's plain fast path aligns a line including its trailing letter
+    spacing, while the per-glyph path doesn't (text.md)~~ — fixed in the
+    engine 2026-10-21, export shift removed;
   - `scene/shader.ts` looks up a wired GLSL channel as `in:<name>`, not
     `in:in:<id>`, so a wired channel exports its row default
     (essential-properties.md).

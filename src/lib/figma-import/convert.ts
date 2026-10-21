@@ -927,16 +927,16 @@ function textPieceEntries(ctx: Ctx, node: FigmaTextNode, piece: TextPiece): Laye
   const firstBaseline = T[1][2] + piece.firstBaseline;
   const boxH = piece.lines.length * step;
   const boxTop = firstBaseline - step / 2 - delta;
-  // Canvas letter-spacing also follows a line's LAST glyph; Figma drops that
-  // trailing space, so centred / right-aligned lines shift by it.
+  // The Text node aligns a line without the letter spacing after its last
+  // glyph, as Figma does, so the anchor maps straight onto the box.
   const anchor = T[0][2] + piece.anchorX;
   const boxW = piece.boxWidth;
   const centerX =
     piece.align === "left"
       ? anchor + boxW / 2
       : piece.align === "center"
-        ? anchor + lsPx / 2
-        : anchor - boxW / 2 + lsPx;
+        ? anchor
+        : anchor - boxW / 2;
 
   let color = "#ffffff";
   if (fill.type === "SOLID") color = hexColor(fill.color, fill.opacity);

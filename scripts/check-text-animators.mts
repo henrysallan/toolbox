@@ -13,7 +13,13 @@
 //   - the def rows: `by` is a segmented character/word enum per animator,
 //     every easing enum offers custom, the curve row is a float_curve shown
 //     only for custom, and validateGraph accepts a Float Curve aux:curve on
-//     the exposed curve param.
+//     the exposed curve param,
+//   - turning an animator on doesn't move letter-spaced text: on a fake
+//     canvas2d that spaces letters like Chromium (after every glyph, the
+//     last included), the fast path's line and the per-glyph path's first
+//     glyph start at the same x at every alignment, and measureStyledBlock
+//     and wrapStyledLines use that same visible width (2026-10-21; the
+//     real-Chromium measurement is in specdocs/ae-m4/text.md).
 //
 //   npx tsx scripts/check-text-animators.mts
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -64,6 +70,8 @@ const {
 } = await import("@/engine/text-animators");
 const { CUSTOM_EASING, applyEasing, applyEasingOrCurve } = await import("@/engine/easing");
 const { sampleFloatCurve } = await import("@/engine/float-curve");
+const { drawTextBlock, measureStyledBlock, wrapStyledLines } = await import("@/engine/text-raster");
+import type { TextStyle } from "@/engine/text-raster";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -253,6 +261,67 @@ const arr = (a: Int32Array) => Array.from(a).join(",");
   check(
     "a scalar → the easing curve param is a type mismatch",
     errs([N("st", "scene-time", paramsOf("scene-time")), tx], [E("st", "out:primary", "tx", "in:param:anim_opacity_easing_curve")]).includes("EDGE_TYPE_MISMATCH")
+  );
+}
+
+// ---------------------------------------------------------------------
+// 5. letter spacing: an animator doesn't move the line
+// ---------------------------------------------------------------------
+{
+  // Chromium's canvas letterSpacing: every glyph advances by its width plus
+  // the spacing, the last one included; textAlign aligns that whole advance.
+  const ADV: Record<string, number> = { S: 23.5, p: 21, a: 20.25, c: 19, e: 20, d: 21, " ": 10, o: 20, u: 20.5, t: 12 };
+  const fake = () => {
+    const starts: number[] = [];
+    const c2d: any = {
+      textAlign: "start",
+      letterSpacing: "0px",
+      save() {},
+      restore() {},
+      translate() {},
+      rotate() {},
+      scale() {},
+      strokeText() {},
+      measureText(s: string) {
+        const ls = parseFloat(this.letterSpacing) || 0;
+        let w = 0;
+        for (const ch of Array.from(s)) w += (ADV[ch] ?? 15) + ls;
+        return { width: w };
+      },
+      fillText(s: string, x: number) {
+        const w = this.measureText(s).width;
+        starts.push(this.textAlign === "center" ? x - w / 2 : this.textAlign === "right" ? x - w : x);
+      },
+    };
+    return { canvas: { style: { setProperty() {} } } as any, c2d, starts };
+  };
+  const line = "Spaced out";
+  const sum = Array.from(line).reduce((a, ch) => a + ADV[ch], 0);
+  const identity = { animators: parseAnimators({ anim_opacity_enabled: true }), fields: {} };
+  let worst = 0;
+  let worstAt = "";
+  for (const alignment of ["left", "center", "right"] as const)
+    for (const letterSpacing of [0, 7.5, -3]) {
+      const style: TextStyle = { text: line, family: "f", size: 40, color: "#fff", alignment, leading: 1.2, letterSpacing, axesDict: {} };
+      const fast = fake();
+      drawTextBlock(fast.canvas, fast.c2d, style, [line], 600, 200, null, 50, 0);
+      const mod = fake();
+      drawTextBlock(mod.canvas, mod.c2d, style, [line], 600, 200, null, 50, 0, identity);
+      const k = alignment === "left" ? 0 : alignment === "right" ? 1 : 0.5;
+      const want = 50 + (600 - (sum + (line.length - 1) * letterSpacing)) * k;
+      const d = Math.max(Math.abs(fast.starts[0] - want), Math.abs(mod.starts[0] - want));
+      if (!(d <= worst)) [worst, worstAt] = [d, `${alignment} ${letterSpacing}: fast ${fast.starts[0]}, per-glyph ${mod.starts[0]}, want ${want}`];
+    }
+  check("letter-spaced text starts where the visible run aligns, with or without an animator (left / center / right × spacing 0, 7.5, −3)", worst <= 1e-9, worstAt);
+
+  const style: TextStyle = { text: "Spaced out", family: "f", size: 40, color: "#fff", alignment: "center", leading: 1.2, letterSpacing: 7.5, axesDict: {} };
+  const { canvas, c2d } = fake();
+  const vis = sum + 9 * 7.5;
+  const m = measureStyledBlock(canvas, c2d, style, [line, ""]);
+  check("measureStyledBlock: a line's width stops at its last glyph (no trailing spacing), an empty line is 0", close(m.widths[0], vis) && m.widths[1] === 0, m.widths.join(","));
+  check(
+    "wrapStyledLines: a line fits when its visible width does — the width measureStyledBlock reports",
+    wrapStyledLines(canvas, c2d, style, vis).length === 1 && wrapStyledLines(canvas, c2d, style, vis - 0.01).length === 2
   );
 }
 

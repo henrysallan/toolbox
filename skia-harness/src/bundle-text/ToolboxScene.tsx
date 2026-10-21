@@ -121,7 +121,7 @@ export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProp
   const FONTS0 = useFonts({ "geist": [ASSET_SOURCES["geist"]] });
   const D1 = useDerivedValue((): SkPicture => makeTextPicture(FONTS0, "geist", "Skia layers ship text as code: SkParagraph breaks the lines, toolbox places them.", B.value.b19, TextAlign.Left, 409.6, 0, B.value.b25, 0, B.value.b26, 51.19999999999999, 30.72, [0.6274509803921569, 0.9058823529411765, 0.8980392156862745, 1], Math.min(1, Math.max(0, Math.min(1, Math.max(0, Math.min(1, Math.max(0, 1 * 1)) * 1)) * 1)), BlendMode.SrcOver));
   const FONTS2 = useFonts({ "inter": [ASSET_SOURCES["inter"]] });
-  const D3 = useDerivedValue((): SkPicture => makeTextPicture(FONTS2, "inter", "Anchored\nand spaced", 44, TextAlign.Center, 32768, 3, 48.400000000000006, 0.5, 37.434375, -16129.5, B.value.b31, [1, 0.8196078431372549, 0.4, 1], Math.min(1, Math.max(0, Math.min(1, Math.max(0, Math.min(1, Math.max(0, 1 * 1)) * 1)) * 1)), BlendMode.SrcOver));
+  const D3 = useDerivedValue((): SkPicture => makeTextPicture(FONTS2, "inter", "Anchored\nand spaced", 44, TextAlign.Center, 32768, 3, 48.400000000000006, 0.5, 37.434375, -16128, B.value.b31, [1, 0.8196078431372549, 0.4, 1], Math.min(1, Math.max(0, Math.min(1, Math.max(0, Math.min(1, Math.max(0, 1 * 1)) * 1)) * 1)), BlendMode.SrcOver));
   const FONT4 = useFont(ASSET_SOURCES["geist"], 20);
   return (
     <Group transform={[{ scaleX: width / CANVAS.width }, { scaleY: height / CANVAS.height }]}>

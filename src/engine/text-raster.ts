@@ -241,6 +241,15 @@ function isStyleAllConstant(style: TextStyle): boolean {
   return isAxisDictAllConstant(style.axesDict);
 }
 
+// A line's visible width from a whole-line measure taken with canvas
+// letterSpacing on. Canvas spaces after EVERY glyph, the last one included,
+// so measureText ends with one gap past the last glyph; the line people see
+// (and the modulated path, AE, Figma) stops at that glyph. Wrapping,
+// measuring and aligning all use this width, so the two draw paths agree.
+function visibleLineWidth(measured: number, letterSpacing: number): number {
+  return measured - letterSpacing;
+}
+
 // Set up the context for whole-string measurement: median axis values
 // (t = 0.5) and the style's letter-spacing, so measureText reflects what
 // fillText will produce (exactly on the fast path, approximately on the
@@ -270,6 +279,9 @@ function applyMedianStyling(
 // Explicit "\n" breaks always apply; `maxWidth` adds greedy word-wrap
 // (split on whitespace) on top. A single word longer than maxWidth stays
 // on its own overflowing line — min-content semantics, no mid-word break.
+// A line fits when its visible width does (no letter spacing after the
+// last glyph), the width measureStyledBlock reports — so an Auto Layout
+// element rendered at its measured width wraps the way it measured.
 export function wrapStyledLines(
   canvas: HTMLCanvasElement,
   c2d: CanvasRenderingContext2D,
@@ -290,7 +302,10 @@ export function wrapStyledLines(
     let current = "";
     for (const word of words) {
       const candidate = current ? `${current} ${word}` : word;
-      if (!current || c2d.measureText(candidate).width <= maxWidth) {
+      if (
+        !current ||
+        visibleLineWidth(c2d.measureText(candidate).width, style.letterSpacing) <= maxWidth
+      ) {
         current = candidate;
       } else {
         out.push(current);
@@ -305,7 +320,7 @@ export function wrapStyledLines(
 // Measure already-wrapped lines to tight block bounds. The modulated
 // path measures per character with its axis styling applied (matching
 // the draw pass's advance accumulation); the fast path measures whole
-// lines with native letter-spacing.
+// lines with native letter-spacing. Both drop the gap after the last glyph.
 export function measureStyledBlock(
   canvas: HTMLCanvasElement,
   c2d: CanvasRenderingContext2D,
@@ -317,7 +332,11 @@ export function measureStyledBlock(
   if (isStyleAllConstant(style)) {
     applyMedianStyling(canvas, c2d, style);
     for (const line of lines) {
-      widths.push(line ? c2d.measureText(line).width : 0);
+      widths.push(
+        line
+          ? Math.max(0, visibleLineWidth(c2d.measureText(line).width, style.letterSpacing))
+          : 0
+      );
     }
   } else {
     (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
@@ -702,6 +721,12 @@ export function drawTextBlock(
     // maskDriven counts as modulated (isAxisDictAllConstant excludes
     // it), so we never reach here with a maskData payload. Active text
     // animators also force the modulated path (per-char transform/alpha).
+    // Each line is drawn left-aligned at an x placed from its visible
+    // width: canvas textAlign center / right would align the measured
+    // width, which ends with a letter-spacing gap after the last glyph
+    // (2026-10-21: centred text sat spacing / 2 left of the modulated
+    // path and AE, right-aligned a whole spacing; textAlign also drifted
+    // ~1 px from measureText at fractional spacings).
     applyAxisStyling(
       canvas,
       c2d,
@@ -715,16 +740,26 @@ export function drawTextBlock(
       style.weight ?? 400,
       style.italic ?? false
     );
-    c2d.textAlign = alignment;
+    c2d.textAlign = "left";
     (c2d as unknown as { letterSpacing?: string }).letterSpacing =
       `${letterSpacing}px`;
-    const x =
-      originX +
-      (alignment === "left" ? 0 : alignment === "right" ? areaW : areaW / 2);
     for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      const lineWidth =
+        alignment === "left"
+          ? 0
+          : visibleLineWidth(c2d.measureText(line).width, letterSpacing);
+      const x =
+        originX +
+        (alignment === "left"
+          ? 0
+          : alignment === "right"
+            ? areaW - lineWidth
+            : (areaW - lineWidth) / 2);
       const ly = startY + i * lineHeight;
-      if (stroke) c2d.strokeText(lines[i], x, ly);
-      c2d.fillText(lines[i], x, ly);
+      if (stroke) c2d.strokeText(line, x, ly);
+      c2d.fillText(line, x, ly);
     }
   } else {
     // MODULATED PATH — per-character layout. textAlign stays "left"
