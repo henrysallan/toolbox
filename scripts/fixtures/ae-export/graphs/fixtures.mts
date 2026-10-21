@@ -657,6 +657,96 @@ SCENE_FIXTURES.push(
   }
 );
 
+// --- Q (M4 text lane): text animators, text on a path, keyed documents ------------------
+SCENE_FIXTURES.push(
+  {
+    // Type On (a Range Selector), position by word from the centre (a base
+    // animator), scale 0 → 1 with an overshooting ease (an Expression
+    // Selector carrying the overshoot), random-order rotation (an Expression
+    // Selector), a uniform colour sweep (Amount keys).
+    name: "q-text-animators",
+    title: "Q text animators",
+    comp,
+    build(g) {
+      const L = g.layer("LQ0", "Typed");
+      const sweep = track([[0, 0], [30, 1]]);
+      g.node(
+        L,
+        "typed",
+        "text",
+        {
+          text: "Hello AE",
+          font_family: "Arial",
+          font_size: 96,
+          alignment: "center",
+          anim_typeon_enabled: true,
+          anim_position_enabled: true,
+          anim_position_driver: "cascade",
+          anim_position_direction: "center",
+          anim_position_by: "word",
+          anim_position_minX: 0,
+          anim_position_maxX: 0,
+          anim_position_minY: 40,
+          anim_position_maxY: 0,
+          anim_scale_enabled: true,
+          anim_scale_driver: "cascade",
+          anim_scale_easing: "ease-out-back",
+          anim_scale_min: 0,
+          anim_scale_max: 1,
+          anim_rotation_enabled: true,
+          anim_rotation_driver: "cascade",
+          anim_rotation_direction: "random",
+          anim_rotation_seed: 3,
+          anim_rotation_min: -30,
+          anim_rotation_max: 0,
+          anim_color_enabled: true,
+          anim_color_driver: "uniform",
+          anim_color_min: "#ff3300",
+          anim_color_max: "#ffffff",
+        },
+        { anim_typeon_amount: sweep, anim_position_amount: sweep, anim_scale_amount: sweep, anim_rotation_amount: sweep, anim_color_amount: track([[10, 0], [40, 1]]) }
+      );
+      g.out(L, "typed:out");
+    },
+    probe: { frames: [0], pixels: [{ frame: 0, x: 640, y: 360, want: [null, null, null, 0], label: "frame 0: nothing typed on yet" }] },
+  },
+  {
+    // Text on an arc: starts 10 % → 30 % along it (First Margin keys), a
+    // half em above the path (baseline shift).
+    name: "q-text-path",
+    title: "Q text path",
+    comp,
+    build(g) {
+      const L = g.layer("LQ1", "On an arc");
+      g.node(L, "arc", "arc", { centerX: 0.5, centerY: cy(W, H, 560), radius: 380 / W, startAngle: 210, endAngle: 330, mode: "open", stroke_enabled: false });
+      g.node(L, "label", "text", { text: "Along the arc", font_family: "Arial", font_size: 64, path_align: "start", path_side: "above" }, { path_offset: track([[0, 0.1], [40, 0.3]]) });
+      g.wire("arc:out", "label:in:path");
+      g.out(L, "label:out");
+    },
+    probe: { frames: [0], pixels: [{ frame: 0, x: 640, y: 700, want: [null, null, null, 0], label: "below the arc: no text" }] },
+  },
+  {
+    // A keyed font size (Source Text hold keys per frame), keyed fill and
+    // stroke colours (Fill / Stroke Color animators) and letter spacing past
+    // AE's ±1000 tracking (the rest as a px Tracking animator).
+    name: "q-text-doc",
+    title: "Q text doc",
+    comp,
+    build(g) {
+      const L = g.layer("LQ2", "Keyed doc");
+      g.node(
+        L,
+        "doc",
+        "text",
+        { text: "Size", font_family: "Arial", font_size: 80, letter_spacing: 140, strokeEnabled: true, strokeWidth: 4, strokeColor: "#000000" },
+        { font_size: track([[0, 80], [20, 120]]), color: track([[0, "#ff0000"], [30, "#0000ff"]]), strokeColor: track([[0, "#000000"], [30, "#ffffff"]]) }
+      );
+      g.out(L, "doc:out");
+    },
+    probe: { frames: [0], pixels: [{ frame: 0, x: 40, y: 40, want: [null, null, null, 0], label: "corner: no text" }] },
+  }
+);
+
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");
   const g = new GraphBuilder({ makeInstanceNode, makeLayerNodes });
