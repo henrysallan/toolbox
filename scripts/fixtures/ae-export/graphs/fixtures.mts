@@ -17,6 +17,7 @@ import type { Edge } from "@xyflow/react";
 import type { GraphNode } from "@/state/graph-ops";
 import type { AeSceneOptions } from "@/lib/ae-export/scene";
 import { SDF_SCENE_FIXTURES } from "./sdf-fixtures.mts";
+import { buildCorpus, P_EXPRESSION_CASES } from "./expressions-corpus.mts";
 
 export interface FixturePixel {
   frame: number;
@@ -468,7 +469,7 @@ SCENE_FIXTURES.push(
         // r = 0.1 + 0.05·sin(2π·0.5·t): 128 px at frame 0, 192 px at frame 15.
         { frame: 0, x: 760, y: 360, want: [255, 255, 255, 255], tol: 2, label: "frame 0: radius 128 covers x 760" },
         { frame: 0, x: 820, y: 360, want: [null, null, null, 0], label: "frame 0: …but not x 820" },
-        { frame: 15, x: 820, y: 360, want: [255, 255, 255, 255], tol: 2, label: "frame 15: the sampled driver grew it to 192 px" },
+        { frame: 15, x: 820, y: 360, want: [255, 255, 255, 255], tol: 2, label: "frame 15: the driver (an AE expression) grew it to 192 px" },
       ],
     },
   },
@@ -581,6 +582,17 @@ SCENE_FIXTURES.push({
 
 // --- M4 lane 4: hard SDF chains (sdf-fixtures.mts) ----------------------------------
 SCENE_FIXTURES.push(...SDF_SCENE_FIXTURES);
+// --- the value graph as AE expressions (M4 lane 1): one case per node type and consumer --------
+// (expressions-corpus.mts; check-expressions holds the whole corpus, and
+// expressions-roundtrip.mts reads AE's valueAtTime back for both).
+SCENE_FIXTURES.push({
+  name: "p-expressions",
+  title: "P expressions",
+  comp,
+  build(g) {
+    buildCorpus(g, P_EXPRESSION_CASES);
+  },
+});
 
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");

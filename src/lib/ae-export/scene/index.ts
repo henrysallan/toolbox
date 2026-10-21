@@ -29,6 +29,7 @@ import { emitBake } from "./bake";
 import { emitComposite } from "./composite";
 import { makeUid, type WalkClock, type WalkCtx } from "./context";
 import { emitRaster, emitSource } from "./effects";
+import { finalizeExpressionProps } from "./expressions";
 import { makeAeGraph } from "./graph";
 import { routeGradients } from "./gradients";
 import { emitInstances } from "./instances";
@@ -162,6 +163,9 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     report: { route: plan.route, native: [], approx: [], shader: [], baked: [], blocked: [], warnings: [], requires: { fonts: [] } },
   };
   routeGradients(ctx, scene, opts.gradientRoute ?? "svg");
+  // Compiled value-graph expressions ride one-key props through the walk;
+  // the project gets { v, expression } (expressions/index.ts).
+  finalizeExpressionProps(scene);
   // Distinct comp names, and distinct layer names per comp: AE allows
   // duplicates, but expressions and people address both by name.
   const compNames = new Map<string, number>();

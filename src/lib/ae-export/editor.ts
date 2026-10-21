@@ -385,6 +385,7 @@ export function vetAePolicy(raw: unknown): Partial<AeExportPolicy> | undefined {
       case "bakeWarnMB": { const x = positive(k, v); if (x !== undefined) out.bakeWarnMB = x; break; }
       case "acceptApprox": { const x = bool(k, v); if (x !== undefined) out.acceptApprox = x; break; }
       case "shaderHost": { const x = bool(k, v); if (x !== undefined) out.shaderHost = x; break; }
+      case "drivers": { const x = oneOf(k, v, ["expression", "keys"] as const); if (x) out.drivers = x; break; }
       default:
         errors.push(`unknown policy key "${k}" (known: ${Object.keys(DEFAULT_AE_POLICY).join(", ")})`);
     }

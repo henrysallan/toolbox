@@ -1047,6 +1047,11 @@ function refine(s: NodeState, values: Record<string, unknown>, tracks: AePlanTra
     if (Object.keys(values).some((k) => /^anim_.*_enabled$/.test(k) && values[k] === true))
       s.notes.push("Text animators → AE animators + Range Selector (M4); field drivers have no selector form.");
     if (rampKeyed) bakeFor("Animated gradient text fill stops — bakes.");
+  } else if (t === "random") {
+    if (values.mode === "frame")
+      s.entry = { ...s.entry, fidelity: "approx", note: "Frame mode re-rolls Math.random() every evaluation → AE's seedRandom(seed, false); random(): the same statistics, other numbers." };
+  } else if (t === "math") {
+    if (values.mode === "uv") s.notes.push("uv mode is a per-pixel shader, not a value — a driver through it is sampled.");
   } else if (t === "audio-source") {
     if (values.mode === "microphone")
       s.entry = { class: "unsupported", fidelity: "bake", requires: ["footage"], note: "Microphone input — record a take (it then bakes) or use a file." };

@@ -1,16 +1,21 @@
 // A node's TRS params (Transform, Gizmo, Image Source, a toolbox layer…) →
 // an AE transform. Keyed / static params go through convert/'s
 // transformTracksToAe (eases kept, verified per frame). When any of them is
-// WIRED, there is no keyed track to convert: the whole op is evaluated at
-// every frame of the window (the driver through the scene sampler) and
-// written as per-frame keys — exact at frames, reported "sampled". An AE
-// expression compiler would keep these live (next wave).
+// WIRED, each AE property that reads a wired param becomes an AE expression
+// (expressions/: the value graph compiled, checked against the sampled op at
+// every frame) and the others convert as tracks. If one of those properties
+// can't compile — it also reads a keyed param, a local pivot rides an
+// animated bounding box, the driver graph has a node the compiler lacks —
+// the whole op is evaluated at every frame of the window and written as
+// per-frame keys: exact at frames, reported "sampled".
 
 import { localPivot, type AABB } from "@/engine/transform-pivot";
 import type { TransformOp } from "@/engine/types";
 import { opToAeStatic, sampledTrackToAe, transformTracksToAe, type AeTransformTracks } from "../convert";
 import type { AeLayerTransform, AeProp } from "../types";
 import { driverOf, keyCtx, markDriven, trackSource, valueOfSource, windowFrames, type WalkClock, type WalkCtx } from "./context";
+import type { PExpr } from "@/lib/skia-export/procedural/ir";
+import { exprProp, ir, type ExprPropResult } from "./expressions";
 import { numbersOf } from "./graph";
 
 export const TRS_PARAMS = ["translateX", "translateY", "scaleX", "scaleY", "rotate", "pivotX", "pivotY"] as const;
@@ -69,17 +74,18 @@ export function opAt(ctx: WalkCtx, id: string, tick: number, aabbAt?: (tick: num
 
 const one = (p: AeProp<number[]>): AeProp<number> => ("v" in p ? { v: p.v[0] } : { keys: p.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 });
 
-// The whole transform per frame (some param is wired).
-export function sampledTransform(ctx: WalkCtx, clock: WalkClock, id: string, aabbAt?: (tick: number) => AABB | null): AeLayerTransform {
+// The whole transform per frame (some param is wired). `why`: what kept
+// the expression compiler from it.
+export function sampledTransform(ctx: WalkCtx, clock: WalkClock, id: string, aabbAt?: (tick: number) => AABB | null, why?: string): AeLayerTransform {
   const frames = windowFrames(clock);
   const kc = keyCtx(ctx, clock);
   const at = (tick: number) => opToAeStatic(opAt(ctx, id, tick, aabbAt), ctx.canvas);
   const prop = (f: (s: ReturnType<typeof at>) => number[]) => sampledTrackToAe(frames, (tick) => f(at(tick)), kc, "driven transform").prop;
-  const what = `wired transform params → per-frame anchor / position / scale / rotation keys (frames ${frames[0]}–${frames[1]})`;
+  const what = `wired transform params → per-frame anchor / position / scale / rotation keys (frames ${frames[0]}–${frames[1]})${why ? ` (${why})` : ""}`;
   ctx.report.sampled(id, what);
   for (const p of TRS_PARAMS) {
     const d = driverOf(ctx, id, p);
-    if (d) markDriven(ctx, id, p, d, what);
+    if (d) markDriven(ctx, id, p, d, what, why);
   }
   return {
     anchor: prop((s) => s.anchor),
@@ -90,7 +96,62 @@ export function sampledTransform(ctx: WalkCtx, clock: WalkClock, id: string, aab
   };
 }
 
-// Keyed / static → transformTracksToAe; driven → sampled.
+const sameBox = (a: AABB | null, b: AABB | null) =>
+  a === b || (!!a && !!b && a.minX === b.minX && a.minY === b.minY && a.maxX === b.maxX && a.maxY === b.maxY);
+
+// Some param is wired: the AE properties that read a wired param as
+// expressions of the op opAt builds (opFromParams's scale clamp, localPivot's
+// box fraction, opToAeStatic's px), the rest from `tracked` (the node's
+// keyed / static params). A refusal names why.
+function expressionTransform(
+  ctx: WalkCtx,
+  clock: WalkClock,
+  id: string,
+  tracked: () => AeLayerTransform,
+  aabbAt: ((tick: number) => AABB | null) | undefined
+): { transform: AeLayerTransform } | { refused: string } {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const [f0, f1] = windowFrames(clock);
+  let box: AABB | null = null;
+  if (aabbAt) {
+    box = aabbAt(f0 * ctx.tpf - clock.offsetTicks);
+    for (let f = f0 + 1; f <= f1; f++) if (!sameBox(box, aabbAt(f * ctx.tpf - clock.offsetTicks))) return { refused: "space=local over an animated bounding box" };
+  }
+  const local = !!aabbAt && !!box && box.maxX > box.minX && box.maxY > box.minY;
+  const at = (tick: number) => opToAeStatic(opAt(ctx, id, tick, aabbAt), ctx.canvas);
+  const ref = (p: TrsParam) => ({ node: id, param: p, fallback: TRS_DEFAULT[p] });
+  const pivot = (v: PExpr[]) => {
+    // localPivot: minX + p·(maxX − minX); then canvasToPx.
+    const px = local ? ir.add(ir.lit(box!.minX), ir.mul(v[0], ir.lit(box!.maxX - box!.minX))) : v[0];
+    const py = local ? ir.add(ir.lit(box!.minY), ir.mul(v[1], ir.lit(box!.maxY - box!.minY))) : v[1];
+    return [ir.mul(px, ir.lit(W)), ir.add(ir.mul(py, ir.lit(W)), ir.lit(0.5 * (H - W)))];
+  };
+  const wired = (ps: TrsParam[]) => ps.some((p) => driverOf(ctx, id, p));
+  const props: Record<string, ExprPropResult> = {};
+  const want = (key: string, label: string, ps: TrsParam[], out: (v: PExpr[]) => PExpr[], pick: (s: ReturnType<typeof at>) => number[], keyLength?: number) => {
+    if (!wired(ps)) return;
+    props[key] = exprProp(ctx, clock, { label, owner: id, inputs: ps.map(ref), out, oracle: (tick) => pick(at(tick)), defer: true, ...(keyLength ? { keyLength } : {}) });
+  };
+  want("anchor", "anchor", ["pivotX", "pivotY"], pivot, (s) => s.anchor);
+  want("position", "position", ["pivotX", "pivotY", "translateX", "translateY"], (v) => {
+    const p = pivot(v);
+    return [ir.add(p[0], ir.mul(v[2], ir.lit(W))), ir.add(p[1], ir.mul(v[3], ir.lit(W)))];
+  }, (s) => s.position);
+  want("scale", "scale", ["scaleX", "scaleY"], (v) => v.map((x) => ir.mul(ir.max(ir.lit(0.0001), x), ir.lit(100))), (s) => s.scale);
+  want("rotation", "rotation", ["rotate"], (v) => [v[0]], (s) => [s.rotation], 1);
+  for (const r of Object.values(props)) if ("refused" in r) return { refused: r.refused };
+  const t: AeLayerTransform = { ...tracked() };
+  for (const [k, r] of Object.entries(props)) {
+    if (!("prop" in r)) continue;
+    r.commit();
+    (t as unknown as Record<string, AeProp>)[k] = r.prop;
+    if (k === "position") delete t.separated;
+  }
+  return { transform: t };
+}
+
+// Keyed / static → transformTracksToAe; driven → expressions, else sampled.
 export function nodeTransform(
   ctx: WalkCtx,
   clock: WalkClock,
@@ -98,18 +159,23 @@ export function nodeTransform(
   t: NodeTrs,
   opts: { space: "local" | "global"; aabb?: AABB | null; aabbAt?: (tick: number) => AABB | null; label?: string }
 ): { transform: AeLayerTransform; sampled: boolean } {
+  const tracked = () => {
+    const r = transformTracksToAe(t.tracks, {
+      ...keyCtx(ctx, clock),
+      canvas: ctx.canvas,
+      space: opts.space,
+      ...(opts.space === "local" ? (opts.aabbAt ? { aabbAt: opts.aabbAt } : { aabb: opts.aabb ?? null }) : {}),
+      frames: windowFrames(clock),
+    });
+    for (const [k, rep] of Object.entries(r.reports)) ctx.report.track(id, `${opts.label ?? ""}${k}`, rep);
+    for (const n of r.notes) ctx.report.note(id, n);
+    return r.transform;
+  };
   if (t.driven) {
     const aabbAt = opts.space === "local" ? (opts.aabbAt ?? (() => opts.aabb ?? null)) : undefined;
-    return { transform: sampledTransform(ctx, clock, id, aabbAt), sampled: true };
+    const ex = expressionTransform(ctx, clock, id, tracked, aabbAt);
+    if ("transform" in ex) return { transform: ex.transform, sampled: false };
+    return { transform: sampledTransform(ctx, clock, id, aabbAt, ex.refused), sampled: true };
   }
-  const r = transformTracksToAe(t.tracks, {
-    ...keyCtx(ctx, clock),
-    canvas: ctx.canvas,
-    space: opts.space,
-    ...(opts.space === "local" ? (opts.aabbAt ? { aabbAt: opts.aabbAt } : { aabb: opts.aabb ?? null }) : {}),
-    frames: windowFrames(clock),
-  });
-  for (const [k, rep] of Object.entries(r.reports)) ctx.report.track(id, `${opts.label ?? ""}${k}`, rep);
-  for (const n of r.notes) ctx.report.note(id, n);
-  return { transform: r.transform, sampled: false };
+  return { transform: tracked(), sampled: false };
 }

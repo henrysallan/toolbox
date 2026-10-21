@@ -83,6 +83,11 @@ export type AeColorPolicy = "auto" | "expression" | "dense" | "rgb";
 
 export type AeBakeCodec = "qtrle" | "prores4444";
 
+// Wired value drivers (§3 rung 3): "expression" compiles the value graph to
+// a live AE expression where it can (per-frame keys where it can't); "keys"
+// samples every driver to per-frame keys.
+export type AeDriverPolicy = "expression" | "keys";
+
 export interface AeExportPolicy {
   fidelity: AeFidelityPolicy;
   color: AeColorPolicy;
@@ -99,6 +104,7 @@ export interface AeExportPolicy {
   // The Toolbox Shader host is installed (or will be): `shader` regions
   // become host effects; false bakes them instead.
   shaderHost: boolean;
+  drivers: AeDriverPolicy;
 }
 
 export const DEFAULT_AE_POLICY: AeExportPolicy = {
@@ -111,6 +117,7 @@ export const DEFAULT_AE_POLICY: AeExportPolicy = {
   bitsPerChannel: 16,
   acceptApprox: true,
   shaderHost: true,
+  drivers: "expression",
 };
 
 // ---------------------------------------------------------------------------
