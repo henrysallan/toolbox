@@ -46,7 +46,9 @@
 // points.
 
 import type { KeyframeAnimationBlock } from "@/engine/keyframes";
-import type { PointsValue, SplineValue } from "@/engine/types";
+import { getNodeDef } from "@/engine/registry";
+import type { ImageValue, PointsValue, RenderContext, SocketValue, SplineValue } from "@/engine/types";
+import { dataOnlyContext } from "@/lib/skia-export/scene-sample";
 import { readCollectSlots } from "@/nodes/effect/collect";
 import { buildDrawOrder, chooseVariantGroup, lumaReadbackSize, lumaSamplerOf } from "@/nodes/effect/copy-to-points";
 import { canvasDeltaToPx, canvasToPx, combinedTracksToAe, numericTrackToAe, radToDeg, DEG_PER_RAD } from "../convert";
@@ -54,7 +56,7 @@ import type { AeComp, AeEffect, AeKey, AeLayer, AePlanNode, AeProp, AeRGB, AeSha
 import { driverOf, evalBlock, keyCtx, staticNumber, windowFrames } from "./context";
 import { numbersOf, parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, collapse, newLayer, rendered, type Rendered, type Scope } from "./layers";
-import { animatedUpstream, geometry, localTick, type Geom } from "./shape";
+import { animatedUpstream, geometry, localTick, staticPathGeom, type Geom } from "./shape";
 
 const FIELDS = ["in:scale_field", "in:rotate_field"];
 // Tolerance of a lattice step and of a linear ramp, canvas01 / opacity 0–1.
@@ -101,9 +103,20 @@ export function latticeOf(pos: ArrayLike<number>, n: number, k = 1, tol = LATTIC
   return { k, fast, slow, d1, d2 };
 }
 
-// opacity (0–1, lattice order) = inner(j) · outer(r) with both linear in
-// their index → the Repeaters' Start / End Opacity (0–1), else null.
-export function opacityRamp(o: readonly number[], L: Lattice): { inner: [number, number]; outer: [number, number] } | null {
+// A Repeater's Start / End Opacity (0–1) along one lattice axis. Measured in
+// AE 26.5: copy i of n gets Start + (End − Start) · i / n — the last copy
+// never reaches End. `reversed`: the original sits at the axis's LAST copy
+// and the Repeater steps back (Composite Below keeps toolbox's stacking).
+export interface RampAxis {
+  start: number;
+  end: number;
+  reversed: boolean;
+}
+
+// opacity (0–1, lattice order) = group · inner(j) · outer(r) with inner and
+// outer linear in their index → the instance group's opacity and each
+// Repeater's Start / End, else null.
+export function opacityRamp(o: readonly number[], L: Lattice): { group: number; inner?: RampAxis; outer?: RampAxis } | null {
   if (L.k !== 1 || o.length !== L.fast * L.slow) return null;
   const at = (r: number, j: number) => o[r * L.fast + j];
   const linear = (v: number[]) => v.every((x, i) => Math.abs(x - (v[0] + ((v[v.length - 1] - v[0]) * i) / Math.max(1, v.length - 1))) <= RAMP_TOL);
@@ -113,11 +126,26 @@ export function opacityRamp(o: readonly number[], L: Lattice): { inner: [number,
   const g = Array.from({ length: L.slow }, (_, r) => at(r, 0) / base);
   for (let r = 0; r < L.slow; r++) for (let j = 0; j < L.fast; j++) if (Math.abs(at(r, j) - f[j] * g[r]) > RAMP_TOL) return null;
   if (!linear(f) || !linear(g) || f.some((x) => x < 0) || g.some((x) => x < 0)) return null;
-  // Every value ≤ 1, so max f · max g ≤ 1: put the scale on the inner axis.
-  const gm = Math.max(...g);
-  const fi = f.map((x) => x * gm);
-  const go = g.map((x) => x / gm);
-  return { inner: [fi[0], fi[L.fast - 1]], outer: [go[0], go[L.slow - 1]] };
+  // toolbox's v[0] … v[n−1] as AE's Start + (End − Start)·i/n, either way
+  // round; the one that stays ≥ 0 with the smaller peak.
+  const axis = (v: number[]): RampAxis | null => {
+    const n = v.length;
+    const opts = [
+      { start: v[0], end: v[0] + ((v[n - 1] - v[0]) * n) / (n - 1), reversed: false },
+      { start: v[n - 1], end: v[n - 1] + ((v[0] - v[n - 1]) * n) / (n - 1), reversed: true },
+    ].filter((x) => x.end >= -RAMP_TOL);
+    opts.sort((a, b) => Math.max(a.start, a.end) - Math.max(b.start, b.end));
+    return opts[0] ? { ...opts[0], end: Math.max(0, opts[0].end) } : null;
+  };
+  const inner = L.fast > 1 ? axis(f) : undefined;
+  const outer = L.slow > 1 ? axis(g) : undefined;
+  if (inner === null || outer === null) return null;
+  // Each Repeater peaks at 1; the group carries the rest (≤ 1 or no form).
+  const peak = (a?: RampAxis) => (a ? Math.max(a.start, a.end) : 1);
+  const group = peak(inner) * peak(outer) * (L.fast > 1 ? 1 : f[0]);
+  if (group > 1 + RAMP_TOL || !(peak(inner) > 0) || !(peak(outer) > 0)) return null;
+  const norm = (a?: RampAxis) => (a ? { ...a, start: a.start / peak(a), end: a.end / peak(a) } : undefined);
+  return { group: Math.min(1, group), inner: norm(inner), outer: norm(outer) };
 }
 
 // One copy of the pattern: canvas01 position, degrees, percent.
@@ -129,31 +157,35 @@ interface PatternCopy {
 
 // The instance's contents at each pattern copy, then a Repeater per lattice
 // axis (fast inside). `anchor` is layer px (the instance's own layer space =
-// comp space).
+// comp space). A reversed ramp axis starts at its last copy and steps back.
 function latticeContents(scope: Scope, name: string, items: AeShapeItem[], pattern: PatternCopy[], anchor: [number, number], L: Lattice, ramp: ReturnType<typeof opacityRamp>): AeShapeItem[] {
   const { ctx } = scope;
+  const shift: [number, number] = [0, 0];
+  if (ramp?.inner?.reversed) for (const d of [0, 1] as const) shift[d] += (L.fast - 1) * L.d1[d];
+  if (ramp?.outer?.reversed) for (const d of [0, 1] as const) shift[d] += (L.slow - 1) * L.d2[d];
   const placed: AeShapeItem[] = pattern.map((c, j) => {
-    const p = canvasToPx(c.pos, ctx.canvas);
+    const p = canvasToPx([c.pos[0] + shift[0], c.pos[1] + shift[1]], ctx.canvas);
     const plain = Math.abs(c.rot) < 1e-12 && Math.abs(c.scale[0] - 100) < 1e-9 && Math.abs(c.scale[1] - 100) < 1e-9;
     const transform: AeShapeTransform = plain
       ? { position: { v: [p[0] - anchor[0], p[1] - anchor[1]] } }
       : { anchor: { v: anchor }, position: { v: p }, scale: { v: c.scale }, rotation: { v: c.rot } };
+    if (ramp && Math.abs(ramp.group - 1) > RAMP_TOL) transform.opacity = { v: ramp.group * 100 };
     return { kind: "group", name: `${name} instance${pattern.length > 1 ? ` ${j + 1}` : ""}`, contents: j === 0 ? items : structuredClone(items), transform };
   });
   const axis = (d: [number, number]) => (Math.abs(d[0]) >= Math.abs(d[1]) ? "columns" : "rows");
-  const rep = (copies: number, d: [number, number], label: string, op: [number, number] | undefined): AeShapeItem => ({
+  const rep = (copies: number, d: [number, number], label: string, op: RampAxis | undefined): AeShapeItem => ({
     kind: "repeater",
     name: `${name} ${label}`,
     copies: { v: copies },
     offset: { v: 0 },
-    composite: "above",
+    composite: op?.reversed ? "below" : "above",
     transform: {
       anchor: { v: [0, 0] },
-      position: { v: canvasDeltaToPx(d, ctx.canvas) },
+      position: { v: canvasDeltaToPx(op?.reversed ? [-d[0], -d[1]] : d, ctx.canvas) },
       scale: { v: [100, 100] },
       rotation: { v: 0 },
-      startOpacity: { v: (op?.[0] ?? 1) * 100 },
-      endOpacity: { v: (op?.[1] ?? 1) * 100 },
+      startOpacity: { v: (op?.start ?? 1) * 100 },
+      endOpacity: { v: (op?.end ?? 1) * 100 },
     },
   });
   const out: AeShapeItem[] = [...placed];
@@ -181,6 +213,34 @@ function pointsAt(scope: Scope, ep: string, frame: number): PointsValue {
   const v = scope.ctx.graph.valueAt(ep, localTick(scope, frame));
   if (!v || v.kind !== "points") throw new BakeSignal(`${ep} evaluated to ${v ? v.kind : "nothing"}, not points`);
   return v;
+}
+
+// A node upstream of `id` (itself included) that reads an image into CPU
+// data (Scatter's density, Set Named Attribute from an image, a Point
+// Expression field…): the walk's GL-less evaluator has no pixels, so its
+// points would come out wrong or missing. → "<node> (<socket>)" or null.
+export function imageReadUpstream(scope: Scope, id: string): string | null {
+  const { ctx } = scope;
+  const seen = new Set<string>();
+  const visit = (x: string): string | null => {
+    if (seen.has(x)) return null;
+    seen.add(x);
+    const n = ctx.graph.node(x);
+    const def = n ? getNodeDef(n.type) : undefined;
+    if (!n || !def) return null;
+    const ins = def.resolveInputs?.(n.params ?? {}) ?? def.inputs;
+    for (const w of ctx.graph.into(x)) {
+      const name = w.targetHandle.replace(/^in:/, "");
+      const t = ins.find((i) => i.name === name)?.type;
+      if (t === "image" || t === "mask" || t === "image_group" || t === "uv") return `${ctx.graph.name(x)} (${x}) ${name}`;
+    }
+    for (const w of ctx.graph.into(x)) {
+      const r = visit(w.source);
+      if (r) return r;
+    }
+    return null;
+  };
+  return visit(id);
 }
 
 // A uniform modulation scalar: the socket wins over its param (compute's
@@ -420,6 +480,8 @@ export function emitInstances(scope: Scope, endpoint: string, pn: AePlanNode): R
   const pointsEp = sourceEndpoint(pw);
   const instanceEp = sourceEndpoint(iw);
   const name = ctx.graph.name(id);
+  const reads = imageReadUpstream(scope, pw.source);
+  if (reads) throw new BakeSignal(`the points read an image at ${reads} — the export samples images only at Copy to Points' own fields`);
   if (ctx.graph.wireInto(id, "in:driver_field")) ctx.report.note(id, "driver_field does nothing in image mode (toolbox ignores it there too)");
 
   // --- what varies --------------------------------------------------------------------
@@ -594,7 +656,7 @@ export function emitInstances(scope: Scope, endpoint: string, pn: AePlanNode): R
       evals.map((e) => (!e.assign || e.assign[i] === k ? e.opacity[i] : 0)),
       switching
     );
-    const effects = first.tint ? [tintEffect(scope, frames, evals.map((e) => e.tint![i]), v.flat)] : undefined;
+    const effects = first.tint ? [tintEffect(scope, frames, evals.map((e) => e.tint?.[i] ?? [1, 1, 1]), v.flat)] : undefined;
     const label = perPoint.get(i)! > 1 ? `${name} ${i + 1}.${k + 1}` : `${name} ${i + 1}`;
     const L = newLayer(scope, "precomp", label, [id], {
       source: v.comp,
@@ -680,9 +742,15 @@ export function repeaterGeom(scope: Scope, id: string): Geom | null {
   const { ctx } = scope;
   const p = ctx.graph.params(id);
   if ((p.mode ?? "image") !== "spline") return null;
-  for (const h of [...FIELDS, "in:driver_field"]) if (ctx.graph.wireInto(id, h)) throw new BakeSignal(`Copy to Points (spline mode) ${h.slice(3)}: the per-copy field samples are mapped in image mode only`);
   const pw = ctx.graph.wireInto(id, "in:points");
   const iw = ctx.graph.wireInto(id, "in:instance");
+  if (pw) {
+    const reads = imageReadUpstream(scope, pw.source);
+    if (reads) throw new BakeSignal(`the points read an image at ${reads} — the export samples images only at Copy to Points' own fields`);
+  }
+  if (ctx.graph.wireInto(id, "in:driver_field")) throw new BakeSignal("Copy to Points driver_field (a per-copy driver for downstream ramps) is not mapped");
+  const pickImage = String(p.pick_mode ?? "image") === "image" && !!ctx.graph.wireInto(id, "in:pick");
+  if (FIELDS.some((h) => ctx.graph.wireInto(id, h)) || pickImage) return fieldCopiesGeom(scope, id);
   if (!pw || !iw || animatedUpstream(ctx, pw.source) || animatedUpstream(ctx, id)) return null;
   if ((p.output_tag ?? "instance groups") !== "instance groups" || String(p.driver_attr ?? "").trim()) return null;
   if ((p.draw_order ?? "points order") !== "points order" && String(p.draw_order) !== "by y") return null;
@@ -717,6 +785,57 @@ export function repeaterGeom(scope: Scope, id: string): Geom | null {
   const shape = L.slow > 1 ? `${L.fast}×${L.slow}` : `${L.fast}`;
   ctx.report.note(id, `regular ${shape} lattice, one instance → Repeaters`);
   return { items: latticeContents(scope, ctx.graph.name(id), inst.items, pattern, canvasToPx(a01, ctx.canvas), L, null), leaves: 1 };
+}
+
+// Spline mode with static image fields (scale / rotate / the image pick):
+// the node's own compute on the walk's GL-less context, its readbacks served
+// from ctx.fieldPixels — the copies' geometry exactly as toolbox's CPU path
+// samples it (≤ 256 px luminance), as static paths.
+function fieldCopiesGeom(scope: Scope, id: string): Geom {
+  const { ctx } = scope;
+  const p = ctx.graph.params(id);
+  const tick = localTick(scope, scope.clock.inFrame);
+  const wire = (h: string) => ctx.graph.wireInto(id, h);
+  for (const h of ["in:points", "in:instance", "in:scale_mul", "in:rotate_add"]) {
+    const w = wire(h);
+    if (w && animatedUpstream(ctx, w.source)) throw new BakeSignal(`Copy to Points (spline mode) with an image field and an animated ${h.slice(3)} — fields are sampled once`);
+  }
+  for (const k of ["scale_mul_default", "rotate_add_default", "scale_field_lo", "scale_field_hi", "rotate_field_amount"])
+    if (ctx.graph.block(id, k) || driverOf(ctx, id, k)) throw new BakeSignal(`Copy to Points (spline mode) with an image field and an animated ${k}`);
+  if (!ctx.fieldPixels) throw new BakeSignal("Copy to Points (spline mode) image field: a static field is sampled from the editor's readback, which this export has none of");
+  const inputs: Record<string, SocketValue | undefined> = {};
+  const fields = new Map<ImageValue, string>();
+  for (const w of ctx.graph.into(id)) {
+    const name = w.targetHandle.replace(/^in:/, "");
+    const ep = sourceEndpoint(w);
+    if (FIELDS.includes(w.targetHandle) || w.targetHandle === "in:pick") {
+      if (animatedUpstream(ctx, w.source)) throw new BakeSignal(`Copy to Points ${name} is an animated image field — only a static field is sampled per copy`);
+      const img = { kind: "image", texture: {} as WebGLTexture, width: ctx.canvas.width, height: ctx.canvas.height } as ImageValue;
+      fields.set(img, ep);
+      inputs[name] = img;
+    } else if (!w.targetHandle.startsWith("in:param:")) inputs[name] = ctx.graph.valueAt(ep, tick);
+  }
+  const params = { ...p };
+  for (const w of ctx.graph.into(id))
+    if (w.targetHandle.startsWith("in:param:")) {
+      const v = numbersOf(ctx.graph.valueAt(sourceEndpoint(w), tick))?.[0];
+      if (typeof v === "number") params[w.targetHandle.slice(9)] = v;
+    }
+  const rc = dataOnlyContext(ctx.canvas, { fps: ctx.fps, ticksPerFrame: ctx.tpf }) as RenderContext & { readImagePixels: RenderContext["readImagePixels"] };
+  let missing = "";
+  rc.readImagePixels = ((img: ImageValue, w: number, h: number) => {
+    const ep = fields.get(img);
+    const px = ep ? ctx.fieldPixels!(ep, w, h) : undefined;
+    if (!px) missing = ep ?? "an image";
+    return px ? Uint8Array.from(px) : null;
+  }) as RenderContext["readImagePixels"];
+  const def = getNodeDef("copy-to-points")!;
+  const out = def.compute({ inputs, auxIn: {}, params, ctx: rc, nodeId: `${id}:fields` } as never) as { primary?: SocketValue };
+  if (missing) throw new BakeSignal(`Copy to Points image field: no pixels for ${missing}`);
+  const s = out?.primary;
+  if (!s || s.kind !== "spline") throw new BakeSignal("Copy to Points (spline mode) with image fields did not evaluate to a spline");
+  for (const ep of new Set(fields.values())) ctx.report.approx(id, `${ep} sampled at each copy at export (the node's ≤ 256 px luminance readback, 8-bit)`);
+  return staticPathGeom(scope, id, s);
 }
 
 // Array in spline mode → the instance at the first cell (the per-copy

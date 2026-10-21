@@ -313,17 +313,7 @@ function pathGeom(scope: Scope, endpoint: string, paramOverride?: Record<string,
   const [f0, f1] = windowFrames(scope.clock);
   const evalAt = (f: number): SplineValue => (paramOverride ? primitiveAt(scope, id, f, paramOverride) : splineAt(scope, endpoint, f));
   const animated = animatedUpstream(ctx, id);
-  if (!animated) {
-    const s = evalAt(f0);
-    const plan = planCorners(s, ctx.canvas);
-    const items: AeShapeItem[] = plan.paths.map((p, i) => ({ kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path: { v: p } }));
-    if (plan.kind === "uniform") {
-      ctx.report.note(id, `live corners → Round Corners ${plan.radius.toFixed(2)} px (within ${plan.maxDeviationPx.toFixed(2)} px of toolbox's fillet)`);
-      return { items: [{ kind: "group", name: ctx.graph.name(id), contents: [...items, { kind: "round-corners", radius: { v: plan.radius } }] }], leaves: items.length };
-    }
-    if (plan.kind === "baked") ctx.report.note(id, `live corners baked into the vertices (${plan.reason})`);
-    return { items, leaves: items.length };
-  }
+  if (!animated) return staticPathGeom(scope, id, evalAt(f0));
   // A Spline Draw whose only motion is its own Path Animation: real keys.
   const n = ctx.graph.node(id)!;
   const sblock = ctx.graph.block(id, "spline");
@@ -354,6 +344,20 @@ function pathGeom(scope: Scope, endpoint: string, paramOverride?: Record<string,
     const path: AeProp<AePath> = same || keys.length < 2 ? { v: keys[0].v } : { keys, dims: 1 };
     return { kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path };
   });
+  return { items, leaves: items.length };
+}
+
+// A static spline as Path items (live corners → Round Corners when AE's
+// fillet lands close enough). instances.ts uses it for copies it evaluates.
+export function staticPathGeom(scope: Scope, id: string, s: SplineValue): Geom {
+  const { ctx } = scope;
+  const plan = planCorners(s, ctx.canvas);
+  const items: AeShapeItem[] = plan.paths.map((p, i) => ({ kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path: { v: p } }));
+  if (plan.kind === "uniform") {
+    ctx.report.note(id, `live corners → Round Corners ${plan.radius.toFixed(2)} px (within ${plan.maxDeviationPx.toFixed(2)} px of toolbox's fillet)`);
+    return { items: [{ kind: "group", name: ctx.graph.name(id), contents: [...items, { kind: "round-corners", radius: { v: plan.radius } }] }], leaves: items.length };
+  }
+  if (plan.kind === "baked") ctx.report.note(id, `live corners baked into the vertices (${plan.reason})`);
   return { items, leaves: items.length };
 }
 

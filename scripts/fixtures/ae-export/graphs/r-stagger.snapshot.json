@@ -3692,7 +3692,7 @@
      "id": "lag",
      "type": "stagger",
      "class": "instances",
-     "fidelity": "exact"
+     "fidelity": "sampled"
     },
     {
      "id": "grow",

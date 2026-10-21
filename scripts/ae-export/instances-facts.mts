@@ -126,9 +126,18 @@ export async function instanceFacts(c: Checker): Promise<void> {
     const b = await build("r-ramp");
     const reps = (layer: string) => flatItems(all(b).find((l) => l.name === layer)?.contents).filter((i) => i.kind === "repeater") as any[];
     const row = reps("Ramp row");
-    c.check("(r ramp) opacity linear along the row → ONE shape layer, a Repeater with Start 20 / End 100 Opacity", all(b).length === 2 && row.length === 1 && row[0].copies.v === 5 && Math.abs(row[0].transform.startOpacity.v - 20) < 1e-5 && Math.abs(row[0].transform.endOpacity.v - 100) < 1e-5, row.map((r) => r.transform));
+    const t = (r: any) => [r.composite, Math.round(r.transform.startOpacity.v * 1e4) / 1e4, Math.round(r.transform.endOpacity.v * 1e4) / 1e4, Math.round(r.transform.position.v[0] * 1e3) / 1e3, Math.round(r.transform.position.v[1] * 1e3) / 1e3].join();
+    // AE: copy i of n = Start + (End − Start)·i/n. 0.2 … 1 over 5 copies runs
+    // backwards from the last copy: Start 100, End 0 → 100, 80, 60, 40, 20.
+    c.check("(r ramp) opacity linear along the row → ONE shape layer, a Repeater from the last copy back (Composite Below, Start 100 → End 0)", all(b).length === 2 && row.length === 1 && row[0].copies.v === 5 && t(row[0]) === "below,100,0,-192,0", row.map(t));
+    const rowInst = flatItems(all(b).find((l) => l.name === "Ramp row")?.contents).find((i) => i.kind === "group" && /instance/.test(i.name ?? "")) as any;
+    c.check("(r ramp) …the instance placed at the last copy", Math.abs(rowInst?.transform?.position?.v?.[0] - 384) < 1e-3, rowInst?.transform);
     const grid = reps("Ramp grid");
-    c.check("(r ramp) a separable ramp (0.4 + 0.3·col)(0.5 + 0.25·row) → columns 40 → 100 %, rows 50 → 100 %", grid.length === 2 && Math.abs(grid[0].transform.startOpacity.v - 40) < 1e-6 && Math.abs(grid[0].transform.endOpacity.v - 100) < 1e-6 && Math.abs(grid[1].transform.startOpacity.v - 50) < 1e-6 && Math.abs(grid[1].transform.endOpacity.v - 100) < 1e-6, grid.map((r) => [r.transform.startOpacity, r.transform.endOpacity]));
+    const bad = structuredClone(b.scene);
+    const rr = flatItems(bad.comps.flatMap((x) => x.layers).find((l) => l.name === "Ramp row")?.contents).find((i) => i.kind === "repeater") as any;
+    rr.transform.endOpacity = { v: 140 };
+    c.check("(r ramp) the validator refuses a Repeater opacity outside 0–100 (AE does: \"Value 140 out of range 0 to 100\")", validateAeScene(bad).some((x) => /endOpacity.*outside AE's 0–100/.test(x)), validateAeScene(bad));
+    c.check("(r ramp) a separable ramp (0.4 + 0.3·col)(0.5 + 0.25·row) → columns 100 → 10 %, rows 100 → 25 %, both from the last copy", grid.length === 2 && t(grid[0]) === "below,100,10,-192,0" && t(grid[1]) === "below,100,25,0,-192", grid.map(t));
   }
   {
     const f = ref.fixtureNamed("r-array");
@@ -163,9 +172,23 @@ export async function instanceFacts(c: Checker): Promise<void> {
   }
   {
     const none = await build("r-field", { fieldPixels: undefined });
-    c.check("(r field) without the editor's readback the copies bake, saying why", none.bakes.length === 1 && /readback/.test(none.bakes[0].reason ?? ""), none.bakes.map((x) => x.reason));
+    c.check("(r field) without the editor's readback both layers' copies bake, saying why", none.bakes.length === 2 && none.bakes.every((x) => /readback/.test(x.reason ?? "")), none.bakes.map((x) => x.reason));
     const b = await build("r-field");
     c.check("(r field) sampled fields are reported approx (8-bit readback)", b.scene.report.approx.some((l) => l.id === "copy" && /scale_field sampled/.test(l.note ?? "") && /rotate_field sampled/.test(l.note ?? "")));
+    // Spline mode: each triangle's width = base × (0.5 + 1.5 · the nearest
+    // ≤ 256 px luminance texel under its point).
+    const tris = flatItems(all(b).find((l) => l.name === "Field paths")?.contents).filter((i) => i.kind === "path") as any[];
+    const widths = tris.map((t) => Math.max(...t.path.v.vertices.map((v: number[]) => v[0])) - Math.min(...t.path.v.vertices.map((v: number[]) => v[0])));
+    const f = ref.fixtureNamed("r-field");
+    const W = f.comp.width;
+    const base = 0.025 * Math.sqrt(3) * W;
+    const want = Array.from({ length: 6 }, (_, i) => {
+      const x = 0.1 + (0.8 * i) / 5;
+      const tex = Math.min(255, Math.floor(x * 256));
+      const v = Math.round((255 * (tex + 0.5)) / 256) / 255;
+      return base * (0.5 + 1.5 * v);
+    });
+    c.check("(r field, spline mode) the node's own sampler on the readback → static paths, each copy sized by its texel", tris.length === 6 && widths.every((w, i) => Math.abs(w - want[i]) < 1e-3), { widths, want });
   }
 
   // --- what still bakes --------------------------------------------------------------------
@@ -212,6 +235,15 @@ export async function instanceFacts(c: Checker): Promise<void> {
     { fieldPixels: () => new Uint8Array(1280 * 720 * 4) }
   );
   c.check("(r bakes) an animated image field → bake", anim.bakes.length === 1 && /animated image field/.test(anim.bakes[0].reason ?? ""), anim.bakes.map((x) => x.reason));
+  const dens = await adhoc("density", (g) =>
+    base(g, (L) => {
+      g.node(L, "img", "gradient", { mode: "linear" });
+      g.node(L, "sc", "scatter-points", { count: 10 });
+      g.wire("img:out", "sc:in:density");
+      return "sc:out";
+    })
+  );
+  c.check("(r bakes) points scattered by a density image → bake (the walk has no pixels for it), naming the node", dens.bakes.length === 1 && /the points read an image at .*\(sc\) density/.test(dens.bakes[0].reason ?? ""), dens.bakes.map((x) => x.reason));
   const over = await adhoc(
     "overtint",
     (g) =>
@@ -244,7 +276,13 @@ export async function instanceFacts(c: Checker): Promise<void> {
   c.check("(lattice) a jittered point → no lattice", latticeOf(pos([[0, 0], [1, 0], [2.001, 0]]), 3) === null);
   c.check("(lattice) a 2-point pattern repeated per cell (k = 2)", latticeOf(pos([[0, 0], [0.1, 0.2], [1, 0], [1.1, 0.2]]), 4, 2)?.fast === 2);
   const L = latticeOf(pos([[0, 0], [1, 0], [2, 0]]), 3)!;
-  c.check("(ramp) linear along the row → its ends", JSON.stringify(opacityRamp([0.2, 0.6, 1], L)) === JSON.stringify({ inner: [0.2, 1], outer: [1, 1] }));
+  const r1 = opacityRamp([0.5, 0.75, 1], L);
+  c.check("(ramp) 0.5 → 1 over 3 copies → backwards: Start 100, End 25 (100, 75, 50 by AE's i/n)", r1?.inner?.reversed === true && Math.abs(r1.inner.start - 1) < 1e-9 && Math.abs(r1.inner.end - 0.25) < 1e-9 && r1.group === 1, r1);
+  const r2 = opacityRamp([1, 0.75, 0.5], L);
+  c.check("(ramp) 1 → 0.5 forwards: Start 100, End 25", r2?.inner?.reversed === false && Math.abs(r2.inner!.end - 0.25) < 1e-9, r2);
+  const r3 = opacityRamp([0.25, 0.375, 0.5], L);
+  c.check("(ramp) a ramp peaking below 1 → the group opacity carries the peak (50 %)", Math.abs((r3?.group ?? 0) - 0.5) < 1e-9 && r3?.inner?.start === 1, r3);
+  c.check("(ramp) 0.2 → 1 over 3 copies needs End 140 % or Start < 0 → none", opacityRamp([0.2, 0.6, 1], L) === null);
   c.check("(ramp) not linear → none", opacityRamp([0.2, 0.9, 1], L) === null);
   const L2 = latticeOf(pos([[0, 0], [1, 0], [0, 1], [1, 1]]), 4)!;
   c.check("(ramp) a sum, not a product, of the indices → none (Repeater opacities multiply)", opacityRamp([0.2, 0.4, 0.4, 0.6], L2) === null);

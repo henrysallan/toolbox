@@ -147,6 +147,29 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - Text animators, text on a path, keyed text documents and gradient or
   image fills bake for now.
 
+## Instances
+
+- Copy to Points copies are evaluated as toolbox draws them, then exported
+  in one of two forms:
+  - **Repeaters**: static copies on a regular lattice, identical but for
+    position, of one plain shape instance;
+  - **exploded**: one precomp per variant, one layer per copy, up to the
+    layer budget (default 200).
+- Copy layers stack variant-major, then by `draw_order`, as toolbox packs
+  them.
+- Per copy: position, rotation, scale and opacity on the layer transform.
+  `tint_attr` becomes a Fill effect (flat instance) or a Channel Mixer.
+- A Repeater carries an opacity ramp only when it is exactly linear along
+  each axis (opacities multiply across nested Repeaters). AE's Repeater
+  Scale compounds per copy, so a per-copy scale always explodes.
+- Animated copies are keyed every frame with linear stretches merged.
+  Keyed `scale_mul_default` / `rotate_add_default` keep their eases. A pick
+  that changes over time uses HOLD opacity per variant.
+- These bake: a changing point count, a draw order that changes over time,
+  animated image fields, and points computed from an image upstream.
+- Static image fields are sampled at export from the editor's readback.
+- Array in spline mode becomes Repeaters; toolbox has no radial array.
+
 ## ExtendScript
 
 - AE 26.5's ExtendScript reads `a ? x : b ? y : z` as

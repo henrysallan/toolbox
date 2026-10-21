@@ -775,7 +775,7 @@ SCENE_FIXTURES.push(
       // Array (spline mode) of a star → Repeaters around the star's path.
       const A = g.layer("LR12", "Spline array");
       g.node(A, "st", "star", { centerX: 0.5, centerY: 0.5, points: 5, outerRadius: 0.04, innerRadius: 0.018, stroke_enabled: false, fill_enabled: false });
-      g.node(A, "arr", "array", { mode: "spline", countX: 4, countY: 2, sizeMode: "step", sizeW: 0.12, sizeH: 0.12, patternOffsetX: 0.2, patternOffsetY: 0.02, localRotate: 20, localScaleX: 0.8, localScaleY: 0.8 });
+      g.node(A, "arr", "array", { mode: "spline", countX: 4, countY: 2, sizeMode: "step", sizeW: 0.12, sizeH: 0.12, patternOffsetX: 0.2, patternOffsetY: 0.3, localRotate: 20, localScaleX: 0.8, localScaleY: 0.8 });
       g.node(A, "ink", "spline-fill", { color: "#ffaa00" });
       g.wire("st:out", "arr:in:instance");
       g.wire("arr:out", "ink:in:path");
@@ -791,8 +791,8 @@ SCENE_FIXTURES.push(
       // A rotated lattice (Point Expression) of a spline triangle, spline mode.
       const C = g.layer("LR14", "Rotated lattice");
       g.node(C, "tri", "polygon", { centerX: 0.5, centerY: 0.5, sides: 3, radius: 0.02, stroke_enabled: false, fill_enabled: false });
-      g.node(C, "pts", "grid", { countX: 4, countY: 3, width: 0.24, height: 0.16, x: 0.3, y: cy(W, H, 560) });
-      g.node(C, "turn", "point-expression", { expression: "x = 0.3 + (px - 0.3) * Math.cos(0.4) - (py - " + cy(W, H, 560) + ") * Math.sin(0.4); y = " + cy(W, H, 560) + " + (px - 0.3) * Math.sin(0.4) + (py - " + cy(W, H, 560) + ") * Math.cos(0.4);" });
+      g.node(C, "pts", "grid", { countX: 4, countY: 3, width: 0.24, height: 0.12, x: 0.3, y: cy(W, H, 520) });
+      g.node(C, "turn", "point-expression", { expression: "x = 0.3 + (px - 0.3) * Math.cos(0.4) - (py - " + cy(W, H, 520) + ") * Math.sin(0.4); y = " + cy(W, H, 520) + " + (px - 0.3) * Math.sin(0.4) + (py - " + cy(W, H, 520) + ") * Math.cos(0.4);" });
       g.node(C, "copies", "copy-to-points", { mode: "spline", anchor: "content center" });
       g.node(C, "ink2", "spline-fill", { color: "#cc88ff" });
       g.wire("pts:out", "turn:in:points");
@@ -816,6 +816,19 @@ SCENE_FIXTURES.push(
       rCopy(g, A, "copy", "pts:out", "box:aux:image", { rotate_field_amount: Math.PI / 4 });
       g.wire("ramp:out", "copy:in:scale_field");
       g.wire("ramp:out", "copy:in:rotate_field");
+      // Spline mode: the node's own CPU sampler (≤ 256 px luminance) runs on
+      // the same readback → static paths.
+      const B = g.layer("LR16", "Field paths");
+      g.node(B, "tri", "polygon", { centerX: 0.5, centerY: 0.5, sides: 3, radius: 0.025, stroke_enabled: false, fill_enabled: false });
+      g.node(B, "ramp2", "gradient", { mode: "linear", start_x: 0, start_y: 0.5, end_x: 1, end_y: 0.5, color_a: "#000000", color_b: "#ffffff" });
+      g.node(B, "row", "grid", { countX: 6, countY: 1, width: 0.8, height: 0, y: cy(W, H, 600) });
+      g.node(B, "sized", "copy-to-points", { mode: "spline", anchor: "content center", scale_field_lo: 0.5, scale_field_hi: 2 });
+      g.node(B, "ink", "spline-fill", { color: "#88ccff" });
+      g.wire("row:out", "sized:in:points");
+      g.wire("tri:out", "sized:in:instance");
+      g.wire("ramp2:out", "sized:in:scale_field");
+      g.wire("sized:out", "ink:in:path");
+      g.out(B, "ink:out");
     },
     opts: { fieldPixels: rRampPixels },
   }
