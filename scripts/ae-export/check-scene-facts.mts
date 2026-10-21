@@ -249,6 +249,9 @@ export default async function run(): Promise<number> {
     c.check("(copies) a raised budget explodes the 300 copies instead", raised.bakes.length === 0 && rc.length >= 300, [raised.bakes.length, rc.length]);
   }
 
+  // --- instances lane (M4): the r- fixtures (instances-facts.mts) ---------------------
+  await (await import("./instances-facts.mts")).instanceFacts(c);
+
   // --- drivers and colors ------------------------------------------------------------------------
   {
     const b = await build("l-driver");

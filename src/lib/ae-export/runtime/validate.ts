@@ -66,6 +66,13 @@ function num(v: unknown, path: string, out: string[]) {
   if (!isNum(v)) out.push(`${path}: expected a finite number, got ${JSON.stringify(v)}`);
 }
 
+// A Repeater's Start / End Opacity: AE refuses values outside 0–100
+// ("Value 140 out of range 0 to 100", measured 26.5).
+function percent(v: unknown, path: string, out: string[]) {
+  if (!isNum(v)) out.push(`${path}: expected a finite number, got ${JSON.stringify(v)}`);
+  else if (v < -1e-9 || v > 100 + 1e-9) out.push(`${path}: ${v} is outside AE's 0–100`);
+}
+
 function vec(n?: number, min = 1, max = 4): ValueCheck {
   return (v, path, out) => {
     if (!Array.isArray(v) || !v.every(isNum)) return void out.push(`${path}: expected a number array`);
@@ -163,8 +170,8 @@ function shapeTransform(t: any, path: string, out: string[], repeater = false) {
   prop(t.scale, `${path}.scale`, out, vec(2), opt);
   prop(t.rotation, `${path}.rotation`, out, num, opt);
   if (repeater) {
-    prop(t.startOpacity, `${path}.startOpacity`, out, num, opt);
-    prop(t.endOpacity, `${path}.endOpacity`, out, num, opt);
+    prop(t.startOpacity, `${path}.startOpacity`, out, percent, opt);
+    prop(t.endOpacity, `${path}.endOpacity`, out, percent, opt);
   } else {
     prop(t.opacity, `${path}.opacity`, out, num, opt);
     prop(t.skew, `${path}.skew`, out, num, opt);

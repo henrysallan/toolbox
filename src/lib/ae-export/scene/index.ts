@@ -65,6 +65,7 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     projectNeeds: {},
     free: new WeakSet(),
     uid: makeUid(),
+    fieldPixels: opts.fieldPixels,
   };
   for (const a of plan.approximations) ctx.report.seedApprox(a.id, a.note);
   for (const b of plan.blocked) ctx.out.problems.push(`${b.type} (${b.id}) is a live input: ${b.reason}`);

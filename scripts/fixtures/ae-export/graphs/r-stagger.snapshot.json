@@ -1,0 +1,3774 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Copy-to-Points-instance",
+    "name": "R stagger · Copy to Points instance",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "box",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            89.60000000000001,
+            53.760000000000005
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0.2,
+            0.8,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Staggered",
+    "name": "R stagger · Staggered",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy#6",
+      "name": "Copy to Points 6",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         1120,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#5",
+      "name": "Copy to Points 5",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         928.0000305175781,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#4",
+      "name": "Copy to Points 4",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         735.9999847412109,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         544.0000152587891,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         352.00000762939453,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         639.9999999999999,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         160,
+         260
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           0,
+           0
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           100,
+           100
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": 90.00000250447816,
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     }
+    ]
+   },
+   {
+    "id": "comp:Copy-to-Points-instance#2",
+    "name": "R stagger · Copy to Points instance 2",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "dot",
+      "name": "Circle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dot"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "v": [
+            51.2,
+            51.2
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.4,
+            0.6666666666666666
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Bobbing",
+    "name": "R stagger · Bobbing",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy2#5",
+      "name": "Copy to Points 5",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           1024.000015258789,
+           481.2516784667969
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.03333333333333333,
+          "v": [
+           1024.000015258789,
+           477.9657745361328
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.06666666666666667,
+          "v": [
+           1024.000015258789,
+           475.140380859375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.1,
+          "v": [
+           1024.000015258789,
+           472.8064727783203
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.13333333333333333,
+          "v": [
+           1024.000015258789,
+           470.98960876464844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           1024.000015258789,
+           469.70970153808594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.2,
+          "v": [
+           1024.000015258789,
+           468.9808654785156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.23333333333333334,
+          "v": [
+           1024.000015258789,
+           468.8108825683594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.26666666666666666,
+          "v": [
+           1024.000015258789,
+           469.2018127441406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3,
+          "v": [
+           1024.000015258789,
+           470.14930725097656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           1024.000015258789,
+           471.6429901123047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.36666666666666664,
+          "v": [
+           1024.000015258789,
+           473.6664581298828
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           1024.000015258789,
+           476.197509765625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.43333333333333335,
+          "v": [
+           1024.000015258789,
+           479.2085266113281
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4666666666666667,
+          "v": [
+           1024.000015258789,
+           482.6664733886719
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           1024.000015258789,
+           486.53343200683594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5333333333333333,
+          "v": [
+           1024.000015258789,
+           490.7670593261719
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           1024.000015258789,
+           495.3209686279297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6,
+          "v": [
+           1024.000015258789,
+           500.145263671875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6333333333333333,
+          "v": [
+           1024.000015258789,
+           505.18714904785156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           1024.000015258789,
+           510.3912353515625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7,
+          "v": [
+           1024.000015258789,
+           515.70068359375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           1024.000015258789,
+           521.0572052001953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7666666666666667,
+          "v": [
+           1024.000015258789,
+           526.4021301269531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8,
+          "v": [
+           1024.000015258789,
+           531.6768646240234
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           1024.000015258789,
+           536.82373046875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8666666666666667,
+          "v": [
+           1024.000015258789,
+           541.7862701416016
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           1024.000015258789,
+           546.5100860595703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9333333333333333,
+          "v": [
+           1024.000015258789,
+           550.9434509277344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9666666666666667,
+          "v": [
+           1024.000015258789,
+           555.037841796875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1,
+          "v": [
+           1024.000015258789,
+           558.7483215332031
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0333333333333334,
+          "v": [
+           1024.000015258789,
+           562.0342254638672
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           1024.000015258789,
+           564.859619140625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1,
+          "v": [
+           1024.000015258789,
+           567.1935272216797
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1333333333333333,
+          "v": [
+           1024.000015258789,
+           569.0103912353516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1666666666666667,
+          "v": [
+           1024.000015258789,
+           570.2902984619141
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2,
+          "v": [
+           1024.000015258789,
+           571.0191345214844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           1024.000015258789,
+           571.1891174316406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2666666666666666,
+          "v": [
+           1024.000015258789,
+           570.7981872558594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3,
+          "v": [
+           1024.000015258789,
+           569.8506927490234
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": [
+           1024.000015258789,
+           568.3570098876953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3666666666666667,
+          "v": [
+           1024.000015258789,
+           566.3335418701172
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4,
+          "v": [
+           1024.000015258789,
+           563.802490234375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4333333333333333,
+          "v": [
+           1024.000015258789,
+           560.7914733886719
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4666666666666666,
+          "v": [
+           1024.000015258789,
+           557.3335266113281
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5,
+          "v": [
+           1024.000015258789,
+           553.4665679931641
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5333333333333334,
+          "v": [
+           1024.000015258789,
+           549.2329406738281
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5666666666666667,
+          "v": [
+           1024.000015258789,
+           544.6790313720703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6,
+          "v": [
+           1024.000015258789,
+           539.854736328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6333333333333333,
+          "v": [
+           1024.000015258789,
+           534.8128509521484
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6666666666666667,
+          "v": [
+           1024.000015258789,
+           529.6087646484375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7,
+          "v": [
+           1024.000015258789,
+           524.29931640625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7333333333333334,
+          "v": [
+           1024.000015258789,
+           518.9427947998047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7666666666666666,
+          "v": [
+           1024.000015258789,
+           513.5978698730469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8,
+          "v": [
+           1024.000015258789,
+           508.32313537597656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8333333333333333,
+          "v": [
+           1024.000015258789,
+           503.17626953125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8666666666666667,
+          "v": [
+           1024.000015258789,
+           498.21372985839844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9,
+          "v": [
+           1024.000015258789,
+           493.4899139404297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9333333333333333,
+          "v": [
+           1024.000015258789,
+           489.0565490722656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9666666666666666,
+          "v": [
+           1024.000015258789,
+           484.962158203125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2"
+     },
+     {
+      "id": "copy2#4",
+      "name": "Copy to Points 4",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           831.9999694824219,
+           527.225341796875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.03333333333333333,
+          "v": [
+           831.9999694824219,
+           521.8874359130859
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.06666666666666667,
+          "v": [
+           831.9999694824219,
+           516.5289306640625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.1,
+          "v": [
+           831.9999694824219,
+           511.2083435058594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.13333333333333333,
+          "v": [
+           831.9999694824219,
+           505.98419189453125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           831.9999694824219,
+           500.9135437011719
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.2,
+          "v": [
+           831.9999694824219,
+           496.05201721191406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.23333333333333334,
+          "v": [
+           831.9999694824219,
+           491.45286560058594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.26666666666666666,
+          "v": [
+           831.9999694824219,
+           487.16644287109375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3,
+          "v": [
+           831.9999694824219,
+           483.2398223876953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           831.9999694824219,
+           479.71588134765625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.36666666666666664,
+          "v": [
+           831.9999694824219,
+           476.6333770751953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           831.9999694824219,
+           474.0259552001953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.43333333333333335,
+          "v": [
+           831.9999694824219,
+           471.92222595214844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4666666666666667,
+          "v": [
+           831.9999694824219,
+           470.3453063964844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           831.9999694824219,
+           469.31236267089844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5333333333333333,
+          "v": [
+           831.9999694824219,
+           468.8348388671875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           831.9999694824219,
+           468.9177703857422
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6,
+          "v": [
+           831.9999694824219,
+           469.5604705810547
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6333333333333333,
+          "v": [
+           831.9999694824219,
+           470.7557678222656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           831.9999694824219,
+           472.49053955078125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7,
+          "v": [
+           831.9999694824219,
+           474.7459411621094
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           831.9999694824219,
+           477.4970245361328
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7666666666666667,
+          "v": [
+           831.9999694824219,
+           480.71388244628906
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8,
+          "v": [
+           831.9999694824219,
+           484.3611145019531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           831.9999694824219,
+           488.3988952636719
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8666666666666667,
+          "v": [
+           831.9999694824219,
+           492.78282165527344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           831.9999694824219,
+           497.46498107910156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9333333333333333,
+          "v": [
+           831.9999694824219,
+           502.39402770996094
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9666666666666667,
+          "v": [
+           831.9999694824219,
+           507.5159454345703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1,
+          "v": [
+           831.9999694824219,
+           512.774658203125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0333333333333334,
+          "v": [
+           831.9999694824219,
+           518.1125640869141
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           831.9999694824219,
+           523.4710693359375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1,
+          "v": [
+           831.9999694824219,
+           528.7916564941406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1333333333333333,
+          "v": [
+           831.9999694824219,
+           534.0158081054688
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1666666666666667,
+          "v": [
+           831.9999694824219,
+           539.0864562988281
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2,
+          "v": [
+           831.9999694824219,
+           543.9479827880859
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           831.9999694824219,
+           548.5471343994141
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2666666666666666,
+          "v": [
+           831.9999694824219,
+           552.8335571289062
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3,
+          "v": [
+           831.9999694824219,
+           556.7601776123047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": [
+           831.9999694824219,
+           560.2841186523438
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3666666666666667,
+          "v": [
+           831.9999694824219,
+           563.3666229248047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4,
+          "v": [
+           831.9999694824219,
+           565.9740447998047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4333333333333333,
+          "v": [
+           831.9999694824219,
+           568.0777740478516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4666666666666666,
+          "v": [
+           831.9999694824219,
+           569.6546936035156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5,
+          "v": [
+           831.9999694824219,
+           570.6876373291016
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5333333333333334,
+          "v": [
+           831.9999694824219,
+           571.1651611328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5666666666666667,
+          "v": [
+           831.9999694824219,
+           571.0822296142578
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6,
+          "v": [
+           831.9999694824219,
+           570.4395294189453
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6333333333333333,
+          "v": [
+           831.9999694824219,
+           569.2442321777344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6666666666666667,
+          "v": [
+           831.9999694824219,
+           567.5094604492188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7,
+          "v": [
+           831.9999694824219,
+           565.2540588378906
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7333333333333334,
+          "v": [
+           831.9999694824219,
+           562.5029754638672
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7666666666666666,
+          "v": [
+           831.9999694824219,
+           559.2861175537109
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8,
+          "v": [
+           831.9999694824219,
+           555.6388854980469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8333333333333333,
+          "v": [
+           831.9999694824219,
+           551.6011047363281
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8666666666666667,
+          "v": [
+           831.9999694824219,
+           547.2171783447266
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9,
+          "v": [
+           831.9999694824219,
+           542.5350189208984
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9333333333333333,
+          "v": [
+           831.9999694824219,
+           537.6059722900391
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9666666666666666,
+          "v": [
+           831.9999694824219,
+           532.4840545654297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2"
+     },
+     {
+      "id": "copy2#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           640,
+           566.5560150146484
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.03333333333333333,
+          "v": [
+           640,
+           564.0738677978516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.06666666666666667,
+          "v": [
+           640,
+           561.1087799072266
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.1,
+          "v": [
+           640,
+           557.6932525634766
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.13333333333333333,
+          "v": [
+           640,
+           553.8648223876953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           640,
+           549.6653747558594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.2,
+          "v": [
+           640,
+           545.1408386230469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.23333333333333334,
+          "v": [
+           640,
+           540.3408813476562
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.26666666666666666,
+          "v": [
+           640,
+           535.3180694580078
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3,
+          "v": [
+           640,
+           530.1274871826172
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           640,
+           524.8258209228516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.36666666666666664,
+          "v": [
+           640,
+           519.4713592529297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           640,
+           514.1226959228516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.43333333333333335,
+          "v": [
+           640,
+           508.8384246826172
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4666666666666667,
+          "v": [
+           640,
+           503.67645263671875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           640,
+           498.6933135986328
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5333333333333333,
+          "v": [
+           640,
+           493.9435577392578
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           640,
+           489.4793701171875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6,
+          "v": [
+           640,
+           485.34950256347656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6333333333333333,
+          "v": [
+           640,
+           481.5992736816406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           640,
+           478.2698059082031
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7,
+          "v": [
+           640,
+           475.39756774902344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           640,
+           473.0139923095703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7666666666666667,
+          "v": [
+           640,
+           471.1451721191406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8,
+          "v": [
+           640,
+           469.81163024902344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           640,
+           469.02793884277344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8666666666666667,
+          "v": [
+           640,
+           468.80271911621094
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           640,
+           469.13841247558594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9333333333333333,
+          "v": [
+           640,
+           470.03143310546875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9666666666666667,
+          "v": [
+           640,
+           471.47186279296875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1,
+          "v": [
+           640,
+           473.44398498535156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0333333333333334,
+          "v": [
+           640,
+           475.92613220214844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           640,
+           478.89122009277344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1,
+          "v": [
+           640,
+           482.30674743652344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1333333333333333,
+          "v": [
+           640,
+           486.1351776123047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1666666666666667,
+          "v": [
+           640,
+           490.3346252441406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2,
+          "v": [
+           640,
+           494.8591613769531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           640,
+           499.65911865234375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2666666666666666,
+          "v": [
+           640,
+           504.6819305419922
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3,
+          "v": [
+           640,
+           509.8725128173828
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": [
+           640,
+           515.1741790771484
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3666666666666667,
+          "v": [
+           640,
+           520.5286407470703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4,
+          "v": [
+           640,
+           525.8773040771484
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4333333333333333,
+          "v": [
+           640,
+           531.1615753173828
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4666666666666666,
+          "v": [
+           640,
+           536.3235473632812
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5,
+          "v": [
+           640,
+           541.3066864013672
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5333333333333334,
+          "v": [
+           640,
+           546.0564422607422
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5666666666666667,
+          "v": [
+           640,
+           550.5206298828125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6,
+          "v": [
+           640,
+           554.6504974365234
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6333333333333333,
+          "v": [
+           640,
+           558.4007263183594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6666666666666667,
+          "v": [
+           640,
+           561.7301940917969
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7,
+          "v": [
+           640,
+           564.6024322509766
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7333333333333334,
+          "v": [
+           640,
+           566.9860076904297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7666666666666666,
+          "v": [
+           640,
+           568.8548278808594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8,
+          "v": [
+           640,
+           570.1883697509766
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8333333333333333,
+          "v": [
+           640,
+           570.9720611572266
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8666666666666667,
+          "v": [
+           640,
+           571.1972808837891
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9,
+          "v": [
+           640,
+           570.8615875244141
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9333333333333333,
+          "v": [
+           640,
+           569.9685668945312
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9666666666666666,
+          "v": [
+           640,
+           568.5281372070312
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2"
+     },
+     {
+      "id": "copy2#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           447.99999237060547,
+           563.0833435058594
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.03333333333333333,
+          "v": [
+           447.99999237060547,
+           565.7389068603516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.06666666666666667,
+          "v": [
+           447.99999237060547,
+           567.8933715820312
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.1,
+          "v": [
+           447.99999237060547,
+           569.5231628417969
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.13333333333333333,
+          "v": [
+           447.99999237060547,
+           570.6103515625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           447.99999237060547,
+           571.1429595947266
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.2,
+          "v": [
+           447.99999237060547,
+           571.1153411865234
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.23333333333333334,
+          "v": [
+           447.99999237060547,
+           570.5276489257812
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.26666666666666666,
+          "v": [
+           447.99999237060547,
+           569.3863677978516
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3,
+          "v": [
+           447.99999237060547,
+           567.7039337158203
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           447.99999237060547,
+           565.4989624023438
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.36666666666666664,
+          "v": [
+           447.99999237060547,
+           562.79541015625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           447.99999237060547,
+           559.6230316162109
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.43333333333333335,
+          "v": [
+           447.99999237060547,
+           556.0164642333984
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4666666666666667,
+          "v": [
+           447.99999237060547,
+           552.015380859375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           447.99999237060547,
+           547.6634979248047
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5333333333333333,
+          "v": [
+           447.99999237060547,
+           543.0084991455078
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           447.99999237060547,
+           538.1014251708984
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6,
+          "v": [
+           447.99999237060547,
+           532.9960632324219
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6333333333333333,
+          "v": [
+           447.99999237060547,
+           527.7482604980469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           447.99999237060547,
+           522.4156188964844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7,
+          "v": [
+           447.99999237060547,
+           517.0565032958984
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           447.99999237060547,
+           511.7295837402344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7666666666666667,
+          "v": [
+           447.99999237060547,
+           506.49330139160156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8,
+          "v": [
+           447.99999237060547,
+           501.405029296875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           447.99999237060547,
+           496.5204620361328
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8666666666666667,
+          "v": [
+           447.99999237060547,
+           491.8931579589844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           447.99999237060547,
+           487.5738525390625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9333333333333333,
+          "v": [
+           447.99999237060547,
+           483.6096954345703
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9666666666666667,
+          "v": [
+           447.99999237060547,
+           480.04432678222656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1,
+          "v": [
+           447.99999237060547,
+           476.9166564941406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0333333333333334,
+          "v": [
+           447.99999237060547,
+           474.26109313964844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           447.99999237060547,
+           472.10662841796875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1,
+          "v": [
+           447.99999237060547,
+           470.4768371582031
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1333333333333333,
+          "v": [
+           447.99999237060547,
+           469.3896484375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1666666666666667,
+          "v": [
+           447.99999237060547,
+           468.85704040527344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2,
+          "v": [
+           447.99999237060547,
+           468.88465881347656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           447.99999237060547,
+           469.47235107421875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2666666666666666,
+          "v": [
+           447.99999237060547,
+           470.61363220214844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3,
+          "v": [
+           447.99999237060547,
+           472.2960662841797
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": [
+           447.99999237060547,
+           474.50103759765625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3666666666666667,
+          "v": [
+           447.99999237060547,
+           477.20458984375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4,
+          "v": [
+           447.99999237060547,
+           480.37696838378906
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4333333333333333,
+          "v": [
+           447.99999237060547,
+           483.98353576660156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4666666666666666,
+          "v": [
+           447.99999237060547,
+           487.984619140625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5,
+          "v": [
+           447.99999237060547,
+           492.3365020751953
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5333333333333334,
+          "v": [
+           447.99999237060547,
+           496.9915008544922
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5666666666666667,
+          "v": [
+           447.99999237060547,
+           501.89857482910156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6,
+          "v": [
+           447.99999237060547,
+           507.0039367675781
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6333333333333333,
+          "v": [
+           447.99999237060547,
+           512.2517395019531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6666666666666667,
+          "v": [
+           447.99999237060547,
+           517.5843811035156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7,
+          "v": [
+           447.99999237060547,
+           522.9434967041016
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7333333333333334,
+          "v": [
+           447.99999237060547,
+           528.2704162597656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7666666666666666,
+          "v": [
+           447.99999237060547,
+           533.5066986083984
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8,
+          "v": [
+           447.99999237060547,
+           538.594970703125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8333333333333333,
+          "v": [
+           447.99999237060547,
+           543.4795379638672
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8666666666666667,
+          "v": [
+           447.99999237060547,
+           548.1068420410156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9,
+          "v": [
+           447.99999237060547,
+           552.4261474609375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9333333333333333,
+          "v": [
+           447.99999237060547,
+           556.3903045654297
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9666666666666666,
+          "v": [
+           447.99999237060547,
+           559.9556732177734
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2"
+     },
+     {
+      "id": "copy2",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           256.00000381469727,
+           520
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.03333333333333333,
+          "v": [
+           256.00000381469727,
+           525.3518676757812
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.06666666666666667,
+          "v": [
+           256.00000381469727,
+           530.6450653076172
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.1,
+          "v": [
+           256.00000381469727,
+           535.8216857910156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.13333333333333333,
+          "v": [
+           256.00000381469727,
+           540.8248901367188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.16666666666666666,
+          "v": [
+           256.00000381469727,
+           545.5999755859375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.2,
+          "v": [
+           256.00000381469727,
+           550.0946044921875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.23333333333333334,
+          "v": [
+           256.00000381469727,
+           554.2594909667969
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.26666666666666666,
+          "v": [
+           256.00000381469727,
+           558.0490112304688
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3,
+          "v": [
+           256.00000381469727,
+           561.4216613769531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.3333333333333333,
+          "v": [
+           256.00000381469727,
+           564.3405151367188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.36666666666666664,
+          "v": [
+           256.00000381469727,
+           566.7735290527344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4,
+          "v": [
+           256.00000381469727,
+           568.6940765380859
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.43333333333333335,
+          "v": [
+           256.00000381469727,
+           570.0811767578125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.4666666666666667,
+          "v": [
+           256.00000381469727,
+           570.9194946289062
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5,
+          "v": [
+           256.00000381469727,
+           571.2000274658203
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5333333333333333,
+          "v": [
+           256.00000381469727,
+           570.9194946289062
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.5666666666666667,
+          "v": [
+           256.00000381469727,
+           570.0811767578125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6,
+          "v": [
+           256.00000381469727,
+           568.6940765380859
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6333333333333333,
+          "v": [
+           256.00000381469727,
+           566.7735290527344
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.6666666666666666,
+          "v": [
+           256.00000381469727,
+           564.3405151367188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7,
+          "v": [
+           256.00000381469727,
+           561.4216613769531
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7333333333333333,
+          "v": [
+           256.00000381469727,
+           558.0490112304688
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.7666666666666667,
+          "v": [
+           256.00000381469727,
+           554.2594909667969
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8,
+          "v": [
+           256.00000381469727,
+           550.0946044921875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8333333333333334,
+          "v": [
+           256.00000381469727,
+           545.5999755859375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.8666666666666667,
+          "v": [
+           256.00000381469727,
+           540.8248901367188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9,
+          "v": [
+           256.00000381469727,
+           535.8216857910156
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9333333333333333,
+          "v": [
+           256.00000381469727,
+           530.6450653076172
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 0.9666666666666667,
+          "v": [
+           256.00000381469727,
+           525.3518676757812
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0333333333333334,
+          "v": [
+           256.00000381469727,
+           514.6481323242188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.0666666666666667,
+          "v": [
+           256.00000381469727,
+           509.3549346923828
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1,
+          "v": [
+           256.00000381469727,
+           504.1783142089844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1333333333333333,
+          "v": [
+           256.00000381469727,
+           499.17510986328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.1666666666666667,
+          "v": [
+           256.00000381469727,
+           494.4000244140625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2,
+          "v": [
+           256.00000381469727,
+           489.9053955078125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2333333333333334,
+          "v": [
+           256.00000381469727,
+           485.7405090332031
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.2666666666666666,
+          "v": [
+           256.00000381469727,
+           481.95098876953125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3,
+          "v": [
+           256.00000381469727,
+           478.5783386230469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": [
+           256.00000381469727,
+           475.65948486328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.3666666666666667,
+          "v": [
+           256.00000381469727,
+           473.2264709472656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4,
+          "v": [
+           256.00000381469727,
+           471.30592346191406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4333333333333333,
+          "v": [
+           256.00000381469727,
+           469.9188232421875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.4666666666666666,
+          "v": [
+           256.00000381469727,
+           469.08050537109375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5,
+          "v": [
+           256.00000381469727,
+           468.7999725341797
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5333333333333334,
+          "v": [
+           256.00000381469727,
+           469.08050537109375
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.5666666666666667,
+          "v": [
+           256.00000381469727,
+           469.9188232421875
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6,
+          "v": [
+           256.00000381469727,
+           471.30592346191406
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6333333333333333,
+          "v": [
+           256.00000381469727,
+           473.2264709472656
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.6666666666666667,
+          "v": [
+           256.00000381469727,
+           475.65948486328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7,
+          "v": [
+           256.00000381469727,
+           478.5783386230469
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7333333333333334,
+          "v": [
+           256.00000381469727,
+           481.95098876953125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.7666666666666666,
+          "v": [
+           256.00000381469727,
+           485.7405090332031
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8,
+          "v": [
+           256.00000381469727,
+           489.9053955078125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8333333333333333,
+          "v": [
+           256.00000381469727,
+           494.4000244140625
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.8666666666666667,
+          "v": [
+           256.00000381469727,
+           499.17510986328125
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9,
+          "v": [
+           256.00000381469727,
+           504.1783142089844
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9333333333333333,
+          "v": [
+           256.00000381469727,
+           509.3549346923828
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         },
+         {
+          "t": 1.9666666666666666,
+          "v": [
+           256.00000381469727,
+           514.6481323242188
+          ],
+          "inInterp": "linear",
+          "outInterp": "linear"
+         }
+        ],
+        "dims": 2
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2"
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "R stagger",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Bobbing",
+      "name": "Bobbing",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Bobbing"
+     },
+     {
+      "id": "pre:Staggered",
+      "name": "Staggered",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Staggered"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "lag",
+     "type": "stagger",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "grow",
+     "type": "modulate-points",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "row",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "bob",
+     "type": "point-expression",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "dot",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR7",
+     "type": "layer",
+     "name": "Staggered",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR8",
+     "type": "layer",
+     "name": "Bobbing",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 6 copies → 6 layers of one instance precomp · per-copy transforms every frame 0–59 (animated points), linear stretches merged"
+    },
+    {
+     "id": "copy2",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 5 copies → 5 layers of one instance precomp · per-copy transforms every frame 0–59 (animated points), linear stretches merged"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

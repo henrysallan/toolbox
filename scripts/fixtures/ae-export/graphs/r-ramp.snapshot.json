@@ -1,0 +1,442 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "R ramp",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "dot",
+      "name": "Ramp grid",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dot",
+       "copy2"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Copy to Points",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Copy to Points row",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "Copy to Points instance",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "Circle",
+              "contents": [
+               {
+                "kind": "ellipse",
+                "name": "Circle",
+                "size": {
+                 "v": [
+                  64,
+                  64
+                 ]
+                },
+                "position": {
+                 "v": [
+                  640,
+                  360
+                 ]
+                }
+               },
+               {
+                "kind": "fill",
+                "color": {
+                 "v": [
+                  1,
+                  1,
+                  1
+                 ]
+                },
+                "opacity": {
+                 "v": 100
+                },
+                "rule": "evenodd"
+               }
+              ]
+             }
+            ],
+            "transform": {
+             "position": {
+              "v": [
+               191.99996948242188,
+               351.9999694824219
+              ]
+             }
+            }
+           },
+           {
+            "kind": "repeater",
+            "name": "Copy to Points columns",
+            "copies": {
+             "v": 3
+            },
+            "offset": {
+             "v": 0
+            },
+            "composite": "below",
+            "transform": {
+             "anchor": {
+              "v": [
+               0,
+               0
+              ]
+             },
+             "position": {
+              "v": [
+               -191.9999885559082,
+               0
+              ]
+             },
+             "scale": {
+              "v": [
+               100,
+               100
+              ]
+             },
+             "rotation": {
+              "v": 0
+             },
+             "startOpacity": {
+              "v": 100
+             },
+             "endOpacity": {
+              "v": 10.000000894069672
+             }
+            }
+           }
+          ]
+         },
+         {
+          "kind": "repeater",
+          "name": "Copy to Points rows",
+          "copies": {
+           "v": 3
+          },
+          "offset": {
+           "v": 0
+          },
+          "composite": "below",
+          "transform": {
+           "anchor": {
+            "v": [
+             0,
+             0
+            ]
+           },
+           "position": {
+            "v": [
+             0,
+             -191.9999885559082
+            ]
+           },
+           "scale": {
+            "v": [
+             100,
+             100
+            ]
+           },
+           "rotation": {
+            "v": 0
+           },
+           "startOpacity": {
+            "v": 100
+           },
+           "endOpacity": {
+            "v": 25
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "box",
+      "name": "Ramp row",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box",
+       "copy"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Copy to Points",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Copy to Points instance",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "Rectangle",
+            "contents": [
+             {
+              "kind": "rect",
+              "name": "Rectangle",
+              "size": {
+               "v": [
+                64,
+                38.4
+               ]
+              },
+              "position": {
+               "v": [
+                640,
+                360
+               ]
+              },
+              "roundness": {
+               "v": 0
+              }
+             },
+             {
+              "kind": "fill",
+              "color": {
+               "v": [
+                1,
+                1,
+                1
+               ]
+              },
+              "opacity": {
+               "v": 100
+              },
+              "rule": "evenodd"
+             }
+            ]
+           }
+          ],
+          "transform": {
+           "position": {
+            "v": [
+             384.00001525878906,
+             -160
+            ]
+           }
+          }
+         },
+         {
+          "kind": "repeater",
+          "name": "Copy to Points columns",
+          "copies": {
+           "v": 5
+          },
+          "offset": {
+           "v": 0
+          },
+          "composite": "below",
+          "transform": {
+           "anchor": {
+            "v": [
+             0,
+             0
+            ]
+           },
+           "position": {
+            "v": [
+             -192.00000286102295,
+             0
+            ]
+           },
+           "scale": {
+            "v": [
+             100,
+             100
+            ]
+           },
+           "rotation": {
+            "v": 0
+           },
+           "startOpacity": {
+            "v": 100
+           },
+           "endOpacity": {
+            "v": 3.725290298461914e-7
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "fade",
+     "type": "set-named-attribute",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "pts2",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "fade2",
+     "type": "point-expression",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "dot",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR10",
+     "type": "layer",
+     "name": "Ramp row",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR11",
+     "type": "layer",
+     "name": "Ramp grid",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · regular 5 lattice → one Repeater on the instance's shape layer (the opacity ramp → Start / End Opacity)"
+    },
+    {
+     "id": "copy2",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · regular 3×3 lattice → two Repeaters on the instance's shape layer (the opacity ramp → Start / End Opacity)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

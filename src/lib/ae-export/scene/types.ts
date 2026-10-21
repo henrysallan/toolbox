@@ -39,6 +39,14 @@ export interface AeSceneOptions {
   // Every .ffx preset needs build.jsx to run in the After Effects app: a
   // headless aerender build shows AE's default gradient (reported).
   gradientRoute?: "ffx" | "svg";
+  // Added by the instances lane (M4): the pixels of a STATIC image field the
+  // walk samples at export time — Copy to Points' scale / rotate fields and
+  // its image pick. `endpoint` ("<id>:out" | "<id>:aux:<name>") is the
+  // field's producer; return its RGBA8 readback at width × height, row 0 =
+  // the visual top (EngineBackend.readImagePixels of the last evaluated
+  // value: a static field is the same at every frame). Undefined, or no
+  // hook (offline callers), and the copies that need it bake.
+  fieldPixels?: (endpoint: string, width: number, height: number) => ArrayLike<number> | undefined;
 }
 
 // Frames the package writer renders and encodes before AE can open the scene.

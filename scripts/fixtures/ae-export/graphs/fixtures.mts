@@ -601,3 +601,239 @@ export async function sceneOf(f: SceneFixture) {
     ...rest,
   });
 }
+
+// --- instances lane (M4): per-copy values, picks, order, time, Repeaters (r-) ----------
+// The live round trip of these is instances-roundtrip.mts next to this file:
+// it reads every copy's transform, colour and order back from After Effects.
+const rDot = (g: GraphBuilder, L: string, id: string, color = "#ffffff", r = 0.02) =>
+  g.node(L, id, "circle", { radiusX: r, radiusY: r, stroke_enabled: false, fill_enabled: true, fill_color: color });
+const rBox = (g: GraphBuilder, L: string, id: string, color = "#ffffff", s = 0.04, extra: Record<string, unknown> = {}) =>
+  g.node(L, id, "rectangle", { width: s, height: s * 0.6, stroke_enabled: false, fill_enabled: true, fill_color: color, ...extra });
+const rCopy = (g: GraphBuilder, L: string, id: string, points: string, instance: string, params: Record<string, unknown> = {}, animation?: Record<string, unknown>) => {
+  g.node(L, id, "copy-to-points", { mode: "image", anchor: "content center", ...params }, animation);
+  g.wire(points, `${id}:in:points`);
+  g.wire(instance, `${id}:in:instance`);
+  g.out(L, `${id}:out`);
+};
+
+// A static horizontal ramp R = G = B = x (the editor's readback stands in).
+export function rRampPixels(_ep: string, w: number, h: number): Uint8Array {
+  const px = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      const v = Math.round((255 * (x + 0.5)) / w);
+      px[o] = px[o + 1] = px[o + 2] = v;
+      px[o + 3] = 255;
+    }
+  return px;
+}
+
+SCENE_FIXTURES.push(
+  {
+    name: "r-tint-opacity",
+    title: "R tint opacity",
+    comp,
+    build(g) {
+      // White dots tinted by a random colour, faded along the index → a Fill
+      // effect (white × tint) and layer opacity per copy.
+      const A = g.layer("LR0", "Tinted dots");
+      rDot(g, A, "dot", "#ffffff", 0.03);
+      g.node(A, "pts", "grid", { countX: 4, countY: 2, width: 0.6, height: 0.2, y: cy(W, H, 220) });
+      g.node(A, "hue", "set-named-attribute", { attr_name: "tint", kind: "color", source: "random", seed: 7 });
+      g.node(A, "fade", "set-named-attribute", { attr_name: "alpha", kind: "float", source: "index", lo: 0.3, hi: 1 });
+      g.wire("pts:out", "hue:in:points");
+      g.wire("hue:out", "fade:in:points");
+      rCopy(g, A, "copy", "fade:out", "dot:aux:image", { tint_attr: "tint", opacity_attr: "alpha" });
+      // A two-colour instance (orange box, white outline) → a Channel Mixer.
+      const B = g.layer("LR1", "Tinted boxes");
+      rBox(g, B, "box", "#ff8000", 0.06, { stroke_enabled: true, stroke_color: "#ffffff", stroke_thickness: 6 });
+      g.node(B, "row", "grid", { countX: 3, countY: 1, width: 0.5, height: 0, y: cy(W, H, 540) });
+      g.node(B, "hue2", "set-named-attribute", { attr_name: "tint", kind: "color", source: "random", seed: 11 });
+      g.wire("row:out", "hue2:in:points");
+      rCopy(g, B, "copy2", "hue2:out", "box:aux:image", { tint_attr: "tint" });
+    },
+  },
+  {
+    name: "r-picks",
+    title: "R picks",
+    comp,
+    build(g) {
+      // Three variants (Combine a, b, c) picked per point.
+      const shapes = (L: string, p: string) => {
+        rDot(g, L, `${p}red`, "#ff0000", 0.025);
+        rBox(g, L, `${p}green`, "#00ff00", 0.05);
+        g.node(L, `${p}blue`, "star", { points: 5, outerRadius: 0.03, innerRadius: 0.013, stroke_enabled: false, fill_enabled: true, fill_color: "#0000ff" });
+        g.node(L, `${p}set`, "collect", { mode: "image", slots: ["a", "b", "c", "d"] });
+        g.wire(`${p}red:aux:image`, `${p}set:in:a`);
+        g.wire(`${p}green:aux:image`, `${p}set:in:b`);
+        g.wire(`${p}blue:aux:image`, `${p}set:in:c`);
+      };
+      const A = g.layer("LR2", "Random picks");
+      shapes(A, "a_");
+      g.node(A, "a_pts", "grid", { countX: 5, countY: 2, width: 0.7, height: 0.12, y: cy(W, H, 150) });
+      rCopy(g, A, "pick_rand", "a_pts:out", "a_set:out", { pick_mode: "random", pick_seed: 3, draw_order: "shuffled" });
+      const B = g.layer("LR3", "Cycled by y");
+      shapes(B, "b_");
+      g.node(B, "b_pts", "scatter-points", { count: 9, seed: 4 });
+      rCopy(g, B, "pick_cycle", "b_pts:out", "b_set:out", { pick_mode: "cycle", draw_order: "by y" });
+      const C = g.layer("LR4", "Attribute picks");
+      shapes(C, "c_");
+      g.node(C, "c_pts", "grid", { countX: 6, countY: 1, width: 0.7, height: 0, y: cy(W, H, 600) });
+      g.node(C, "c_w", "set-named-attribute", { attr_name: "which", kind: "float", source: "random", seed: 5 });
+      g.wire("c_pts:out", "c_w:in:points");
+      rCopy(g, C, "pick_attr", "c_w:out", "c_set:out", { pick_mode: "attribute", pick_attr: "which" });
+      const D = g.layer("LR5", "Every variant");
+      shapes(D, "d_");
+      g.node(D, "d_pts", "grid", { countX: 2, countY: 1, width: 0.2, height: 0, y: cy(W, H, 400) });
+      rCopy(g, D, "pick_all", "d_pts:out", "d_set:out", { pick_mode: "all" });
+    },
+  },
+  {
+    name: "r-keyed",
+    title: "R keyed",
+    comp,
+    build(g) {
+      // Keyed scale × / rotate + over static points → per-copy keys with the
+      // authored eases (one Scale / Rotation track per copy).
+      const A = g.layer("LR6", "Keyed modulation");
+      rBox(g, A, "box", "#ffcc00", 0.06);
+      g.node(A, "pts", "grid", { countX: 3, countY: 2, width: 0.5, height: 0.25 });
+      g.node(A, "tilt", "set-named-attribute", { attr_name: "rotation", kind: "float", source: "index", lo: 0, hi: 0.5 });
+      g.wire("pts:out", "tilt:in:points");
+      rCopy(g, A, "copy", "tilt:out", "box:aux:image", {}, {
+        scale_mul_default: track([[0, 0.4, "easeOutBack"], [30, 1.2, "linear"]]),
+        rotate_add_default: track([[0, 0, "easeInOutCubic"], [40, 1.5, "linear"]]),
+      });
+    },
+  },
+  {
+    name: "r-stagger",
+    title: "R stagger",
+    comp,
+    build(g) {
+      // Stagger phase → per-point scale and spin (Modulate Points) → copies
+      // keyed every frame, linear stretches merged.
+      const A = g.layer("LR7", "Staggered");
+      rBox(g, A, "box", "#33ccff", 0.07);
+      g.node(A, "pts", "grid", { countX: 6, countY: 1, width: 0.75, height: 0, y: cy(W, H, 260) });
+      g.node(A, "lag", "stagger", { unit: "frames", mode: "spacing", spacing: 5, duration: 12 });
+      g.node(A, "grow", "modulate-points", { scale_attr: "phase", rotate_attr: "phase", rotate_attr_amount: Math.PI / 2 });
+      g.wire("pts:out", "lag:in:points");
+      g.wire("lag:out", "grow:in:points");
+      rCopy(g, A, "copy", "grow:out", "box:aux:image");
+      // Points that move (a timed Point Expression) → per-copy position keys.
+      const B = g.layer("LR8", "Bobbing");
+      rDot(g, B, "dot", "#ff66aa", 0.02);
+      g.node(B, "row", "grid", { countX: 5, countY: 1, width: 0.6, height: 0, y: cy(W, H, 520) });
+      g.node(B, "bob", "point-expression", { expression: "y = py + 0.04 * Math.sin(t * Math.PI + index);" });
+      g.wire("row:out", "bob:in:points");
+      rCopy(g, B, "copy2", "bob:out", "dot:aux:image");
+    },
+  },
+  {
+    name: "r-switch",
+    title: "R switch",
+    comp,
+    build(g) {
+      // A pick that changes over time (attribute = a Stagger phase): one
+      // layer per variant a point uses, HOLD opacity keys.
+      const A = g.layer("LR9", "Switching");
+      rDot(g, A, "off", "#666666", 0.025);
+      rBox(g, A, "on", "#ffffff", 0.05);
+      g.node(A, "set", "collect", { mode: "image", slots: ["a", "b", "c"] });
+      g.wire("off:aux:image", "set:in:a");
+      g.wire("on:aux:image", "set:in:b");
+      g.node(A, "pts", "grid", { countX: 4, countY: 1, width: 0.6, height: 0 });
+      g.node(A, "lag", "stagger", { unit: "frames", mode: "spacing", spacing: 8, duration: 1 });
+      g.wire("pts:out", "lag:in:points");
+      rCopy(g, A, "copy", "lag:out", "set:out", { pick_mode: "attribute", pick_attr: "phase" });
+    },
+  },
+  {
+    name: "r-ramp",
+    title: "R ramp",
+    comp,
+    build(g) {
+      // Opacity exactly linear along the index → Repeater Start / End Opacity.
+      const A = g.layer("LR10", "Ramp row");
+      rBox(g, A, "box", "#ffffff", 0.05);
+      g.node(A, "pts", "grid", { countX: 5, countY: 1, width: 0.6, height: 0, y: cy(W, H, 200) });
+      g.node(A, "fade", "set-named-attribute", { attr_name: "alpha", kind: "float", source: "index", lo: 0.2, hi: 1 });
+      g.wire("pts:out", "fade:in:points");
+      rCopy(g, A, "copy", "fade:out", "box:aux:image", { opacity_attr: "alpha" });
+      // Separable in 2-D: (0.4 + 0.3·col)·(0.5 + 0.25·row) on a 3×3 grid.
+      const B = g.layer("LR11", "Ramp grid");
+      rDot(g, B, "dot", "#ffffff", 0.025);
+      g.node(B, "pts2", "grid", { countX: 3, countY: 3, width: 0.3, height: 0.3, y: cy(W, H, 520) });
+      g.node(B, "fade2", "point-expression", { expression: 'setattr("alpha", (0.4 + 0.3 * (index % 3)) * (0.5 + 0.25 * Math.floor(index / 3)));' });
+      g.wire("pts2:out", "fade2:in:points");
+      rCopy(g, B, "copy2", "fade2:out", "dot:aux:image", { opacity_attr: "alpha" });
+    },
+  },
+  {
+    name: "r-array",
+    title: "R array",
+    comp,
+    build(g) {
+      // Array (spline mode) of a star → Repeaters around the star's path.
+      const A = g.layer("LR12", "Spline array");
+      g.node(A, "st", "star", { centerX: 0.5, centerY: 0.5, points: 5, outerRadius: 0.04, innerRadius: 0.018, stroke_enabled: false, fill_enabled: false });
+      g.node(A, "arr", "array", { mode: "spline", countX: 4, countY: 2, sizeMode: "step", sizeW: 0.12, sizeH: 0.12, patternOffsetX: 0.2, patternOffsetY: 0.3, localRotate: 20, localScaleX: 0.8, localScaleY: 0.8 });
+      g.node(A, "ink", "spline-fill", { color: "#ffaa00" });
+      g.wire("st:out", "arr:in:instance");
+      g.wire("arr:out", "ink:in:path");
+      g.out(A, "ink:out");
+      // Array (point mode) of one point → Copy to Points: a rotated lattice of
+      // boxes → Repeaters on the box's shape layer.
+      const B = g.layer("LR13", "Point array");
+      rBox(g, B, "box", "#66ff66", 0.05);
+      g.node(B, "one", "point", { x: 0.5, y: 0.5 });
+      g.node(B, "arr2", "array", { mode: "point", countX: 3, countY: 2, sizeMode: "step", sizeW: 0.1, sizeH: 0.08, patternOffsetX: 0.55, patternOffsetY: 0.3, localRotate: 30, localScaleX: 0.8, localScaleY: 0.8 });
+      g.wire("one:out", "arr2:in:instance");
+      rCopy(g, B, "copy", "arr2:out", "box:aux:image");
+      // A rotated lattice (Point Expression) of a spline triangle, spline mode.
+      const C = g.layer("LR14", "Rotated lattice");
+      g.node(C, "tri", "polygon", { centerX: 0.5, centerY: 0.5, sides: 3, radius: 0.02, stroke_enabled: false, fill_enabled: false });
+      g.node(C, "pts", "grid", { countX: 4, countY: 3, width: 0.24, height: 0.12, x: 0.3, y: cy(W, H, 520) });
+      g.node(C, "turn", "point-expression", { expression: "x = 0.3 + (px - 0.3) * Math.cos(0.4) - (py - " + cy(W, H, 520) + ") * Math.sin(0.4); y = " + cy(W, H, 520) + " + (px - 0.3) * Math.sin(0.4) + (py - " + cy(W, H, 520) + ") * Math.cos(0.4);" });
+      g.node(C, "copies", "copy-to-points", { mode: "spline", anchor: "content center" });
+      g.node(C, "ink2", "spline-fill", { color: "#cc88ff" });
+      g.wire("pts:out", "turn:in:points");
+      g.wire("turn:out", "copies:in:points");
+      g.wire("tri:out", "copies:in:instance");
+      g.wire("copies:out", "ink2:in:path");
+      g.out(C, "ink2:out");
+    },
+  },
+  {
+    name: "r-field",
+    title: "R field",
+    comp,
+    build(g) {
+      // Static fields sampled per copy at export: scale from a ramp's R
+      // (0.5×…1.5×), rotation from the same (±π/4).
+      const A = g.layer("LR15", "Field copies");
+      rBox(g, A, "box", "#ffffff", 0.05);
+      g.node(A, "ramp", "gradient", { mode: "linear", start_x: 0, start_y: 0.5, end_x: 1, end_y: 0.5, color_a: "#000000", color_b: "#ffffff" });
+      g.node(A, "pts", "grid", { countX: 5, countY: 2, width: 0.7, height: 0.25 });
+      rCopy(g, A, "copy", "pts:out", "box:aux:image", { rotate_field_amount: Math.PI / 4 });
+      g.wire("ramp:out", "copy:in:scale_field");
+      g.wire("ramp:out", "copy:in:rotate_field");
+      // Spline mode: the node's own CPU sampler (≤ 256 px luminance) runs on
+      // the same readback → static paths.
+      const B = g.layer("LR16", "Field paths");
+      g.node(B, "tri", "polygon", { centerX: 0.5, centerY: 0.5, sides: 3, radius: 0.025, stroke_enabled: false, fill_enabled: false });
+      g.node(B, "ramp2", "gradient", { mode: "linear", start_x: 0, start_y: 0.5, end_x: 1, end_y: 0.5, color_a: "#000000", color_b: "#ffffff" });
+      g.node(B, "row", "grid", { countX: 6, countY: 1, width: 0.8, height: 0, y: cy(W, H, 600) });
+      g.node(B, "sized", "copy-to-points", { mode: "spline", anchor: "content center", scale_field_lo: 0.5, scale_field_hi: 2 });
+      g.node(B, "ink", "spline-fill", { color: "#88ccff" });
+      g.wire("row:out", "sized:in:points");
+      g.wire("tri:out", "sized:in:instance");
+      g.wire("ramp2:out", "sized:in:scale_field");
+      g.wire("sized:out", "ink:in:path");
+      g.out(B, "ink:out");
+    },
+    opts: { fieldPixels: rRampPixels },
+  }
+);

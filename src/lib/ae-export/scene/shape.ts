@@ -45,7 +45,7 @@ import {
 } from "./context";
 import { parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, newLayer, rendered, type Rendered, type Scope } from "./layers";
-import { repeaterGeom } from "./instances";
+import { arrayGeom, repeaterGeom } from "./instances";
 import { emitSdfLayer, sdfContourGeometry } from "./sdf";
 import { applyImageMask } from "./masks";
 import { nodeTransform, nodeTrs, sampledTransform } from "./trs";
@@ -66,6 +66,10 @@ export interface Geom {
 export const localTick = (scope: Scope, compFrame: number) => compFrame * scope.ctx.tpf - scope.clock.offsetTicks;
 
 // Is anything upstream of `id` (itself included) time-dependent?
+// stable: false defs that skip the cache for another reason than the clock
+// (SDF → Spline's CPU readback; Text and Point Labels re-check font
+// readiness): static unless something upstream of them moves.
+const UNSTABLE_UNTIMED = new Set(["sdf-to-spline", "text", "point-labels"]);
 const animatedMemo = new WeakMap<WalkCtx, Map<string, boolean>>();
 export function animatedUpstream(ctx: WalkCtx, id: string): boolean {
   let memo = animatedMemo.get(ctx);
@@ -77,15 +81,34 @@ export function animatedUpstream(ctx: WalkCtx, id: string): boolean {
     const n = ctx.graph.node(x);
     if (!n) return false;
     const def = getNodeDef(n.type);
+    // tickDriven / stable: false defs (Stagger, LFO) read the clock without
+    // declaring it in facts. A cacheable def can only change over time
+    // through its fingerprint, so when it has one that decides (a timed
+    // Point Expression; a Gradient reads time only in wave mode).
     const own =
       Object.values(n.animation ?? {}).some((b) => b?.animated && (b.keyframes?.length ?? 0) > 1) ||
-      !!def?.facts?.reads?.includes("time") ||
-      !!def?.simulation;
+      (!!def?.facts?.reads?.includes("time") && !def.fingerprintExtras) ||
+      !!def?.tickDriven ||
+      (def?.stable === false && !UNSTABLE_UNTIMED.has(n.type)) ||
+      !!def?.simulation ||
+      fingerprintReadsTime(def, n.params ?? {});
     const r = own || ctx.graph.into(x).some((w) => visit(w.source, seen));
     memo!.set(x, r);
     return r;
   };
   return visit(id, new Set());
+}
+
+// Does a def's fingerprint change with the clock (its compute reads time)?
+function fingerprintReadsTime(def: ReturnType<typeof getNodeDef>, params: Record<string, unknown>): boolean {
+  const fe = def?.fingerprintExtras;
+  if (!fe) return false;
+  const at = (s: number) => ({ time: s, frame: Math.floor(s * 30), tick: s * 30_000, fps: 30, ticksPerFrame: 1000, width: 1, height: 1, state: {} }) as unknown as RenderContext;
+  try {
+    return fe(params, at(0)) !== fe(params, at(1.37));
+  } catch {
+    return false;
+  }
 }
 
 export function splineAt(scope: Scope, endpoint: string, compFrame: number): SplineValue {
@@ -199,6 +222,10 @@ export function geometry(scope: Scope, endpoint: string, opts: GeomOpts): Geom {
     const rg = repeaterGeom(scope, id);
     if (rg) return rg;
   }
+  if (t === "array") {
+    const ag = arrayGeom(scope, id);
+    if (ag) return ag;
+  }
 
   // An SDF contour is traced on the GPU: its tree's own outline instead.
   if (t === "sdf-to-spline") return sdfContourGeometry(scope, id);
@@ -294,17 +321,7 @@ function pathGeom(scope: Scope, endpoint: string, paramOverride?: Record<string,
   const [f0, f1] = windowFrames(scope.clock);
   const evalAt = (f: number): SplineValue => (paramOverride ? primitiveAt(scope, id, f, paramOverride) : splineAt(scope, endpoint, f));
   const animated = animatedUpstream(ctx, id);
-  if (!animated) {
-    const s = evalAt(f0);
-    const plan = planCorners(s, ctx.canvas);
-    const items: AeShapeItem[] = plan.paths.map((p, i) => ({ kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path: { v: p } }));
-    if (plan.kind === "uniform") {
-      ctx.report.note(id, `live corners → Round Corners ${plan.radius.toFixed(2)} px (within ${plan.maxDeviationPx.toFixed(2)} px of toolbox's fillet)`);
-      return { items: [{ kind: "group", name: ctx.graph.name(id), contents: [...items, { kind: "round-corners", radius: { v: plan.radius } }] }], leaves: items.length };
-    }
-    if (plan.kind === "baked") ctx.report.note(id, `live corners baked into the vertices (${plan.reason})`);
-    return { items, leaves: items.length };
-  }
+  if (!animated) return staticPathGeom(scope, id, evalAt(f0));
   // A Spline Draw whose only motion is its own Path Animation: real keys.
   const n = ctx.graph.node(id)!;
   const sblock = ctx.graph.block(id, "spline");
@@ -335,6 +352,20 @@ function pathGeom(scope: Scope, endpoint: string, paramOverride?: Record<string,
     const path: AeProp<AePath> = same || keys.length < 2 ? { v: keys[0].v } : { keys, dims: 1 };
     return { kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path };
   });
+  return { items, leaves: items.length };
+}
+
+// A static spline as Path items (live corners → Round Corners when AE's
+// fillet lands close enough). instances.ts uses it for copies it evaluates.
+export function staticPathGeom(scope: Scope, id: string, s: SplineValue): Geom {
+  const { ctx } = scope;
+  const plan = planCorners(s, ctx.canvas);
+  const items: AeShapeItem[] = plan.paths.map((p, i) => ({ kind: "path", name: `${ctx.graph.name(id)} ${i + 1}`, path: { v: p } }));
+  if (plan.kind === "uniform") {
+    ctx.report.note(id, `live corners → Round Corners ${plan.radius.toFixed(2)} px (within ${plan.maxDeviationPx.toFixed(2)} px of toolbox's fillet)`);
+    return { items: [{ kind: "group", name: ctx.graph.name(id), contents: [...items, { kind: "round-corners", radius: { v: plan.radius } }] }], leaves: items.length };
+  }
+  if (plan.kind === "baked") ctx.report.note(id, `live corners baked into the vertices (${plan.reason})`);
   return { items, leaves: items.length };
 }
 

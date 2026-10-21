@@ -1,0 +1,837 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Copy-to-Points-instance",
+    "name": "R keyed · Copy to Points instance",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "box",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            76.8,
+            46.08
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.8,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Keyed-modulation",
+    "name": "R keyed · Keyed modulation",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy#6",
+      "name": "Copy to Points 6",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         960,
+         520
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 28.64788975654116,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 114.59155902616465,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#5",
+      "name": "Copy to Points 5",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         520
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 22.918312146742387,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 108.86198141636586,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#4",
+      "name": "Copy to Points 4",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         320,
+         520
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 17.188734536943613,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 103.1324038065671,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         960,
+         200
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 11.459156073371194,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 97.40282534299467,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         200
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 5.729578036685597,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 91.67324730630908,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         320,
+         200
+        ]
+       },
+       "scale": {
+        "keys": [
+         {
+          "t": 0,
+          "v": [
+           40,
+           40
+          ],
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           },
+           {
+            "influence": 33.33333333333333,
+            "speed": 376.12640000000005
+           }
+          ]
+         },
+         {
+          "t": 1,
+          "v": [
+           120,
+           120
+          ],
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           },
+           {
+            "influence": 33.333333333333336,
+            "speed": 0
+           }
+          ]
+         }
+        ],
+        "dims": 2
+       },
+       "rotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905822
+           }
+          ]
+         },
+         {
+          "t": 1.3333333333333333,
+          "v": 85.94366926962348,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": -4.179618232905826
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "R keyed",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Keyed-modulation",
+      "name": "Keyed modulation",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Keyed-modulation"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tilt",
+     "type": "set-named-attribute",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR6",
+     "type": "layer",
+     "name": "Keyed modulation",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "rotate_add_default: easeInOutCubic → best-fit cubic (≤0.27%); Exact policy adds a midpoint key. · content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · rotate_add_default: within 0.222 (AE units) of toolbox at every frame · 6 copies → 6 layers of one instance precomp"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

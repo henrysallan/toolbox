@@ -39,7 +39,7 @@ import type {
   AeRGB,
   AeShaderBundle,
 } from "../types";
-import type { AeAssetCopy, AeBakeRequest, AeNodeOverride } from "./types";
+import type { AeAssetCopy, AeBakeRequest, AeNodeOverride, AeSceneOptions } from "./types";
 import { numbersOf, sourceEndpoint, type AeGraph } from "./graph";
 import type { AeReport } from "./report";
 
@@ -89,6 +89,8 @@ export interface WalkCtx {
   // scale 100, rotation 0): a toolbox layer's TRS can go straight onto them.
   free: WeakSet<AeLayer>;
   uid(base: string): string;
+  // AeSceneOptions.fieldPixels (instances.ts samples static image fields).
+  fieldPixels?: AeSceneOptions["fieldPixels"];
 }
 
 export function makeUid(): (base: string) => string {

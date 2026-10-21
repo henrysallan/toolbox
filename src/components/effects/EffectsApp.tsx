@@ -12286,6 +12286,16 @@ function EffectsShell({
             fused: o.fused,
             name: o.name,
             toolboxVersion: CURRENT_VERSION,
+            // A static image field Copy to Points samples per copy: its last
+            // evaluated value, read back at the size the walk asks for.
+            fieldPixels: (endpoint, width, height) => {
+              const aux = /^(.*):aux:(.+)$/.exec(endpoint);
+              const id = aux ? aux[1] : endpoint.replace(/:out$/, "");
+              const output = evalCacheRef.current.get(id)?.output ?? lastEvalOutputsRef.current?.get(id);
+              const v = pickInspectSocket(output, aux ? `aux:${aux[2]}` : "out").value;
+              const backend = backendRef.current;
+              return backend && v && (v.kind === "image" || v.kind === "mask") ? (backend.readImagePixels(v as ImageValue, width, height) ?? undefined) : undefined;
+            },
           }),
         renderFrames: renderNodeFrames,
         readAsset: readAeAsset,
