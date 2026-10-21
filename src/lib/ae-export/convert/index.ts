@@ -156,3 +156,24 @@ export type {
   AeColorOptions,
   AeRampResult,
 } from "./color";
+export {
+  AE_PX_PER_UNIT,
+  AE_AXIS_SIGN,
+  AE_ROTATION_SIGN,
+  AE_ORTHO_DISTANCE_PX,
+  AE_LIGHT_RADIUS_PX,
+  AE_LIGHT_GAIN,
+  TOOLBOX_FALLBACK_AMBIENT,
+  aeAxisMaps,
+  toAePoint,
+  toAeRotation,
+  aeZoomOf,
+  aeOrthoCamera,
+  srgbEncode,
+  aeLightIntensity,
+  aeLightTypeOf,
+} from "./space3d";
+export type {
+  Vec3,
+  ToolboxLightType,
+} from "./space3d";

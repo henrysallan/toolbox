@@ -1,0 +1,586 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "model:model",
+    "path": "footage/model_model.glb",
+    "kind": "model",
+    "alpha": "ignore",
+    "name": "axes.glb"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:scene",
+    "name": "T scene 3D · 3D Scene",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "cam",
+      "name": "Camera",
+      "kind": "camera",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "separated": {
+        "x": {
+         "keys": [
+          {
+           "t": 0,
+           "v": 2176,
+           "inInterp": "linear",
+           "outInterp": "linear"
+          },
+          {
+           "t": 2,
+           "v": -896,
+           "inInterp": "linear",
+           "outInterp": "linear"
+          }
+         ],
+         "dims": 1
+        },
+        "y": {
+         "v": -664
+        },
+        "z": {
+         "keys": [
+          {
+           "t": 0,
+           "v": -2048,
+           "inInterp": "linear",
+           "outInterp": "linear"
+          },
+          {
+           "t": 1,
+           "v": -2560,
+           "inInterp": "linear",
+           "outInterp": "bezier",
+           "easeOut": [
+            {
+             "influence": 33.33333333333333,
+             "speed": 1024.0000000000007
+            }
+           ]
+          },
+          {
+           "t": 2,
+           "v": -2048,
+           "inInterp": "bezier",
+           "outInterp": "linear",
+           "easeIn": [
+            {
+             "influence": 33.33333333333335,
+             "speed": 0
+            }
+           ]
+          }
+         ],
+         "dims": 1
+        }
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "cam"
+      ],
+      "camera": {
+       "zoom": {
+        "v": 1141.7741288507566
+       }
+      }
+     },
+     {
+      "id": "key",
+      "name": "Light 3",
+      "kind": "light",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         2176,
+         -2200,
+         -1024
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "key"
+      ],
+      "light": {
+       "type": "parallel",
+       "color": {
+        "v": [
+         1,
+         1,
+         1
+        ]
+       },
+       "intensity": {
+        "v": 95.00969892615068
+       },
+       "castsShadows": false
+      }
+     },
+     {
+      "id": "fill",
+      "name": "Light 2",
+      "kind": "light",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         -384,
+         -152,
+         -1024
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "fill"
+      ],
+      "light": {
+       "type": "point",
+       "color": {
+        "v": [
+         0.5333333333333333,
+         0.6666666666666666,
+         1
+        ]
+       },
+       "intensity": {
+        "v": 519.925546429977
+       },
+       "castsShadows": false,
+       "falloff": "inverse-square-clamped",
+       "radius": {
+        "v": 512
+       }
+      }
+     },
+     {
+      "id": "amb",
+      "name": "Light",
+      "kind": "light",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "amb"
+      ],
+      "light": {
+       "type": "ambient",
+       "color": {
+        "v": [
+         1,
+         1,
+         1
+        ]
+       },
+       "intensity": {
+        "v": 43.55434876470592
+       }
+      }
+     },
+     {
+      "id": "spin",
+      "name": "Transform 3D",
+      "kind": "null",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         257.6,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "xRotation": {
+        "v": 0
+       },
+       "yRotation": {
+        "keys": [
+         {
+          "t": 0,
+          "v": 0,
+          "inInterp": "linear",
+          "outInterp": "bezier",
+          "easeOut": [
+           {
+            "influence": 62.48852626987205,
+            "speed": 2.917923985623752
+           }
+          ]
+         },
+         {
+          "t": 2,
+          "v": -90,
+          "inInterp": "bezier",
+          "outInterp": "linear",
+          "easeIn": [
+           {
+            "influence": 62.48852626987205,
+            "speed": 2.9179239856237573
+           }
+          ]
+         }
+        ],
+        "dims": 1
+       },
+       "rotation": {
+        "v": 0
+       },
+       "orientation": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "spin"
+      ],
+      "threeD": true
+     },
+     {
+      "id": "model",
+      "name": "Import 3D",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         80,
+         80,
+         80
+        ]
+       },
+       "xRotation": {
+        "v": 0
+       },
+       "yRotation": {
+        "v": -20
+       },
+       "rotation": {
+        "v": 0
+       },
+       "orientation": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "model"
+      ],
+      "source": "model:model",
+      "threeD": true,
+      "parent": "spin"
+     }
+    ],
+    "renderer": "advanced-3d"
+   },
+   {
+    "id": "comp:main",
+    "name": "T scene 3D",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:scene",
+      "name": "3D scene",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene",
+       "cam",
+       "spin",
+       "model",
+       "key",
+       "fill",
+       "amb"
+      ],
+      "source": "comp:scene"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "cam",
+     "type": "camera-3d",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "position: the axes key apart → separated X / Y / Z position"
+    },
+    {
+     "id": "scene",
+     "type": "scene-render",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "→ 3-D precomp \"T scene 3D · 3D Scene\" (Advanced 3D): 6 layers"
+    },
+    {
+     "id": "LT",
+     "type": "layer",
+     "name": "3D scene",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "model",
+     "type": "import-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "The same model file as an AE 3D model layer (Advanced 3D); AE renders the file's own PBR materials. · materials: AE renders the file's own PBR materials; toolbox's Import 3D shows three's default material (model-cache drops a plain import's material)"
+    },
+    {
+     "id": "spin",
+     "type": "transform-3d",
+     "class": "transform",
+     "fidelity": "approx",
+     "note": "rot_y: easeInOutCubic → best-fit cubic (≤0.27%); Exact policy adds a midpoint key. · Y rotation: within 0.230 (AE units) of toolbox at every frame"
+    },
+    {
+     "id": "key",
+     "type": "light-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "AE light. Advanced 3D lights in the encoded working space: intensity is the least-squares match over N·L (AE lights linearly in N·L, toolbox through the sRGB encode)."
+    },
+    {
+     "id": "fill",
+     "type": "light-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "AE light. Advanced 3D lights in the encoded working space: intensity is the least-squares match over N·L (AE lights linearly in N·L, toolbox through the sRGB encode). · Inverse Square Clamped falloff, Radius 512 px (1 unit); intensity matched 3.00 units away (the camera's target at frame 0)"
+    },
+    {
+     "id": "amb",
+     "type": "light-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "AE light. Advanced 3D lights in the encoded working space: intensity is the least-squares match over N·L (AE lights linearly in N·L, toolbox through the sRGB encode)."
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [
+  {
+   "id": "model:model",
+   "path": "footage/model_model.glb",
+   "source": {
+    "kind": "model",
+    "ref": "model"
+   }
+  }
+ ],
+ "problems": [],
+ "warnings": []
+}

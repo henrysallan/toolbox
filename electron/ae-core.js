@@ -26,7 +26,7 @@ const { aerenderSafe } = require("./safe-paths");
 // ExtendScript can run shell commands (system.callSystem), so main verifies
 // the bytes against this pin and evaluates its own copy of them.
 // check-package-paths fails when build.jsx changes without this.
-const BUILD_JSX_SHA256 = "a2fc128d472fde20df96e3697c08f9a3132be86bf398e1617b5f4111c4985e76";
+const BUILD_JSX_SHA256 = "f5041fbedab384467626635f2f75d715e759a221b07f346cb6f1d8cf1663e6dc";
 
 const BUILD_ARGS = Object.freeze(["-sound", "OFF"]);
 

@@ -1,0 +1,624 @@
+{
+ "compare": {
+  "ortho_20000": {
+   "iou": 0.98305,
+   "area": {
+    "ae": 36517.736,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.942,
+     195.896
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.1209,
+    "p95": 0.188,
+    "p99": 0.2116
+   }
+  },
+  "ortho_50000": {
+   "iou": 0.99269,
+   "area": {
+    "ae": 36228.533,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.941,
+     195.747
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.1195,
+    "p95": 0.188,
+    "p99": 0.188
+   }
+  },
+  "ortho_100000": {
+   "iou": 0.99573,
+   "area": {
+    "ae": 36131.826,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.953,
+     195.699
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.119,
+    "p95": 0.188,
+    "p99": 0.188
+   }
+  },
+  "ortho_200000": {
+   "iou": 0.9968,
+   "area": {
+    "ae": 36088.269,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.941,
+     195.67
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.1187,
+    "p95": 0.188,
+    "p99": 0.188
+   }
+  },
+  "ortho_500000": {
+   "iou": 0.9972,
+   "area": {
+    "ae": 36064.018,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.939,
+     195.655
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.1191,
+    "p95": 0.188,
+    "p99": 0.1921
+   }
+  },
+  "ortho_1000000": {
+   "iou": 0.99749,
+   "area": {
+    "ae": 36049.367,
+    "tbx": 36027.91
+   },
+   "centroid": {
+    "ae": [
+     199.943,
+     195.641
+    ],
+    "tbx": [
+     199.996,
+     195.646
+    ]
+   },
+   "color": {
+    "mean": 0.1203,
+    "p95": 0.188,
+    "p99": 0.2708
+   }
+  },
+  "persp": {
+   "iou": 0.99841,
+   "area": {
+    "ae": 83132.188,
+    "tbx": 83129.085
+   },
+   "centroid": {
+    "ae": [
+     199.962,
+     206.74
+    ],
+    "tbx": [
+     200.002,
+     206.731
+    ]
+   },
+   "color": {
+    "mean": 0.4015,
+    "p95": 0.5022,
+    "p99": 0.5022
+   }
+  }
+ },
+ "aeJob": {
+  "ae": "26.5x89",
+  "errors": [],
+  "colorManagement": {
+   "before": 1,
+   "members": {},
+   "hasEnum": false,
+   "after": 0
+  },
+  "cases": [
+   {
+    "name": "ortho_20000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.273,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "ortho_50000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.002,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "ortho_100000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.002,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "ortho_200000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.003,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "ortho_500000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.002,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "ortho_1000000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.002,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "persp",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.003,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes-white.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   }
+  ],
+  "hasThreeDModelLayer": true,
+  "lightTypes": {
+   "PARALLEL": true,
+   "SPOT": true,
+   "POINT": true,
+   "AMBIENT": true,
+   "ENVIRONMENT": true
+  },
+  "om": {
+   "Audio Bit Depth": "32 Bit",
+   "Audio Channels": "Stereo",
+   "Audio Sample Rate": "",
+   "Channels": "RGB + Alpha",
+   "Color": "Straight (Unmatted)",
+   "Crop": "false",
+   "Crop Bottom": "0",
+   "Crop Left": "0",
+   "Crop Right": "0",
+   "Crop Top": "0",
+   "Depth": "Trillions of Colors+",
+   "Format": "PNG Sequence",
+   "Include Project Link": "false",
+   "Include Source XMP Metadata": "false",
+   "Lock Aspect Ratio": "true",
+   "Output Audio": "Off",
+   "Output File Info": {
+    "Full Flat Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/ortho2/renders/ortho_20000_f0_[#####].png",
+    "Base Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/ortho2/renders",
+    "Subfolder Path": "",
+    "File Name": "ortho_20000_f0_[#####].png",
+    "File Template": "ortho_20000_f0_[#####].[fileExtension]"
+   },
+   "Post-Render Action": "None",
+   "Resize": "false",
+   "Resize Quality": "High",
+   "Resize to": {
+    "x": 400,
+    "y": 400
+   },
+   "Starting #": "0",
+   "Use Comp Frame Number": "true",
+   "Use Region of Interest": "false",
+   "Video Output": "true"
+  },
+  "snapBefore": [
+   {
+    "comp": "ortho_20000",
+    "t": 1792612440494,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_50000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_100000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_200000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_500000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_1000000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "persp",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   }
+  ],
+  "snapAfter": [
+   {
+    "comp": "ortho_20000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_50000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_100000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_200000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_500000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "ortho_1000000",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   },
+   {
+    "comp": "persp",
+    "t": 1792612440495,
+    "rect": {
+     "top": -588.799987792969,
+     "left": -256,
+     "width": 844.799987792969,
+     "height": 844.799987792969
+    },
+    "dur": 30,
+    "w": 1920,
+    "fr": 30
+   }
+  ]
+ }
+}

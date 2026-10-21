@@ -1,0 +1,329 @@
+{
+ "job": {
+  "ae": "26.5x89",
+  "errors": [],
+  "colorManagement": {
+   "before": 1,
+   "members": {},
+   "hasEnum": false,
+   "after": 0
+  },
+  "cases": [
+   {
+    "name": "cube01_s1000",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.321,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "cube01.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "cube1_s100",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.112,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "cube1.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "cube10_s10",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.112,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "cube10.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "axes_side",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.109,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "axes_top",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.004,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   }
+  ],
+  "hasThreeDModelLayer": true,
+  "lightTypes": {
+   "PARALLEL": true,
+   "SPOT": true,
+   "POINT": true,
+   "AMBIENT": true,
+   "ENVIRONMENT": true
+  },
+  "om": {
+   "Audio Bit Depth": "32 Bit",
+   "Audio Channels": "Stereo",
+   "Audio Sample Rate": "",
+   "Channels": "RGB + Alpha",
+   "Color": "Straight (Unmatted)",
+   "Crop": "false",
+   "Crop Bottom": "0",
+   "Crop Left": "0",
+   "Crop Right": "0",
+   "Crop Top": "0",
+   "Depth": "Trillions of Colors+",
+   "Format": "PNG Sequence",
+   "Include Project Link": "false",
+   "Include Source XMP Metadata": "false",
+   "Lock Aspect Ratio": "true",
+   "Output Audio": "Off",
+   "Output File Info": {
+    "Full Flat Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/units2/renders/cube01_s1000_f0_[#####].png",
+    "Base Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/units2/renders",
+    "Subfolder Path": "",
+    "File Name": "cube01_s1000_f0_[#####].png",
+    "File Template": "cube01_s1000_f0_[#####].[fileExtension]"
+   },
+   "Post-Render Action": "None",
+   "Resize": "false",
+   "Resize Quality": "High",
+   "Resize to": {
+    "x": 1000,
+    "y": 1000
+   },
+   "Starting #": "0",
+   "Use Comp Frame Number": "true",
+   "Use Region of Interest": "false",
+   "Video Output": "true"
+  }
+ },
+ "frames": {
+  "cube01_s1000_f0": {
+   "pixels": 276673,
+   "box": [
+    237,
+    237,
+    762,
+    762
+   ],
+   "mean": [
+    0.4588,
+    0.4588,
+    0.4588
+   ],
+   "rowWidth": 525.373,
+   "colHeight": 525.498,
+   "area": 276082.184,
+   "centroid": [
+    499.937,
+    500
+   ]
+  },
+  "cube1_s100_f0": {
+   "pixels": 276673,
+   "box": [
+    237,
+    237,
+    762,
+    762
+   ],
+   "mean": [
+    0.4588,
+    0.4588,
+    0.4588
+   ],
+   "rowWidth": 525.373,
+   "colHeight": 525.498,
+   "area": 276082.184,
+   "centroid": [
+    499.937,
+    500
+   ]
+  },
+  "cube10_s10_f0": {
+   "pixels": 276673,
+   "box": [
+    237,
+    237,
+    762,
+    762
+   ],
+   "mean": [
+    0.4588,
+    0.4588,
+    0.4588
+   ],
+   "rowWidth": 525.373,
+   "colHeight": 525.498,
+   "area": 276082.184,
+   "centroid": [
+    499.937,
+    500
+   ]
+  },
+  "axes_side_f0": {
+   "pixels": 114824,
+   "box": [
+    145,
+    145,
+    655,
+    655
+   ],
+   "mean": [
+    0,
+    0,
+    0
+   ],
+   "rowWidth": 407,
+   "colHeight": 407,
+   "area": 114929.412,
+   "centroid": [
+    476.485,
+    476.458
+   ]
+  },
+  "axes_top_f0": {
+   "pixels": 114824,
+   "box": [
+    344,
+    344,
+    854,
+    854
+   ],
+   "mean": [
+    0.4581,
+    0.4581,
+    0.4581
+   ],
+   "rowWidth": 407,
+   "colHeight": 407,
+   "area": 114929.286,
+   "centroid": [
+    523.495,
+    523.542
+   ]
+  }
+ },
+ "seconds": {
+  "job": 8.111,
+  "render": 7.119
+ }
+}

@@ -529,7 +529,40 @@ export interface AeLayer {
   // Toolbox node ids this layer came from — traceability for the report and
   // for compare_ae_renders' diagnostics. Written into the layer comment.
   origin?: string[];
+  // Camera / light layers (M4 lane 5). Their Point of Interest is
+  // transform.anchor ("ADBE Anchor Point" on a camera or light).
+  camera?: AeCameraOptions;
+  light?: AeLightOptions;
 }
+
+// 3-D (M4 lane 5, specdocs/ae-m4/3d.md). A 3-D model is a "footage" layer
+// whose source is a "model" footage item (AE makes it a ThreeDModelLayer),
+// threeD true, in a comp whose renderer is "advanced-3d".
+export interface AeCameraOptions {
+  // px: (comp height / 2) / tan(vertical FOV / 2).
+  zoom: AeProp<number>;
+}
+
+export type AeLightType = "parallel" | "spot" | "point" | "ambient";
+
+export interface AeLightOptions {
+  type: AeLightType;
+  color: AeProp<AeRGB>;
+  intensity: AeProp<number>; // percent
+  // Spot only: the full cone angle (degrees) and its feather (percent).
+  coneAngle?: AeProp<number>;
+  coneFeather?: AeProp<number>;
+  // Point / spot. "inverse-square-clamped" uses radius; "smooth" uses
+  // radius + falloffDistance (px).
+  falloff?: "none" | "smooth" | "inverse-square-clamped";
+  radius?: AeProp<number>;
+  falloffDistance?: AeProp<number>;
+  castsShadows?: boolean;
+}
+
+// Comp renderer: "advanced-3d" = "ADBE Advanced 3d" (models need it),
+// "classic-3d" = "ADBE Calder".
+export type AeRenderer = "advanced-3d" | "classic-3d";
 
 export interface AeFootage {
   id: string;
@@ -551,6 +584,8 @@ export interface AeComp {
   bgColor?: AeRGB;
   // Top first: layers[0] is AE layer index 1. build.jsx adds bottom-up.
   layers: AeLayer[];
+  // Omitted: AE's default for new comps.
+  renderer?: AeRenderer;
 }
 
 export interface AeProjectSettings {

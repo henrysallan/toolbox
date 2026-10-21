@@ -504,5 +504,115 @@ export default async function run(): Promise<number> {
     const s = await build("b-merge-matte", { overrides: { soft: "skip" } });
     c.check("(override skip) the blur is dropped: its input passes through", !s.scene.comps.flatMap((x) => x.layers).some((l) => l.effects?.length) && s.problems.length === 0, s.problems);
   }
+
+  // --- T: native 3-D scenes (M4 lane 5, specdocs/ae-m4/3d.md) ------------------------------------------
+  {
+    const { AE_PX_PER_UNIT, AE_ORTHO_DISTANCE_PX, AE_LIGHT_GAIN, aeZoomOf, aeLightIntensity, srgbEncode } = await import("@/lib/ae-export/convert");
+    const O = [640, 360, 0];
+    const v = (p: any) => p?.v;
+    const b = await build("t-scene3d");
+    const m = mainOf(b);
+    const pre = m.layers[0];
+    const comp3d = compOf(b, pre?.source ?? "");
+    c.check("(T) route direct, no bakes; the main comp holds ONE 2-D precomp layer of the 3-D comp", b.scene.report.route === "direct" && b.bakes.length === 0 && m.layers.length === 1 && pre.kind === "precomp" && !pre.threeD && !!comp3d, { route: b.scene.report.route, bakes: b.bakes.length, main: m.layers.map((l) => l.kind) });
+    c.check("(T) the 3-D comp: Advanced 3D renderer, comp-sized; camera, lights, null, model (top first)", comp3d?.renderer === "advanced-3d" && comp3d.width === 1280 && comp3d.height === 720 && comp3d.layers.map((l) => l.kind).join() === "camera,light,light,light,null,footage", comp3d?.layers.map((l) => l.kind));
+    const ft = b.scene.footage.find((f) => f.kind === "model");
+    c.check("(T) the GLB → model footage under footage/ (.glb) and an AeAssetCopy of kind model keyed by the Import 3D node", !!ft && /^footage\/.+\.glb$/.test(ft.path) && b.assets.length === 1 && b.assets[0].source.kind === "model" && b.assets[0].source.ref === "model" && b.assets[0].path === ft.path, { ft, assets: b.assets });
+    const model = layer(b, "model")!;
+    const spin = layer(b, "spin")!;
+    c.check("(T) Import 3D → a 3-D footage layer of the model, parented to the Transform 3D null", model.kind === "footage" && model.threeD === true && model.source === ft?.id && model.parent === "spin" && spin.kind === "null" && spin.threeD === true, model);
+    c.check("(T) the model's own TRS in its parent's space: position 0, Scale 80 %, Y Rotation −20 (three Y → AE −Y)", JSON.stringify(v(model.transform.position)) === "[0,0,0]" && JSON.stringify(v(model.transform.scale)) === "[80,80,80]" && v(model.transform.yRotation) === -20 && JSON.stringify(v(model.transform.anchor)) === "[0,0,0]", model.transform);
+    c.check("(T) the null sits around the comp centre: pos_y 0.2 → y = 360 − 512·0.2", JSON.stringify(v(spin.transform.position)) === JSON.stringify([640, 360 - AE_PX_PER_UNIT * 0.2, 0]), spin.transform.position);
+    const yr = spin.transform.yRotation as any;
+    c.check("(T) the keyed rot_y → Y Rotation keys 0 → −90 at 0 s / 2 s (sign flipped, eased)", yr?.keys?.length === 2 && yr.keys[1].v === -90 && near(yr.keys[1].t, 2) && yr.keys[0].outInterp === "bezier", yr);
+    const cam = layer(b, "cam")!;
+    const sx = cam.transform.separated?.x as any;
+    const sz = cam.transform.separated?.z as any;
+    c.check("(T) camera: pos_x / pos_z key apart → separated X / Y / Z; X 640 + 512·3 → 640 − 512·3, Z −512·4 …", cam.kind === "camera" && sx?.keys?.length === 2 && sx.keys[0].v === 640 + 3 * AE_PX_PER_UNIT && sx.keys[1].v === 640 - 3 * AE_PX_PER_UNIT && sz?.keys?.length === 3 && sz.keys[0].v === -4 * AE_PX_PER_UNIT && v(cam.transform.separated?.y) === 360 - 2 * AE_PX_PER_UNIT, cam.transform);
+    c.check("(T) camera Point of Interest = the target (the comp centre); zoom = (H/2)/tan(fov/2)", JSON.stringify(v(cam.transform.anchor)) === JSON.stringify(O) && near(v(cam.camera?.zoom), aeZoomOf(35, 720)) && near(aeZoomOf(35, 720), 360 / Math.tan((17.5 * Math.PI) / 180)), cam.camera);
+    const key = layer(b, "key")!;
+    const fill = layer(b, "fill")!;
+    const amb = layer(b, "amb")!;
+    c.check("(T) directional → Parallel aimed at its target, intensity 100·gain·enc(I/π)", key.light?.type === "parallel" && near(v(key.light.intensity), 100 * AE_LIGHT_GAIN * srgbEncode(2 / Math.PI)) && JSON.stringify(v(key.transform.position)) === JSON.stringify([640 + 3 * 512, 360 - 5 * 512, -2 * 512]) && JSON.stringify(v(key.transform.anchor)) === JSON.stringify(O), key.light);
+    c.check("(T) point → Point, Inverse Square Clamped at Radius 512 px, matched at the target's distance (3)", fill.light?.type === "point" && fill.light.falloff === "inverse-square-clamped" && v(fill.light.radius) === 512 && near(v(fill.light.intensity), aeLightIntensity("point", 6, 3)) && near(v(fill.light.intensity), 100 * AE_LIGHT_GAIN * 9 * srgbEncode(6 / (9 * Math.PI))) && !("coneAngle" in fill.light), fill.light);
+    c.check("(T) the light color hex → 0–1 RGB (#88aaff)", JSON.stringify(v(fill.light?.color)) === JSON.stringify([0x88 / 255, 0xaa / 255, 1]), fill.light?.color);
+    c.check("(T) ambient → Ambient, no falloff", amb.light?.type === "ambient" && !("falloff" in amb.light) && near(v(amb.light.intensity), 100 * srgbEncode(0.5 / Math.PI)), amb.light);
+    c.check("(T) report: camera exact, lights + model approx, the scene a layer", line(b, "cam")?.fidelity === "exact" && ["key", "fill", "amb", "model"].every((id) => line(b, id)?.fidelity === "approx") && line(b, "scene")?.class === "layer", ["cam", "key", "model", "spin", "scene"].map((id) => [id, line(b, id)?.class, line(b, id)?.fidelity]));
+
+    const o = await build("t-scene3d-ortho");
+    const ocam = layer(o, "cam")!;
+    const op = v(ocam.transform.position) as number[];
+    const dist = Math.hypot(op[0] - O[0], op[1] - O[1], op[2] - O[2]);
+    c.check("(T ortho) orthographic → a camera 2·10⁵ px from its target, along the toolbox view direction, zoom = D·H/(512·ortho_height)", near(dist, AE_ORTHO_DISTANCE_PX, 1e-3) && near(v(ocam.camera?.zoom), (AE_ORTHO_DISTANCE_PX * 720) / (512 * 3)) && near((op[0] - 640) / dist, 2.4 / Math.hypot(2.4, 1.8, 2.4)) && near((op[1] - 360) / dist, -1.8 / Math.hypot(2.4, 1.8, 2.4)), { op, zoom: ocam.camera });
+    c.check("(T ortho) the camera is reported approx (AE has no orthographic camera)", line(o, "cam")?.fidelity === "approx", line(o, "cam"));
+    const spot = layer(o, "spot")!;
+    c.check("(T ortho) spot → Spot: Cone Angle = 2·angle, Feather = 100·penumbra", spot.light?.type === "spot" && v(spot.light.coneAngle) === 50 && near(v(spot.light.coneFeather), 40) && spot.light.falloff === "inverse-square-clamped", spot.light);
+    const o3 = compOf(o, mainOf(o).layers[0].source!)!;
+    const bg = o3.layers[o3.layers.length - 1];
+    c.check("(T ortho) a solid background → a 2-D solid at the bottom of the 3-D comp", bg.kind === "solid" && !bg.threeD && JSON.stringify(bg.solid?.color) === JSON.stringify([0x20 / 255, 0x28 / 255, 0x30 / 255]), bg);
+
+    const k = await build("t-scene3d-bakes");
+    const reasons = Object.fromEntries(k.bakes.map((x) => [x.output, x.reason ?? ""]));
+    c.check("(T bakes) fog, a primitive mesh, a picked file object → each Scene Render bakes with the reason", k.bakes.length === 3 && /fog \(linear\)/.test(reasons["scene:out"]) && /cube-3d \(box\)/.test(reasons["scene2:out"]) && /top:1/.test(reasons["scene3:out"]) && k.assets.length === 0 && k.scene.footage.every((f) => f.kind !== "model"), reasons);
+    c.check("(T bakes) the Import 3D under a baked scene bakes with it", ["model", "pick", "box"].every((id) => line(k, id)?.class === "bake"), ["model", "pick", "box"].map((id) => line(k, id)?.class));
+
+    const adhoc3 = (name: string, build3: (g: any, L: string) => void) =>
+      sceneOf({ name, title: name, comp: { width: 1280, height: 720, fps: 30, frames: 30 }, build(g: any) { const L = g.layer("LT9", "3D"); build3(g, L); g.out(L, "scene:out"); } } as any);
+    const T_MODEL = { url: "blob:fixture/axes.glb", filename: "axes.glb", format: "glb" };
+    const lone = await adhoc3("lone", (g, L) => {
+      g.node(L, "model", "import-3d", { model: T_MODEL, object: "" });
+      g.node(L, "scene", "scene-render", {});
+      g.wire("model:out", "scene:in:object:1");
+    });
+    const lone3 = lone.scene.comps.find((x) => x.renderer === "advanced-3d");
+    const lc = lone3?.layers.find((l) => l.kind === "camera");
+    c.check("(T default) no camera → Scene Render's default camera (fov 45 from 2.4, 1.8, 2.4); no light → its 0.4 ambient", !!lc && JSON.stringify(v(lc.transform.position)) === JSON.stringify([640 + 2.4 * 512, 360 - 1.8 * 512, -2.4 * 512]) && near(v(lc.camera?.zoom), aeZoomOf(45, 720)) && lone3!.layers.some((l) => l.light?.type === "ambient" && near(v(l.light.intensity), aeLightIntensity("ambient", 0.4))), lone3?.layers.map((l) => l.kind));
+    const dof = await adhoc3("dof", (g, L) => {
+      g.node(L, "model", "import-3d", { model: T_MODEL, object: "" });
+      g.node(L, "cam", "camera-3d", { dof_enabled: true });
+      g.node(L, "scene", "scene-render", {});
+      g.wire("model:out", "scene:in:object:1");
+      g.wire("cam:out", "scene:in:camera");
+    });
+    const room = await adhoc3("room", (g, L) => {
+      g.node(L, "model", "import-3d", { model: T_MODEL, object: "" });
+      g.node(L, "scene", "scene-render", { environment: "room" });
+      g.wire("model:out", "scene:in:object:1");
+    });
+    const stl = await adhoc3("stl", (g, L) => {
+      g.node(L, "model", "import-3d", { model: { url: "blob:x", filename: "a.stl", format: "stl" }, object: "" });
+      g.node(L, "scene", "scene-render", {});
+      g.wire("model:out", "scene:in:object:1");
+    });
+    c.check("(T bakes) depth of field, the room environment, an STL → bake", [dof, room, stl].every((x) => x.bakes.length === 1) && /depth of field/.test(dof.bakes[0]?.reason ?? "") && /room environment/.test(room.bakes[0]?.reason ?? "") && /STL/.test(stl.bakes[0]?.reason ?? ""), [dof, room, stl].map((x) => x.bakes.map((y) => y.reason)));
+    const fovKeyed = await adhoc3("fovkeys", (g, L) => {
+      g.node(L, "model", "import-3d", { model: T_MODEL, object: "" });
+      g.node(L, "cam", "camera-3d", {}, { fov: track([[0, 30], [29, 60]]) });
+      g.node(L, "light", "light-3d", { type: "directional" }, { intensity: track([[0, 1], [29, 3]]) });
+      g.node(L, "scene", "scene-render", {});
+      g.wire("model:out", "scene:in:object:1");
+      g.wire("light:out", "scene:in:object:2");
+      g.wire("cam:out", "scene:in:camera");
+    });
+    const fz = (fovKeyed.scene.comps.flatMap((x) => x.layers).find((l) => l.kind === "camera")?.camera?.zoom ?? {}) as any;
+    const fi = (fovKeyed.scene.comps.flatMap((x) => x.layers).find((l) => l.kind === "light")?.light?.intensity ?? {}) as any;
+    c.check("(T keyed) a keyed FOV → per-frame zoom keys (zoom is not affine in the FOV); a keyed intensity likewise", fz.keys?.length === 30 && near(fz.keys[0].v, aeZoomOf(30, 720)) && near(fz.keys[29].v, aeZoomOf(60, 720)) && fi.keys?.length === 30 && near(fi.keys[29].v, aeLightIntensity("directional", 3)), { zoom: fz.keys?.length, intensity: fi.keys?.length });
+    const noFile = await adhoc3("nofile", (g, L) => {
+      g.node(L, "model", "import-3d", { model: null, object: "" });
+      g.node(L, "scene", "scene-render", {});
+      g.wire("model:out", "scene:in:object:1");
+    });
+    c.check("(T) an Import 3D with no file loaded exports nothing (as toolbox renders it) and says so", noFile.bakes.length === 0 && noFile.assets.length === 0 && noFile.warnings.some((w) => /no file loaded/.test(w)), noFile.warnings);
+    for (const x of [b, o, k, lone, dof, room, stl, fovKeyed, noFile]) c.check(`(T ${x.scene.comps.at(-1)!.name}) valid, no problems`, x.problems.length === 0 && validateAeScene(x.scene).length === 0, [...x.problems, ...validateAeScene(x.scene)].slice(0, 3));
+
+    // The validator holds the 3-D rules build.jsx relies on.
+    const bad = JSON.parse(JSON.stringify(b.scene));
+    const bad3 = bad.comps.find((x: any) => x.renderer === "advanced-3d");
+    delete bad3.renderer;
+    bad3.layers.find((l: any) => l.kind === "light" && l.light.type === "point").light.coneAngle = { v: 30 };
+    bad3.layers.find((l: any) => l.kind === "camera").camera = {};
+    const probs = validateAeScene(bad);
+    c.check("(T validate) a model outside an advanced-3d comp, a cone on a point light, a camera without zoom → refused", probs.some((p) => /renderer "advanced-3d"/.test(p)) && probs.some((p) => /only spot lights have a cone/.test(p)) && probs.some((p) => /camera\.zoom: missing/.test(p)), probs);
+  }
   return c.failures;
 }

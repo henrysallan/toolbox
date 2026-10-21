@@ -1,0 +1,83 @@
+{
+ "runOk": true,
+ "results": {
+  "t-scene3d@0": {
+   "silhouetteIoU": 0.998,
+   "centroidDeltaPx": [
+    -0.055,
+    -0.001
+   ],
+   "boxAe": [
+    524,
+    115,
+    843,
+    444
+   ],
+   "boxTbx": [
+    524,
+    115,
+    843,
+    444
+   ],
+   "areaRatio": 1,
+   "colorInside": {
+    "pixels": 52875,
+    "mean": 0.09,
+    "p95": 0.118,
+    "max": 0.17
+   }
+  },
+  "t-scene3d@30": {
+   "silhouetteIoU": 0.998,
+   "centroidDeltaPx": [
+    -0.056,
+    0.01
+   ],
+   "boxAe": [
+    518,
+    115,
+    841,
+    447
+   ],
+   "boxTbx": [
+    518,
+    115,
+    841,
+    447
+   ],
+   "areaRatio": 1,
+   "colorInside": {
+    "pixels": 55827,
+    "mean": 0.041,
+    "p95": 0.078,
+    "max": 0.124
+   }
+  },
+  "t-scene3d-ortho@0": {
+   "silhouetteIoU": 0.998,
+   "centroidDeltaPx": [
+    -0.013,
+    0.04
+   ],
+   "boxAe": [
+    419,
+    92,
+    860,
+    545
+   ],
+   "boxTbx": [
+    419,
+    92,
+    860,
+    545
+   ],
+   "areaRatio": 1.001,
+   "colorInside": {
+    "pixels": 117225,
+    "mean": 0.037,
+    "p95": 0.165,
+    "max": 0.682
+   }
+  }
+ }
+}

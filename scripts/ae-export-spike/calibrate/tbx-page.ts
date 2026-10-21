@@ -14,7 +14,8 @@ import { registerNode } from "@/engine/registry";
 import { createEngineBackend } from "@/engine/gl";
 import { evaluateGraph, type EvalCache, type GraphEdge, type GraphNode } from "@/engine/evaluator";
 import { pickInspectSocket } from "@/engine/socket-inspect";
-import type { ImageValue, NodeDefinition, RenderContext } from "@/engine/types";
+import type { ImageValue, ModelFileParamValue, NodeDefinition, RenderContext } from "@/engine/types";
+import { acquireModelIndex } from "@/engine/model-cache";
 
 export interface TbxRender {
   id: string;
@@ -108,9 +109,20 @@ function readFloat(gl: WebGL2RenderingContext, img: ImageValue): Float32Array {
   return out;
 }
 
+// Import 3D loads its file asynchronously (the model cache): parse every
+// model a render names before its first evaluation, so frame 0 has geometry.
+const MODEL_TOKEN = {};
+async function preloadModels(nodes: GraphNode[]) {
+  for (const n of nodes) {
+    const m = n.type === "import-3d" ? (n.params?.model as ModelFileParamValue | null | undefined) : null;
+    if (m?.url && !(await acquireModelIndex(m.url, m.format, MODEL_TOKEN))) throw new Error(`${n.id}: could not load ${m.url}`);
+  }
+}
+
 // One render: base64 float32 RGBA per frame (null where nothing rendered).
-export function render(job: TbxJob, index: number): { frame: number; b64: string | null; error?: string }[] {
+export async function render(job: TbxJob, index: number): Promise<{ frame: number; b64: string | null; error?: string }[]> {
   const r = job.renders[index];
+  await preloadModels(r.nodes);
   const { width, height } = job.size;
   const fps = job.fps ?? 30;
   const backend = createEngineBackend(width, height);

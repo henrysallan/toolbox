@@ -12270,7 +12270,7 @@ function EffectsShell({
   const readAeAsset = useCallback(async (copy: AeAssetCopy) => {
     const { aeAssetBytes } = await import("@/lib/ae-export/package/assets");
     const node = nodesRef.current.find((n) => n.id === copy.source.ref);
-    return aeAssetBytes(copy, node?.data.params.file);
+    return aeAssetBytes(copy, copy.source.kind === "model" ? node?.data.params.model : node?.data.params.file);
   }, []);
 
   const runAeExport = useCallback(

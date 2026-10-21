@@ -356,6 +356,7 @@
   var MATTE = {
     "LUMA": "LUMA", "LUMA_INVERTED": "LUMA_INVERTED", "ALPHA": "ALPHA", "ALPHA_INVERTED": "ALPHA_INVERTED"
   };
+  var RENDERER = { "advanced-3d": "ADBE Advanced 3d", "classic-3d": "ADBE Calder" };
 
   // ---------------------------------------------------------------------------
   // Property values and keyframes
@@ -505,6 +506,10 @@
 
   function applyProject(p) {
     var proj = app.project;
+    // A new project inherits AE's sticky "Last Project Settings", which may be
+    // OCIO-managed (1); OCIO refuses 16 bpc. The scene's color settings assume
+    // Adobe's management (0). 26.5 has no enum object for these values.
+    if (proj.colorManagementSystem === 1) step("project colorManagementSystem", function () { proj.colorManagementSystem = 0; });
     step("project bitsPerChannel", function () { proj.bitsPerChannel = p.bitsPerChannel; });
     if (has(p, "workingSpace")) step("project workingSpace", function () { proj.workingSpace = p.workingSpace; });
     step("project linearBlending", function () { proj.linearBlending = p.linearBlending === true; });
@@ -549,6 +554,12 @@
     }
     if (!item) throw new Error("After Effects did not import " + f.path);
     if (has(f, "name") && f.name) item.name = f.name;
+    if (f.kind === "model") {
+      // A 3D model (GLB / glTF / OBJ): AE makes its layers ThreeDModelLayers.
+      // Its source has no alpha or frame rate to interpret.
+      if (folder) item.parentFolder = folder;
+      return item;
+    }
     if (item.mainSource) {
       if (f.alpha === "straight") item.mainSource.alphaMode = AlphaMode.STRAIGHT;
       else if (f.alpha === "premultiplied") {
@@ -798,10 +809,14 @@
       src = ctx.items[L.source];
       layer = comp.layers.add(src);
     } else if (k === "camera") layer = comp.layers.addCamera(L.name, [0, 0]);
-    else if (k === "light") layer = comp.layers.addLight(L.name, [0, 0]);
-    else throw new Error("unknown layer kind \"" + k + "\"");
+    else if (k === "light") {
+      layer = comp.layers.addLight(L.name, [0, 0]);
+      // The type first: AE hides (and refuses) the options and transform
+      // properties a type does not use.
+      if (has(L, "light")) layer.lightType = LightType[enumValue(LIGHT_TYPE, L.light.type, "light type")];
+    } else throw new Error("unknown layer kind \"" + k + "\"");
     layer.name = L.name;
-    if (L.threeD === true && k !== "camera" && k !== "light") layer.threeDLayer = true;
+    if (L.threeD === true && k !== "camera" && k !== "light" && layer.threeDLayer !== true) layer.threeDLayer = true;
     counts.layers++;
     return layer;
   }
@@ -829,13 +844,16 @@
     "xRotation": "ADBE Rotate X", "yRotation": "ADBE Rotate Y"
   };
 
-  function applyTransform(layer, T, where, kind) {
+  function applyTransform(layer, T, where, kind, L3) {
     var tg = function () { return layer.property("ADBE Transform Group"); };
     var key;
     // Cameras and lights carry Scale and Opacity in their transform group,
     // hidden; AE refuses values there.
     var noScaleOpacity = kind === "camera" || kind === "light";
-    if (has(T, "anchor") && tg().property("ADBE Anchor Point")) applyProp(tg().property("ADBE Anchor Point"), T.anchor, where + " anchor");
+    // An ambient light has no transform; a point light no Point of Interest.
+    var lightType = kind === "light" && has(L3, "light") ? L3.light.type : "";
+    if (lightType === "ambient") return;
+    if (has(T, "anchor") && tg().property("ADBE Anchor Point") && lightType !== "point") applyProp(tg().property("ADBE Anchor Point"), T.anchor, where + " anchor");
     if (has(T, "separated")) {
       tg().property("ADBE Position").dimensionsSeparated = true;
       applyProp(tg().property("ADBE Position_0"), T.separated.x, where + " x position");
@@ -848,6 +866,8 @@
     for (key in LAYER_PROPS) {
       if (Object.prototype.hasOwnProperty.call(LAYER_PROPS, key) && has(T, key)) {
         if (key === "opacity" && noScaleOpacity) continue;
+        // Only a spot light shows Orientation / Rotation (measured 26.5).
+        if (lightType && lightType !== "spot") continue;
         // Cameras and lights have no Opacity; a missing property for a
         // value the scene leaves at its default is not an error.
         if (!tg().property(LAYER_PROPS[key])) {
@@ -857,6 +877,29 @@
         applyProp(tg().property(LAYER_PROPS[key]), T[key], where + " " + key);
       }
     }
+  }
+
+  // Camera / light options (M4 lane 5). Light options follow AE's order of
+  // visibility: falloff before Radius / Falloff Distance, cone only on spots.
+  var LIGHT_TYPE = { "parallel": "PARALLEL", "spot": "SPOT", "point": "POINT", "ambient": "AMBIENT" };
+  var LIGHT_FALLOFF = { "none": 1, "smooth": 2, "inverse-square-clamped": 3 };
+
+  function applyCamera(layer, C, where) {
+    var co = function () { return layer.property("ADBE Camera Options Group"); };
+    if (has(C, "zoom")) applyProp(co().property("ADBE Camera Zoom"), C.zoom, where + " zoom");
+  }
+
+  function applyLight(layer, G, where) {
+    var lo = function () { return layer.property("ADBE Light Options Group"); };
+    if (has(G, "falloff")) setEnum(lo().property("ADBE Light Falloff Type"), enumValue(LIGHT_FALLOFF, G.falloff, "light falloff"), where + " falloff");
+    if (has(G, "color")) applyProp(lo().property("ADBE Light Color"), G.color, where + " light color");
+    if (has(G, "intensity")) applyProp(lo().property("ADBE Light Intensity"), G.intensity, where + " intensity");
+    if (has(G, "coneAngle")) applyProp(lo().property("ADBE Light Cone Angle"), G.coneAngle, where + " cone angle");
+    if (has(G, "coneFeather")) applyProp(lo().property("ADBE Light Cone Feather 2"), G.coneFeather, where + " cone feather");
+    if (has(G, "radius")) applyProp(lo().property("ADBE Light Falloff Start"), G.radius, where + " radius");
+    if (has(G, "falloffDistance")) applyProp(lo().property("ADBE Light Falloff Distance"), G.falloffDistance, where + " falloff distance");
+    // An ambient light casts no shadows: AE hides the option.
+    if (has(G, "castsShadows") && G.type !== "ambient") lo().property("ADBE Casts Shadows").setValue(G.castsShadows === true ? 1 : 0);
   }
 
   function applyMasks(layer, masks, where) {
@@ -1175,7 +1218,9 @@
       });
     }
     step(where + " times", function () { applyTimes(layer, L); });
-    step(where + " transform", function () { applyTransform(layer, L.transform, where, L.kind); });
+    step(where + " transform", function () { applyTransform(layer, L.transform, where, L.kind, L); });
+    if (has(L, "camera")) step(where + " camera", function () { applyCamera(layer, L.camera, where); });
+    if (has(L, "light")) step(where + " light", function () { applyLight(layer, L.light, where); });
     if (has(L, "masks")) applyMasks(layer, L.masks, where);
     if (has(L, "contents")) {
       if (L.kind !== "shape") problem(where, "contents on a " + L.kind + " layer");
@@ -1351,7 +1396,7 @@
 
       // One save target for the whole build: a TBX Shader effect saves the
       // project there early (tbxEnsureSaved), the end saves it again.
-      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless, layerById: {}, saveTo: saveTarget(root), tbxSaved: false, tbx: {} };
+      var ctx = { root: root, items: {}, presets: {}, viewer: null, headless: headless, layerById: {}, saveTo: saveTarget(root), tbxSaved: false, tbx: {}, models: 0 };
       var j, f, folder = null;
       if (scene.presets) {
         for (j = 0; j < scene.presets.length; j++) ctx.presets[scene.presets[j].id] = scene.presets[j].path;
@@ -1361,7 +1406,10 @@
         for (j = 0; j < scene.footage.length; j++) {
           f = scene.footage[j];
           (function (f) {
-            step("footage " + f.id, function () { ctx.items[f.id] = importFootage(root, f, folder); });
+            step("footage " + f.id, function () {
+              ctx.items[f.id] = importFootage(root, f, folder);
+              if (f.kind === "model") ctx.models++;
+            });
           }(f));
         }
       }
@@ -1372,6 +1420,11 @@
         var C = scene.comps[j];
         var comp = app.project.items.addComp(C.name, C.width, C.height, 1, C.duration, C.fps);
         if (has(C, "bgColor")) comp.bgColor = C.bgColor;
+        if (has(C, "renderer")) {
+          (function (comp, C) {
+            step(C.name + " renderer", function () { comp.renderer = enumValue(RENDERER, C.renderer, "renderer"); });
+          }(comp, C));
+        }
         if (has(ctx.items, C.id)) throw new Error("comp id \"" + C.id + "\" is also a footage id");
         ctx.items[C.id] = comp;
         comps.push({ C: C, comp: comp });
@@ -1385,6 +1438,11 @@
 
       app.endUndoGroup();
       undo = false;
+      // Measured headless (26.5): a project saved right after importing 3D
+      // models can keep a broken model item (it renders transparent, on every
+      // render); a pause of 1 s or more before the save let 8 of 8 builds
+      // through. AE finishes the import off the script's thread.
+      if (ctx.models > 0) $.sleep(Math.min(5000, 1000 + 500 * ctx.models));
       var target = ctx.saveTo;
       app.project.save(target);
       result.saved = target.fsName;

@@ -1,0 +1,459 @@
+{
+ "note": "The model save race (build.jsx's pre-save settle). `runs` is the last SETTLE=1000,1000,1000,1000 run; `history` summarises the earlier runs of 2026-10-21, whose files were overwritten: comps per run whose model rendered (all comps import the same GLB unless noted).",
+ "history": [
+  {
+   "run": "probe (4 comps, 3 files)",
+   "settleMs": 0,
+   "rendered": "3/4",
+   "jobSeconds": 8.1
+  },
+  {
+   "run": "ortho (5 comps)",
+   "settleMs": 0,
+   "rendered": "4/5",
+   "jobSeconds": 7.1
+  },
+  {
+   "run": "near (8 comps)",
+   "settleMs": 0,
+   "rendered": "7/8",
+   "jobSeconds": null
+  },
+  {
+   "run": "near (11 comps)",
+   "settleMs": 0,
+   "rendered": "10/11",
+   "jobSeconds": null
+  },
+  {
+   "run": "last-a (3 comps)",
+   "settleMs": 0,
+   "rendered": "2/3",
+   "jobSeconds": 10.3
+  },
+  {
+   "run": "last-b (3 comps, a model-free comp last)",
+   "settleMs": 0,
+   "rendered": "1/2 model comps",
+   "jobSeconds": 7.1
+  },
+  {
+   "run": "last-a rerun",
+   "settleMs": 0,
+   "rendered": "3/3",
+   "jobSeconds": 15.1
+  },
+  {
+   "run": "last-b rerun",
+   "settleMs": 3000,
+   "rendered": "2/2",
+   "jobSeconds": 9.1
+  },
+  {
+   "run": "last-0",
+   "settleMs": 0,
+   "rendered": "3/3",
+   "jobSeconds": 13.2
+  },
+  {
+   "run": "last-1",
+   "settleMs": 0,
+   "rendered": "1/3 (deterministic: two more renders of the saved .aep, same 1/3)",
+   "jobSeconds": 6.1
+  },
+  {
+   "run": "last-2",
+   "settleMs": 0,
+   "rendered": "3/3",
+   "jobSeconds": 8.2
+  },
+  {
+   "run": "last-3..5",
+   "settleMs": 1500,
+   "rendered": "3/3 each",
+   "jobSeconds": [
+    25.1,
+    9.2,
+    7.1
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "settleMs": 1000,
+   "px": {
+    "last-0_a_f0": 83034,
+    "last-0_b_f0": 83034,
+    "last-0_c_f0": 83034
+   },
+   "seconds": {
+    "job": 7.119,
+    "render": 6.112
+   },
+   "snapBefore": [
+    {
+     "comp": "last-0_a",
+     "t": 1792611026086,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-0_b",
+     "t": 1792611026086,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-0_c",
+     "t": 1792611026086,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ],
+   "snapAfter": [
+    {
+     "comp": "last-0_a",
+     "t": 1792611027139,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-0_b",
+     "t": 1792611027140,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-0_c",
+     "t": 1792611027140,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ]
+  },
+  {
+   "settleMs": 1000,
+   "px": {
+    "last-1_a_f0": 83034,
+    "last-1_b_f0": 83034,
+    "last-1_c_f0": 83034
+   },
+   "seconds": {
+    "job": 8.118,
+    "render": 6.106
+   },
+   "snapBefore": [
+    {
+     "comp": "last-1_a",
+     "t": 1792611039636,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-1_b",
+     "t": 1792611039636,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-1_c",
+     "t": 1792611039636,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ],
+   "snapAfter": [
+    {
+     "comp": "last-1_a",
+     "t": 1792611040699,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-1_b",
+     "t": 1792611040699,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-1_c",
+     "t": 1792611040699,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ]
+  },
+  {
+   "settleMs": 1000,
+   "px": {
+    "last-2_a_f0": 83034,
+    "last-2_b_f0": 83034,
+    "last-2_c_f0": 83034
+   },
+   "seconds": {
+    "job": 7.116,
+    "render": 6.115
+   },
+   "snapBefore": [
+    {
+     "comp": "last-2_a",
+     "t": 1792611053993,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-2_b",
+     "t": 1792611053993,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-2_c",
+     "t": 1792611053994,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ],
+   "snapAfter": [
+    {
+     "comp": "last-2_a",
+     "t": 1792611055053,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-2_b",
+     "t": 1792611055054,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-2_c",
+     "t": 1792611055054,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ]
+  },
+  {
+   "settleMs": 1000,
+   "px": {
+    "last-3_a_f0": 83034,
+    "last-3_b_f0": 83034,
+    "last-3_c_f0": 83034
+   },
+   "seconds": {
+    "job": 8.106,
+    "render": 5.115
+   },
+   "snapBefore": [
+    {
+     "comp": "last-3_a",
+     "t": 1792611067303,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-3_b",
+     "t": 1792611067303,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-3_c",
+     "t": 1792611067303,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ],
+   "snapAfter": [
+    {
+     "comp": "last-3_a",
+     "t": 1792611068370,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-3_b",
+     "t": 1792611068370,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    },
+    {
+     "comp": "last-3_c",
+     "t": 1792611068371,
+     "rect": {
+      "top": -588.799987792969,
+      "left": -256,
+      "width": 844.799987792969,
+      "height": 844.799987792969
+     },
+     "dur": 30,
+     "w": 1920,
+     "fr": 30
+    }
+   ]
+  }
+ ]
+}

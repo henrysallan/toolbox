@@ -1,0 +1,374 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "model:model",
+    "path": "footage/model_model.glb",
+    "kind": "model",
+    "alpha": "ignore",
+    "name": "axes.glb"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:scene",
+    "name": "T ortho · 3D Scene",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "cam",
+      "name": "Camera",
+      "kind": "camera",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         125579.00951088486,
+         -93344.25713316364,
+         -124939.00951088486
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "cam"
+      ],
+      "camera": {
+       "zoom": {
+        "v": 93750
+       }
+      }
+     },
+     {
+      "id": "spot",
+      "name": "Light",
+      "kind": "light",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         -1176,
+         -1536
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "spot"
+      ],
+      "light": {
+       "type": "spot",
+       "color": {
+        "v": [
+         1,
+         1,
+         1
+        ]
+       },
+       "intensity": {
+        "v": 1313.7341744262587
+       },
+       "castsShadows": false,
+       "falloff": "inverse-square-clamped",
+       "radius": {
+        "v": 512
+       },
+       "coneAngle": {
+        "v": 50
+       },
+       "coneFeather": {
+        "v": 40
+       }
+      }
+     },
+     {
+      "id": "model",
+      "name": "Import 3D",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100,
+         100
+        ]
+       },
+       "xRotation": {
+        "v": 0
+       },
+       "yRotation": {
+        "v": 0
+       },
+       "rotation": {
+        "v": 0
+       },
+       "orientation": {
+        "v": [
+         0,
+         0,
+         0
+        ]
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "model"
+      ],
+      "source": "model:model",
+      "threeD": true
+     },
+     {
+      "id": "scene",
+      "name": "Background",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene"
+      ],
+      "solid": {
+       "color": [
+        0.12549019607843137,
+        0.1568627450980392,
+        0.18823529411764706
+       ],
+       "width": 1280,
+       "height": 720
+      }
+     }
+    ],
+    "renderer": "advanced-3d"
+   },
+   {
+    "id": "comp:main",
+    "name": "T ortho",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:scene",
+      "name": "Ortho scene",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene",
+       "cam",
+       "model",
+       "spot"
+      ],
+      "source": "comp:scene"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "scene",
+     "type": "scene-render",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "→ 3-D precomp \"T ortho · 3D Scene\" (Advanced 3D): 4 layers"
+    },
+    {
+     "id": "LT2",
+     "type": "layer",
+     "name": "Ortho scene",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "model",
+     "type": "import-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "The same model file as an AE 3D model layer (Advanced 3D); AE renders the file's own PBR materials. · materials: AE renders the file's own PBR materials; toolbox's Import 3D shows three's default material (model-cache drops a plain import's material)"
+    },
+    {
+     "id": "spot",
+     "type": "light-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "AE light. Advanced 3D lights in the encoded working space: intensity is the least-squares match over N·L (AE lights linearly in N·L, toolbox through the sRGB encode). · Inverse Square Clamped falloff, Radius 512 px (1 unit); intensity matched 4.24 units away (the camera's target at frame 0)"
+    },
+    {
+     "id": "cam",
+     "type": "camera-3d",
+     "class": "layer",
+     "fidelity": "approx",
+     "note": "Orthographic camera → an AE camera 2·10⁵ px from its target, zoom = D·H/(512·ortho_height) (AE has no orthographic camera). · orthographic → an AE camera 2·10⁵ px from its target with zoom D·H/(512·ortho_height); AE has no orthographic camera"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [
+  {
+   "id": "model:model",
+   "path": "footage/model_model.glb",
+   "source": {
+    "kind": "model",
+    "ref": "model"
+   }
+  }
+ ],
+ "problems": [],
+ "warnings": []
+}

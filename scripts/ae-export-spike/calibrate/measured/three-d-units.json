@@ -1,0 +1,340 @@
+{
+ "job": {
+  "ae": "26.5x89",
+  "errors": [],
+  "colorManagement": {
+   "before": 1,
+   "members": {},
+   "hasEnum": false,
+   "after": 0
+  },
+  "cases": [
+   {
+    "name": "axes_s1",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.333,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "axes_s10",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.005,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "sphere_s1",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.106,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "sphere.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "sphere_s10",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.007,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "sphere.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "sphere_s100_far",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.005,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "sphere.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "obj_s1",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.107,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.obj",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   }
+  ],
+  "hasThreeDModelLayer": true,
+  "lightTypes": {
+   "PARALLEL": true,
+   "SPOT": true,
+   "POINT": true,
+   "AMBIENT": true,
+   "ENVIRONMENT": true
+  },
+  "om": {
+   "Audio Bit Depth": "32 Bit",
+   "Audio Channels": "Stereo",
+   "Audio Sample Rate": "",
+   "Channels": "RGB + Alpha",
+   "Color": "Straight (Unmatted)",
+   "Crop": "false",
+   "Crop Bottom": "0",
+   "Crop Left": "0",
+   "Crop Right": "0",
+   "Crop Top": "0",
+   "Depth": "Trillions of Colors+",
+   "Format": "PNG Sequence",
+   "Include Project Link": "false",
+   "Include Source XMP Metadata": "false",
+   "Lock Aspect Ratio": "true",
+   "Output Audio": "Off",
+   "Output File Info": {
+    "Full Flat Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/units1/renders/axes_s1_f0_[#####].png",
+    "Base Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/units1/renders",
+    "Subfolder Path": "",
+    "File Name": "axes_s1_f0_[#####].png",
+    "File Template": "axes_s1_f0_[#####].[fileExtension]"
+   },
+   "Post-Render Action": "None",
+   "Resize": "false",
+   "Resize Quality": "High",
+   "Resize to": {
+    "x": 400,
+    "y": 400
+   },
+   "Starting #": "0",
+   "Use Comp Frame Number": "true",
+   "Use Region of Interest": "false",
+   "Video Output": "true"
+  }
+ },
+ "frames": {
+  "axes_s1_f0": {
+   "pixels": 33,
+   "box": [
+    197,
+    194,
+    205,
+    202
+   ],
+   "mean": [
+    0.6941,
+    0.6941,
+    0.6941
+   ]
+  },
+  "axes_s10_f0": {
+   "pixels": 3216,
+   "box": [
+    174,
+    141,
+    258,
+    225
+   ],
+   "mean": [
+    0.6908,
+    0.6908,
+    0.6908
+   ]
+  },
+  "sphere_s1_f0": {
+   "pixels": 81,
+   "box": [
+    195,
+    195,
+    204,
+    204
+   ],
+   "mean": [
+    0.4768,
+    0.4768,
+    0.4768
+   ]
+  },
+  "sphere_s10_f0": {
+   "pixels": 8229,
+   "box": [
+    149,
+    149,
+    250,
+    250
+   ],
+   "mean": [
+    0.4834,
+    0.4834,
+    0.4834
+   ]
+  },
+  "sphere_s100_far_f0": {
+   "pixels": 2045,
+   "box": [
+    174,
+    174,
+    224,
+    225
+   ],
+   "mean": [
+    0.4774,
+    0.4774,
+    0.4774
+   ]
+  },
+  "obj_s1_f0": {
+   "pixels": 33,
+   "box": [
+    197,
+    194,
+    205,
+    202
+   ],
+   "mean": [
+    0.6392,
+    0.6392,
+    0.6392
+   ]
+  }
+ },
+ "seconds": {
+  "job": 8.129,
+  "render": 11.143
+ }
+}

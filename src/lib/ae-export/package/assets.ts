@@ -1,11 +1,14 @@
 // Bytes for the footage the scene copies into footage/ (AeAssetCopy). The
 // scene walk records `source.ref` as the toolbox node id whose `file` param
-// holds the media; EffectsApp looks the node up and hands its `file` here.
+// holds the media; EffectsApp looks the node up and hands its `file` here
+// (an Import 3D node's `model` param for a model).
 //
 // image  a decoded ImageBitmap: its registered original bytes when they are
 //        a PNG (footage/<id>.png), else a PNG re-encode of the bitmap.
 // video  a VideoFileParamValue: the original file behind its ObjectURL (the
 //        scene keeps the container's extension).
+// model  a ModelFileParamValue: the GLB / glTF / OBJ behind its ObjectURL,
+//        byte for byte (AE imports the same file the node loaded).
 
 import { bitmapToPngDataUrl } from "@/lib/data-url";
 import { getImageOriginal } from "@/lib/image-bytes";
@@ -21,7 +24,7 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
 export async function aeAssetBytes(copy: AeAssetCopy, file: unknown): Promise<Uint8Array | null> {
   if (isUrl(copy.source.ref)) return fetchBytes(copy.source.ref);
   if (!file || typeof file !== "object") return null;
-  if (copy.source.kind === "video") {
+  if (copy.source.kind === "video" || copy.source.kind === "model") {
     const url = (file as { url?: unknown }).url;
     return typeof url === "string" && isUrl(url) ? fetchBytes(url) : null;
   }

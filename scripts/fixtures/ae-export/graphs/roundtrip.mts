@@ -58,7 +58,12 @@ for (const f of SCENE_FIXTURES) {
     const r = spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=0xff00ff@0.5:s=${k.size[0]}x${k.size[1]}:r=${f.comp.fps}:d=${dur},format=rgba`, "-c:v", "qtrle", "-pix_fmt", "argb", join(files, k.path)]);
     if (r.status !== 0) throw new Error(`ffmpeg placeholder for ${k.id}: ${r.stderr}`);
   }
-  for (const a of b.assets) throw new Error(`${f.name}: asset ${a.id} needs a source file — fixtures carry none`);
+  for (const a of b.assets) {
+    // 3-D models (lane 5) carry their file's bytes; other assets have none.
+    const model = a.source.kind === "model" ? f.models?.[a.source.ref] : undefined;
+    if (!model) throw new Error(`${f.name}: asset ${a.id} needs a source file — fixtures carry none`);
+    writeFileSync(join(files, a.path), model());
+  }
   const main = b.scene.comps.find((c) => c.id === b.scene.main)!;
   // A pixel without `want` expects a soft edge: run.mts's predicate form.
   const pixels = f.probe?.pixels.map((p) => (p.want ? p : { ...p, soft: true }));
