@@ -239,7 +239,17 @@ if (rangeFile) {
   results.repeaterRange = Object.fromEntries(Object.entries(PROBE_PIXELS).map(([k, [x, y]]) => [k, data[(y * info.width + x) * 4 + 3]]));
   console.log("Repeater opacity outside 0–100 % (alpha 0–255 at each copy centre):", JSON.stringify(results.repeaterRange));
 }
+// The runner fails the range probe on purpose: AE refuses its out-of-range
+// opacities (the measurement). Every other package must build clean.
+const runnerOut = join(OUT, "packages", "results.json");
+const perPackage = existsSync(runnerOut) ? (JSON.parse(readFileSync(runnerOut, "utf8")) as Record<string, { failures?: number }>) : {};
+const runnerFailed = Object.entries(perPackage).filter(([k, v]) => k !== "r-zz-range" && typeof v === "object" && (v?.failures ?? 0) > 0).map(([k]) => k);
+c.check("(runner) every fixture package builds and renders clean", run.status === 0 || (existsSync(runnerOut) && runnerFailed.length === 0), runnerFailed);
+if (existsSync(join(OUT, "packages", "r-zz-range.aepkg", "probe.json"))) {
+  const problems: string[] = JSON.parse(readFileSync(join(OUT, "packages", "r-zz-range.aepkg", "probe.json"), "utf8")).build?.problems ?? [];
+  c.check("(range probe) AE refuses a Repeater opacity outside 0–100 (validate.ts holds the scene to it)", problems.length > 0 && problems.every((x) => /out of range 0 to 100/.test(x)), problems);
+}
 writeFileSync(join(OUT, "instances-results.json"), JSON.stringify(results, null, 2));
 console.log(`\ninstances round trip: runner exit ${run.status}, ${seconds.toFixed(1)} s; results ${join(OUT, "instances-results.json")}`);
 console.log(c.failures ? `instances round trip: ${c.failures} FAILED` : "instances round trip: all checks passed");
-process.exit(c.failures || run.status ? 1 : 0);
+process.exit(c.failures ? 1 : 0);
