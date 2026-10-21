@@ -42,6 +42,7 @@ def, never the labels.
 | space | meaning |
 |---|---|
 | `canvas01` | Authored 2D: [0,1]² Y-down in **width units**. At raster time y is scaled about 0.5 by W/H, so every distance/radius is width-relative and on a landscape canvas only y ∈ [0.5−H/2W, 0.5+H/2W] is on screen. Spline and points positions live here. |
+| `sdf01` | The SDF sample space (`p = v_uv`, y scaled about 0.5): canvas01's width units with y **flipped, Y-up**, px = (x·W, H/2 − (y − 0.5)·W). An sdf-circle at y = 0.3 renders 0.2·W *below* centre; a positive SDF rotation turns counter-clockwise. SDF node positions live here; their lengths stay canvas01. |
 | `uv01` | Per-axis [0,1] fraction of a raster's own width/height, **not** aspect-corrected: 0.05 in x is 5% of the width, in y 5% of the height. Shader offsets added to `v_uv` without an aspect term. |
 | `raster` | The per-pixel image domain (image / mask / uv wires). |
 | `pixels` | Absolute pixels at render resolution; does not scale with output size (`u_texel`, `texelFetch`, integer taps). |
@@ -51,7 +52,7 @@ def, never the labels.
 
 Defaults by socket type are already in the catalog header — **do not repeat
 them**: spline/points → canvas01 · image/mask/uv → raster ·
-sdf/position/scalar_field → canvas01 · points3d/geometry/render → world3d ·
+sdf/position/scalar_field → sdf01 · points3d/geometry/render → world3d ·
 audio/notes → time · scalar/vecN/color/string → unitless.
 
 List in `space`:
@@ -73,6 +74,8 @@ Determining a unit: follow the param to where it reaches the math.
 `* u_texel`, `texelFetch`, integer tap loops → `pixels`. `v_uv + offset` with
 no aspect term → `uv01`. Multiplied by W only, passed through
 `aspectCorrectY`, or written into spline/points positions → `canvas01`.
+A point compared against the SDF compiler's `p` → `sdf01` (Y-up; a length
+there is still `canvas01`).
 THREE.js geometry/position arguments → `world3d`. If the source leaves it
 genuinely ambiguous, put it under `uncertain` instead of guessing.
 
@@ -194,15 +197,15 @@ rely on it.
   "type": "sdf-circle",
   "facts": {
     "space": {
-      "in:position": "canvas01",
-      "in:center": "canvas01",
+      "in:center": "sdf01",
       "in:radius": "canvas01",
-      "param:x": "canvas01",
-      "param:y": "canvas01",
+      "param:x": "sdf01",
+      "param:y": "sdf01",
       "param:radius": "canvas01"
     },
     "gotchas": [
       "Builds an SDF tree only; nothing is drawn until SDF Rasterize (or To Mask / To Distance Image) evaluates it per pixel.",
+      "y is Y-up (sdf01), the reverse of spline/points canvas01: y = 0.3 renders 0.2·W below the canvas centre (px y = H/2 − (y − 0.5)·W).",
       "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the disc is evaluated in.",
       "radius is width-relative only while SDF Rasterize aspect_correct is on; off, it becomes a per-axis UV fraction and the disc squashes on non-square canvases."
     ]

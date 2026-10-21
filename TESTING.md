@@ -123,6 +123,15 @@ that pair). Offline node tests should push each input through
   VTracer WASM glue. Potrace (`esm-potrace-wasm`) is browser-only — Node
   ESM hits `__dirname`/`require("node:fs")` — so this gate does not
   live-import it.
+- `check-marching-squares` — `engine/marching-squares.ts` (six callers):
+  every anchor on the iso-contour, no spliced jumps, pinned chaining counts,
+  the uvOrigin/uvSize window. And sdf-to-spline's readback mapping
+  (`marchGrid`): texels hold the distance at pixel CENTRES, so a traced
+  circle's anchors must sit on the true zero set in both axes (≤ 0.05 px
+  at 1280 wide). Before 2026-10-21 it passed a [0, 1] window and traced
+  0.7 px right at x = 1000 (resolution 512). The GPU half (the raw-distance
+  render itself) needs the engine: `scripts/ae-export-spike/calibrate/`
+  `tbx-render.cjs` renders an sdf-to-spline → Fill in Electron.
 - `check-profiler` — the perf collector: ring-buffer wrap, recompute-reason
   classification, GPU results resolving into already-committed frames.
 - `check-output-gating` — `NodeDefinition.gatesOutputs`. See §5.

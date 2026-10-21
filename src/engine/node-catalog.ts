@@ -197,12 +197,14 @@ export const SPACE_TABLE_DOC =
   "0.5 by W/H, so every distance/radius is width-relative and on a landscape canvas only " +
   "y∈[0.5−H/2W, 0.5+H/2W] is on screen) · image/mask/uv=raster (per pixel; offsets inside are " +
   "uv01 = per-axis fractions, not aspect-corrected) · pixels=absolute at render resolution · " +
-  "sdf/position/scalar_field=canvas01 (evaluated per pixel by SDF Rasterize) · " +
+  "sdf/position/scalar_field=sdf01 (canvas01's width units with y flipped, Y-UP: " +
+  "px = (x·W, H/2 − (y−0.5)·W); evaluated per pixel by SDF Rasterize) · " +
   "points3d/geometry/render=world3d (Y-up units) · audio/notes=time · " +
   "scalar/vecN/color/string=unitless. Per-node `space:` lines list only exceptions, position/size " +
   "params, and polymorphic follow-rules (out=in:x → out takes x's space; a|b → accepts either).";
 export const Y_ORIENT_DOC =
-  "canvas01 is Y-down (y=0 at the top); uv01 (Gradient, v_uv in GLSL) is Y-up (v=0 at the bottom).";
+  "canvas01 is Y-down (y=0 at the top); uv01 (Gradient, v_uv in GLSL) and sdf01 (SDF node " +
+  "positions) are Y-up (v=0 at the bottom).";
 export const UNSETTABLE_PARAM_DOC =
   "Params tagged ~(not remotely settable) exist on the node but set_param / recipe params cannot write them.";
 export const FLAGS_DOC =

@@ -44,13 +44,9 @@ export const sdfRotateNode: NodeDefinition = {
   description:
     "SDF position-pipeline op — rotate the per-pixel sample position around a pivot. Wire a scalar field into Angle for per-pixel rotation (per-tile when paired with SDF Repeat.cell_id → SDF Noise).",
   facts: {
-    space: {
-      "in:position": "canvas01",
-      "in:pivot": "canvas01",
-      "param:cx": "canvas01",
-      "param:cy": "canvas01",
-    },
+    space: { "in:pivot": "sdf01", "param:cx": "sdf01", "param:cy": "sdf01" },
     gotchas: [
+      "Positive angles turn shapes counter-clockwise on screen (sdf01 is Y-up), the reverse of Transform's clockwise rotate; the pivot's cy is Y-up too.",
       "The wired angle scalar is radians while the rotation param is degrees; swapping between wiring and the param without conversion changes the amount.",
       "Precedence when multiple angle sources are present: angle_field (scalar_field) beats angle (scalar) beats the rotation param.",
       "Wire a scalar_field into angle_field for per-pixel rotation; pair SDF Repeat's cell_id aux into SDF Noise's position for independent per-tile spin.",

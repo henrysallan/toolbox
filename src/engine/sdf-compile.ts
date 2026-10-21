@@ -738,9 +738,9 @@ function emitSdfUncached(node: SdfNode, state: EmitState): string {
       const pos = emitPosition(node.position, state);
       const samp = alloc(state, "sampler2D", node.image);
       const range = alloc(state, "float", node.range);
-      // JFA / canvas textures are y-up; our position pipeline is
-      // y-down (canvas-UV). Flip Y at sample time so a glyph
-      // rasterized at the visual top of the canvas aligns with
+      // JFA / canvas textures are row-0-top (y-down); the position
+      // pipeline is Y-up (sdf01: p = v_uv). Flip Y at sample time so a
+      // glyph rasterized at the visual top of the canvas aligns with
       // its sdf source. R channel holds normalized [0, 1] distance
       // with 0.5 = boundary; un-normalize via `(R - 0.5) * 2 * range`
       // so downstream SDF ops see canvas-UV signed distance.

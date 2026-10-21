@@ -104,7 +104,15 @@ function ensureTarget(
 // Pull the R channel into a contiguous Float32 grid (Y-flipped:
 // readPixels returns rows bottom-up, spline coords are Y-DOWN) and
 // march it.
-function marchGrid(
+//
+// Each texel holds the distance at its pixel CENTRE, (i + ½)/w, while
+// marchingSquares places grid sample i at uvOrigin + i/(w − 1)·uvSize.
+// Mapping the grid onto [½/w, 1 − ½/w] lines the two up; the old
+// [0, 1] window scaled every contour by w/(w − 1) about the centre (up
+// to half a texel at the edges: 0.7 px right at x = 1000 of 1280,
+// resolution 512).
+// Exported for scripts/check-marching-squares.mts.
+export function marchGrid(
   data: Float32Array,
   w: number,
   h: number,
@@ -119,8 +127,8 @@ function marchGrid(
   }
   return marchingSquares(grid, w, h, {
     iso,
-    uvOrigin: [0, 0],
-    uvSize: [1, 1],
+    uvOrigin: [0.5 / w, 0.5 / h],
+    uvSize: [(w - 1) / w, (h - 1) / h],
   });
 }
 
@@ -218,6 +226,7 @@ export const sdfToSplineNode: NodeDefinition = {
   facts: {
     space: { "param:iso": "canvas01" },
     gotchas: [
+      "Output is canvas01 (Y-down; the sdf01 y flip is applied), so it overlays SDF Rasterize; only the [0,1]² SDF square is traced, and a shape crossing its edge comes back open.",
       "aspect_correct has no visible effect here: the readback target is always resolution x resolution (square), so its aspect ratio is always 1 regardless of the toggle.",
       "iso direction: negative values trace concentric loops inside the shape, positive values trace a puffed-out boundary outside it; 0 (default) is the exact SDF zero-crossing.",
       "async_readback lags the output spline by one frame during playback (paused steady state is exact); exports and the first eval after a cold start always take the exact sync path.",

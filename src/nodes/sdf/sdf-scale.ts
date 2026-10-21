@@ -28,9 +28,10 @@ export const sdfScaleNode: NodeDefinition = {
   description:
     "SDF position-pipeline op — scale the per-pixel sample position around a pivot. The exposed scale matches the visible effect on downstream shapes.",
   facts: {
-    space: { "in:position": "canvas01", "param:cx": "canvas01", "param:cy": "canvas01" },
+    space: { "param:cx": "sdf01", "param:cy": "sdf01" },
     gotchas: [
       "sx/sy is the visible scale of downstream shapes (2 makes them appear twice as big); internally the sample position is divided by scale, so the exposed value is already the intuitive direction.",
+      "The pivot (cx, cy) is an sdf01 point, Y-up: cy = 0.3 scales about a point 0.2·W below the canvas centre.",
       "Pivot (cx/cy) is param-only on this node, unlike SDF Rotate which also accepts a wired pivot vec2.",
       "Emits a position value only; nothing visibly changes until a downstream shape or field consumes this position.",
     ],

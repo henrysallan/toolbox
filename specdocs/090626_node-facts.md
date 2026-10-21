@@ -33,9 +33,15 @@ facts?: {
   space per socket type, so per-node entries list only exceptions,
   position/size params, and follow-rules.
 - **CoordSpace** = `canvas01` (authored 2D, width units, y scaled about 0.5
-  by W/H) · `uv01` (per-axis raster fraction, not aspect-corrected) ·
-  `raster` · `pixels` · `world3d` · `time` · `unitless`. `uv01` exists because
+  by W/H) · `sdf01` (the SDF sample space: canvas01 with y flipped, Y-up) ·
+  `uv01` (per-axis raster fraction, not aspect-corrected) · `raster` ·
+  `pixels` · `world3d` · `time` · `unitless`. `uv01` exists because
   Displace's amount is a UV offset, which is neither canvas01 nor pixels.
+  `sdf01` was added 2026-10-21: the SDF nodes' positions had been tagged
+  canvas01, but the compiler samples `p = v_uv` (Y-up), so an sdf-circle at
+  y = 0.3 renders 0.2·W *below* the centre (measured in the engine, and
+  against After Effects in specdocs/ae-m4/sdf.md). Lengths there (radius,
+  thickness, smoothness, iso) stay canvas01: width units either way.
 - **reads/writes** name point/spline attributes; the gate refuses a name
   that is not a string literal in the node's source (cheap hallucination
   check), except the engine's well-known names.
