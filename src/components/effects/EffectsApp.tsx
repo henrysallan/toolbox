@@ -12110,7 +12110,15 @@ function EffectsShell({
           const output =
             evalCacheRef.current.get(target.node)?.output ??
             lastEvalOutputsRef.current?.get(target.node);
-          const v = pickInspectSocket(output, socket).value;
+          const picked = pickInspectSocket(output, socket).value;
+          // The composition Output declares no primary output: what it shows
+          // is this pass's terminal image (it is the forced terminal).
+          const v =
+            (!picked || (picked.kind !== "image" && picked.kind !== "mask")) &&
+            handle === "out:primary" &&
+            nodesRef.current.find((n) => n.id === target.node)?.data.defType === "output"
+              ? lastTerminalImageRef.current
+              : picked;
           const backend = backendRef.current;
           const px =
             backend && v && (v.kind === "image" || v.kind === "mask")

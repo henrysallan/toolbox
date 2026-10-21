@@ -45,7 +45,8 @@ export type AeFrameRenderer = (
 
 export interface AeBakeEncoder {
   writeFrame(rgba: Uint8Array): Promise<void>;
-  finish(): Promise<{ bytes?: number }>;
+  // `codec`: the one written, when the sink had to switch (a zip's qtrle).
+  finish(): Promise<{ bytes?: number; codec?: AeBakeRequest["codec"] }>;
   abort(): Promise<void>;
 }
 
@@ -155,6 +156,7 @@ export function createAeExportRunner(deps: AeRunnerDeps) {
           const fin = await encoder.finish();
           enc = null;
           if (fin.bytes != null) outcome.bytes = fin.bytes;
+          if (fin.codec) outcome.codec = fin.codec;
         } catch (e) {
           outcome.error = errText(e);
           problems.push(`baked footage ${bake.path}: ${outcome.error}`);

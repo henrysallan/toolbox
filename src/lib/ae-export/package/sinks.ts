@@ -104,7 +104,7 @@ export function zipSink(root: string, opts: ZipSinkOptions): AePackageSink & { e
           const bytes = enc.bytes();
           if (!bytes) throw new Error(`no ${bake.path} came out of the encoder`);
           files.set(bake.path, bytes);
-          return { bytes: r.bytes ?? bytes.byteLength };
+          return { bytes: r.bytes ?? bytes.byteLength, codec };
         },
         abort: () => enc.abort(),
       };

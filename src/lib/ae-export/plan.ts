@@ -416,6 +416,18 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     refine(s, input.valuesOf(id), tracksOf(id), policy);
     st.set(id, s);
   }
+  // A gradient fill spans each subpath's own frame, so on animated geometry
+  // its points move every frame, which a preset can't key: the walk bakes it
+  // (scene/style.ts subpathsOf), and so does the plan.
+  for (const id of order) {
+    const s = st.get(id)!;
+    if (s.node.type !== "rasterize-spline" || s.entry.class === "bake" || input.valuesOf(id).fill_source !== "gradient") continue;
+    const path = (inputsOf.get(id) ?? []).find((w) => w.toHandle === "in:path");
+    if (!path || !animated.has(path.fromId)) continue;
+    s.entry = { class: "bake", ae: "layer:footage", fidelity: "bake", requires: ["footage"], note: "Gradient fill on animated geometry — its points follow the shape every frame, which a .ffx preset can't key; bakes." };
+    s.requires = new Set(["footage"]);
+    s.notes = s.notes.filter((x) => !/\.ffx/.test(x));
+  }
   // 3-D scenes (M4 lane 5, three-plan.ts): a Scene Render whose objects are
   // Import 3D models (under Transform 3D) and lights, seen by a Camera node,
   // rebuilds natively as a 3-D precomp; its members leave the bake rung.

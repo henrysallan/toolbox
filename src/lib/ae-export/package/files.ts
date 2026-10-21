@@ -161,7 +161,7 @@ export function aePackageReport(build: AeSceneBuild, bakes: AeBakeOutcome[] = []
     const done = bakes.find((x) => x.id === b.id);
     const size = done?.bytes != null ? `, ${(done.bytes / 1048576).toFixed(1)} MB` : "";
     const why = r.baked.find((l) => l.id === b.id || `${l.id}:out` === b.output)?.note;
-    return `${b.path} — ${b.output}, frames ${b.frames[0]}–${b.frames[1]}, ${b.size[0]}×${b.size[1]}, ${b.codec}${size}${done?.error ? ` — FAILED: ${done.error}` : ""}${why ? ` — ${why}` : ""}`;
+    return `${b.path} — ${b.output}, frames ${b.frames[0]}–${b.frames[1]}, ${b.size[0]}×${b.size[1]}, ${done?.codec ?? b.codec}${size}${done?.error ? ` — FAILED: ${done.error}` : ""}${why ? ` — ${why}` : ""}`;
   });
   // Report lines for baked nodes that no AeBakeRequest names (a bake the
   // scene folded into another) still show.

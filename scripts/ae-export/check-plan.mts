@@ -299,6 +299,21 @@ export default async function run(): Promise<number> {
       output: "merge:out",
     });
     c.check("(G) Merge with Screen stays native (a composite precomp)", screen.route === "direct" && node(screen, "merge")?.class === "layer" && screen.layers[0].segments.some((s) => s.kind === "composite" && s.aeLayer === "precomp"), JSON.stringify(screen.layers[0].segments));
+    // A gradient fill on animated geometry: the walk bakes it (its points
+    // follow the shape), so the plan must too; on static geometry it is native.
+    const gradFill = (tracks?: AePlanTrack[]) =>
+      one({
+        nodes: [
+          { id: "disc", type: "circle", params: { stroke_enabled: false }, ...(tracks ? { tracks } : {}) },
+          { id: "paint", type: "rasterize-spline", params: { enable_stroke: false, fill_source: "gradient", gradient_kind: "linear" } },
+        ],
+        edges: [{ from: "disc:out", to: "paint:in:path" }],
+        output: "paint:out",
+      });
+    const still = gradFill();
+    const moving = gradFill([{ param: "radiusX", frames: [0, 60], easings: ["linear", "linear"], type: "scalar" }]);
+    c.check("(G) a gradient fill on static geometry: native, its stops via .ffx", node(still, "paint")?.class === "style" && still.route === "direct", node(still, "paint"));
+    c.check("(G) a gradient fill on animated geometry bakes (as the scene walk does)", node(moving, "paint")?.class === "bake" && /animated geometry/.test(node(moving, "paint")?.notes.join(" ") ?? "") && moving.bakes.length === 1, node(moving, "paint"));
     const polar = one({ nodes: [{ id: "grad", type: "gradient", params: { mode: "polar" } }], edges: [], output: "grad:out" });
     c.check("(G) a polar gradient (no Gradient Ramp form) is a shader region", polar.route === "direct+shader" && polar.shaderRegions[0]?.nodes.join() === "grad");
   }

@@ -168,6 +168,8 @@ export default async function run(): Promise<number> {
   c.check("report: warnings from the scene report and the build", has(report, "anchor count changes at frame 12") && has(report, "text layer Title uses a fallback font"));
   const failed = aePackageReport(rich, [{ id: "dust", path: "footage/dust.mov", frames: [0, 59], codec: "prores4444", error: "ffmpeg exited 1" }]);
   c.check("report: a failed bake says FAILED with the reason", has(failed, "FAILED: ffmpeg exited 1"));
+  const switched = aePackageReport(rich, [{ id: "dust", path: "footage/dust.mov", frames: [0, 59], codec: "qtrle", bytes: 1048576 }]);
+  c.check("report: a bake line names the codec written (a zip's qtrle), not the one asked for", has(switched, "qtrle, 1.0 MB") && !has(switched, "prores4444"), switched);
   const readme = aeReadme(rich, { name: "Hero", toolboxVersion: "0.6.1", exportedAt: AT, files: paths, root: "Hero 2.aepkg" });
   c.check("README: how to run (Run Script File → build.jsx, the .aep it saves, keep the folder together)", has(readme, "File → Scripts → Run Script File…, and pick build.jsx") && has(readme, "saves Hero 2.aep in this folder") && has(readme, "Keep the folder together"), readme.slice(0, 600));
   c.check("README: the write-files preference", has(readme, "Allow Scripts to Write Files and Access Network"));
@@ -220,12 +222,13 @@ export default async function run(): Promise<number> {
   for (const f of a.files) await sink.writeFile(f.path, f.bytes ?? f.text ?? "");
   const enc = await sink.encodeBake(rich.bakes[0], 30);
   for (let i = 0; i < 3; i++) await enc.writeFrame(new Uint8Array(320 * 180 * 4));
-  await enc.finish();
+  const fin = await enc.finish();
   await sink.writeFile("README.txt", readme);
   await sink.finish();
   const got = saved as { blob: Blob; name: string } | null;
   c.check('the zip downloads as "<name>.aepkg.zip"', got?.name === "Hero.aepkg.zip" && sink.location === "Hero.aepkg.zip", got?.name);
   c.check("a ProRes 4444 bake in a zip becomes qtrle, with the reason", sink.warnings.some((w) => /QuickTime Animation/.test(w) && /opaque/.test(w)), sink.warnings);
+  c.check("…and its finish() says qtrle, for the report", fin.codec === "qtrle", fin);
   if (got) {
     const zip = await JSZip.loadAsync(await got.blob.arrayBuffer());
     const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir).sort();

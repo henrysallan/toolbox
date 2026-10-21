@@ -168,7 +168,7 @@ export function routeGradients(ctx: WalkCtx, scene: AeScene, route: "ffx" | "svg
     }
   }
   if (ffx) {
-    const w = `${ffx} gradient${ffx === 1 ? "" : "s"} carry ${ffx === 1 ? "its" : "their"} stops in .ffx presets: ${FFX_CAVEAT} (run build.jsx in the After Effects app — File → Scripts, or Build in After Effects).`;
+    const w = `${ffx} gradient${ffx === 1 ? " carries its" : "s carry their"} stops in .ffx presets: ${FFX_CAVEAT} (run build.jsx in the After Effects app with File → Scripts → Run Script File; the desktop app's Build in After Effects is headless and skips them).`;
     ctx.report.warn(w);
     ctx.out.warnings.push(w);
     for (const p of synthesizeScenePresets(scene)) {
