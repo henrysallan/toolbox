@@ -174,6 +174,11 @@ export function textGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   // ---- letter spacing ----
   pair("ls_px", { text: "Spaced out", font_size: 48, letter_spacing: 6 }, geist);
   pair("ls_pct", { text: "Tracking in percent wraps too", font_size: 8, units: "%", letter_spacing: 0.5, wrap: true, boxWidth: 0.75 }, geist);
+  // Left / right: the Text node aligns the run without the gap after its
+  // last glyph, SkParagraph's line keeps half of it at each end.
+  pair("ls_left", { text: "Spaced out", font_size: 48, letter_spacing: 12, alignment: "left" }, geist);
+  pair("ls_right", { text: "Spaced out", font_size: 48, letter_spacing: 12, alignment: "right" }, geist);
+  pair("ls_wrap_r", { text: "Tracking wraps on the right", font_size: 40, letter_spacing: 7.5, wrap: true, boxWidth: 0.6, alignment: "right" }, geist);
   // ---- case ----
   pair("c_upper", { text: "upper case", textCase: "upper" }, geist);
   pair("c_title", { text: "title case words", textCase: "title", font_size: 52 }, geist);

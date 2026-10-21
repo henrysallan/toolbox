@@ -928,6 +928,17 @@ that pair). Offline node tests should push each input through
   without text). A fresh worktree's harness also needs
   `skia-harness/public/canvaskit.wasm` (gitignored; copy
   `canvaskit-wasm/bin/full/canvaskit.wasm`) or the web build 404s it.
+  Letter spacing (2026-10-21): the Text node aligns, measures and wraps a
+  line by its VISIBLE width, no spacing after the last glyph, on both draw
+  paths (`check-text-animators` §5 pins it on a fake canvas2d that spaces
+  like Chromium; before, plain text kept the gap and moved by spacing / 2
+  when an animator turned on). SkParagraph's line is one spacing wider and
+  not symmetric: a left-aligned line starts half a spacing in
+  (`getLineMetrics().left` = spacing / 2 on every line), centred / right
+  ones don't. Text (Skia)'s x and wrapped width absorb both; check-skia-text
+  reads CanvasKit's own metrics for it, and the `ls_px` / `ls_pct` /
+  `ls_left` / `ls_right` / `ls_wrap_r` pairs land within 0.53 px of the
+  Text node's ink centroid (the unspaced `f_geist` baseline is 0.32 px).
 - `check-skia-filters` — the Skia filter family, the `filter` lowering class
   (101326_skia-target.md §3.2a): Blur, Bloom, Grain, Drop Shadow,
   Morphology, Color Matrix, SkSL Filter, Lens Flare (Skia), each a Group

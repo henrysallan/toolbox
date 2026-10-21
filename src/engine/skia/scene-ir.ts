@@ -264,9 +264,11 @@ export type SkiaNode =
       baselineOffset?: Bind<number>;
       // px added to every glyph's advance, the last included — SkParagraph's
       // letter spacing, which puts half before the glyph and half after
-      // (CSS / Chromium put it all after: shift x by −letterSpacing / 2 to
-      // match them). Paragraphs only: a one-line run (no width) can't space
-      // letters, so the exporter refuses it there.
+      // (CSS / Chromium put it all after; the Text node aligns a line
+      // without the gap after its last glyph — nodes/skia/text.ts moves x
+      // and widens a wrapped paragraph to match). Paragraphs only: a
+      // one-line run (no width) can't space letters, so the exporter
+      // refuses it there.
       letterSpacing?: Bind<number>;
     }
   | {

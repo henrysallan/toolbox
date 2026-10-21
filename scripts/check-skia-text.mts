@@ -418,10 +418,33 @@ function nameTable(buf: Buffer): Record<number, string> {
     wrapped.anchor === "bottom" && Math.abs(wrapped.y.v - (H / 2 + (0.5 * H) / 2 + 0)) > -1 && Math.abs(wrapped.lineHeight!.v - 39) < 1e-12 && wrapped.width!.v === 256,
     JSON.stringify({ a: wrapped.anchor, y: wrapped.y.v, lh: wrapped.lineHeight?.v, w: wrapped.width?.v })
   );
+  // The Text node aligns a line without the spacing after its last glyph.
+  // Where the IR's run lands, read from SkParagraph itself the way
+  // scene-render.ts draws it (each line a left-aligned run at x + the
+  // line's left): x + line left + the run's first glyph must be the box
+  // anchor minus k × the visible width (SkParagraph's line less one
+  // spacing), at every alignment, wrapped or not. SkParagraph is not
+  // symmetric here — a left-aligned line starts half a spacing in.
+  const sp = (2 * W) / 100;
+  let spacedWorst = 0;
+  let spacedAt = "";
+  for (const [alignment, k, ta] of [["left", 0, CK.TextAlign.Left], ["center", 0.5, CK.TextAlign.Center], ["right", 1, CK.TextAlign.Right]] as const)
+    for (const wrap of [false, true]) {
+      const n = compute({ text: "Spaced out", letter_spacing: 2, units: "%", font_family: "Geist", font_size: 7, alignment, wrap, boxWidth: 0.9 }).node as Extract<SkiaNode, { k: "text" }>;
+      const lm = layout(n.font.asset, "Spaced out", n.font.size.v, n.width!.v, ta, sp).getLineMetrics();
+      const glyph0 = layout(n.font.asset, "Spaced out", n.font.size.v, n.width!.v, CK.TextAlign.Left, sp).getShapedLines()[0].runs[0].positions[0];
+      const got = n.x.v + lm[0].left + glyph0;
+      const want = W / 2 - (0.9 * W) / 2 + (0.9 * W - (lm[0].width - sp)) * k;
+      const d = lm.length === 1 ? Math.abs(got - want) : Infinity;
+      if (d > spacedWorst) [spacedWorst, spacedAt] = [d, `${alignment}${wrap ? " wrapped" : ""}: ${got} vs ${want} (${lm.length} lines)`];
+    }
   const spaced = compute({ text: "x", letter_spacing: 2, units: "%", font_family: "Geist" }).node as Extract<SkiaNode, { k: "text" }>;
+  const spacedWrap = compute({ text: "x", letter_spacing: 2, units: "%", font_family: "Geist", wrap: true, boxWidth: 0.6 }).node as Extract<SkiaNode, { k: "text" }>;
   check(
-    "letter_spacing in % is a scaled track of the param, and x steps back half of it",
-    spaced.letterSpacing?.v === (2 * W) / 100 && spaced.letterSpacing?.ref?.scale === W / 100 && Math.abs(spaced.x.v - (W / 2 - 32768 / 2 - (2 * W) / 100 / 2)) < 1e-9
+    "letter_spacing in % is a scaled track of the param; the visible run lands where the Text node aligns it (left / center / right, wrapped or not, ≤ 1e-3 px: SkParagraph's metrics are float32), a wrapped paragraph one spacing wider so it breaks where the Text node does",
+    spaced.letterSpacing?.v === sp && spaced.letterSpacing?.ref?.scale === W / 100 && spacedWorst <= 1e-3 &&
+      Math.abs(spacedWrap.width!.v - (0.6 * W + sp)) < 1e-9 && spacedWrap.width!.deps?.map((d) => d.param).join() === "boxWidth,letter_spacing,units",
+    JSON.stringify({ spacedWorst, spacedAt, w: spacedWrap.width })
   );
   const runs = compute({ text: "a\nb", shaping: "line", letter_spacing: 3, font_family: "Geist" });
   check("simple runs with letter spacing refuse (a <Text> run can't space letters)", !!runs.problems?.some((p) => /can't space letters/.test(p)));

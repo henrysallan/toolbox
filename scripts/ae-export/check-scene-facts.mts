@@ -155,7 +155,7 @@ export default async function run(): Promise<number> {
     c.check("(text) box text over the toolbox box", d?.box && near(d.box.size[0], 1280), d?.box);
     c.check("(text) the family is in report.requires.fonts", b.scene.report.requires.fonts.includes("Inter"));
     c.check("(text) PostScript names: known tables and the derived rule", postScriptName("Arial", 700, false).name === "Arial-BoldMT" && postScriptName("Inter", 400, true).name === "Inter-Italic" && postScriptName("Playfair Display", 900, false).name === "PlayfairDisplay-Black" && !postScriptName("Playfair Display", 900, false).sure);
-    c.near("(text) plain text: toolbox centres the line with its trailing letter spacing → the box moves left by spacing / 2 (3 px)", d?.box?.position[0], -3, 1e-9);
+    c.near("(text) letter-spaced plain text: toolbox and AE both centre a line without the spacing after its last glyph → the box sits on the toolbox box (x 0)", d?.box?.position[0], 0, 1e-9);
   }
 
   // --- Q: text animators, text on a path, keyed documents (M4 text lane) -----------------------

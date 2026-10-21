@@ -185,10 +185,22 @@ export const skiaTextNode: NodeDefinition = {
       // `width` (it aligns inside floor(width): shift by what the floor
       // took); the renderer stacks them lineHeight apart from the vAlign
       // edge of the box.
-      const width: Bind<number> = wrap ? { v: boxW, ref: { node: nodeId, param: "boxWidth", scale: W } } : bindStatic(NOWRAP_WIDTH);
-      // SkParagraph spaces letters half before, half after each glyph;
-      // Chromium all after (the line widths agree): move back by half.
-      const x = (wrap ? originX + (boxW - Math.floor(boxW)) * k : anchorX - NOWRAP_WIDTH * k) - spacing / 2;
+      // The Text node wraps and aligns a line by its visible width, with no
+      // letter spacing after the last glyph. SkParagraph's line is one
+      // spacing wider (every glyph's advance carries it), so a wrapped
+      // paragraph is that much wider to break where the Text node does.
+      // Its glyphs start half a spacing into the run the renderer draws,
+      // and a LEFT-aligned line sits half a spacing in again (measured:
+      // getLineMetrics().left is spacing / 2 on every left line, just the
+      // alignment offset on centred / right ones): x takes both back.
+      const wrapW = Math.max(1, boxW + spacing);
+      const width: Bind<number> = !wrap
+        ? bindStatic(NOWRAP_WIDTH)
+        : spacing
+          ? bindDerived(wrapW, ["boxWidth", "letter_spacing", "units"].map(ref))
+          : { v: boxW, ref: { node: nodeId, param: "boxWidth", scale: W } };
+      const lead = spacing / 2 + (align === "left" ? spacing / 2 : 0);
+      const x = (wrap ? originX + (wrapW - Math.floor(wrapW)) * k : anchorX - NOWRAP_WIDTH * k + spacing * k) - lead;
       children.push({
         k: "text",
         id: nodeId,
