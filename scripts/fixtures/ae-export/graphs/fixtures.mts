@@ -19,6 +19,8 @@ import type { AeSceneOptions } from "@/lib/ae-export/scene";
 import { SDF_SCENE_FIXTURES } from "./sdf-fixtures.mts";
 import { buildCorpus, P_EXPRESSION_CASES } from "./expressions-corpus.mts";
 import { axesModel, writeGlb } from "../../../ae-export-spike/calibrate/model3d.mts";
+import { evaluateKeyframesAt } from "@/engine/keyframes";
+import { fbmWithW, loopEvolutionOffset, noiseFnFor, noiseSamplePoint } from "@/engine/noise";
 
 export interface FixturePixel {
   frame: number;
@@ -840,6 +842,62 @@ SCENE_FIXTURES.push({
     g.out(C, "scene3:out");
   },
 });
+
+// --- V: a lone node runs as its own shader (no fused node; specdocs/ae-m4/single-node-shaders.md) ---
+// An animated Noise (the looping evolution) with a keyed contrast → one TBX
+// Shader effect whose controls are Noise's params, contrast keyed. Probes:
+// engine/noise.ts's CPU port of NOISE_FS (exact for simplex at seed 0–1 and
+// w = 0, which the looping evolution forces), at the AE pixel's centre.
+const V_NOISE = { type: "simplex", scale: 3, octaves: 4, seed: 1, animated: true, anim_start: 0, anim_end: 60, anim_rate: 0.8, color_a: "#102040", color_b: "#ffcc66" };
+const V_CONTRAST: Key[] = [[0, 1, "easeInOutCubic"], [59, 2.5]];
+function vNoisePixel(frame: number, x: number, y: number): FixturePixel {
+  const [ax, ay] = loopEvolutionOffset(frame, V_NOISE.anim_start, V_NOISE.anim_end, V_NOISE.anim_rate);
+  const o = { width: W, height: H, scale: V_NOISE.scale, offsetX: 0, offsetY: 0, seed: V_NOISE.seed, animOffsetX: ax, animOffsetY: ay };
+  const [sx, sy] = noiseSamplePoint((x + 0.5) / W, 1 - (y + 0.5) / H, o);
+  const n = fbmWithW(noiseFnFor("simplex"), sx, sy, 0, V_NOISE.octaves, 0.5, 2);
+  const contrast = evaluateKeyframesAt(track(V_CONTRAST), "scalar", frame * 1000) as number;
+  const t = Math.min(1, Math.max(0, 0.5 + n * 0.5 * contrast));
+  const lo = [0x10, 0x20, 0x40];
+  const hi = [0xff, 0xcc, 0x66];
+  return { frame, x, y, want: [...lo.map((a, i) => Math.round(a + (hi[i] - a) * t)), 255], tol: 3, label: `noise at (${x}, ${y}), frame ${frame}` };
+}
+SCENE_FIXTURES.push(
+  {
+    name: "v-noise",
+    title: "V noise",
+    comp,
+    build(g) {
+      const L = g.layer("LV", "Noise");
+      g.node(L, "nz", "noise", V_NOISE, { contrast: track(V_CONTRAST) });
+      g.out(L, "nz:out");
+    },
+    probe: {
+      frames: [0, 30],
+      pixels: [0, 30].flatMap((f) => [vNoisePixel(f, 320, 180), vNoisePixel(f, 960, 540), vNoisePixel(f, 640, 360), vNoisePixel(f, 100, 650)]),
+    },
+  },
+  {
+    // Phasor (its own branch, degrees → radians in the shader), a spline
+    // mask (→ layer mask) and the universal opacity (→ layer Opacity).
+    name: "v-noise-masked",
+    title: "V noise masked",
+    comp,
+    build(g) {
+      const L = g.layer("LV1", "Phasor");
+      g.node(L, "ph", "noise", { type: "phasor", scale: 6, phasor_frequency: 3, phasor_orientation: 30, phasor_isotropy: 0.4, opacity: 0.5 });
+      g.node(L, "disc", "circle", { centerX: 0.5, centerY: 0.5, radiusX: 200 / W, radiusY: 200 / W, stroke_enabled: false });
+      g.wire("disc:out", "ph:in:mask");
+      g.out(L, "ph:out");
+    },
+    probe: {
+      frames: [0],
+      pixels: [
+        { frame: 0, x: 640, y: 360, want: [null, null, null, 128], tol: 3, label: "inside the mask: the shader at the node's opacity 0.5" },
+        { frame: 0, x: 60, y: 60, want: [null, null, null, 0], label: "outside the spline mask" },
+      ],
+    },
+  }
+);
 
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");

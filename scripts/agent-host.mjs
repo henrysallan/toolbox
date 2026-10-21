@@ -406,7 +406,8 @@ const SYSTEM_PROMPT =
   "blocked; stop if blocked). Read get_ae_docs before explaining any " +
   "mismatch. Fuse each shader region with the GRAPH → GLSL loop, then " +
   "validate_ae_shader the new node, and pass export_ae_package a fused map " +
-  "of region target → node id (unfused regions bake). With the desktop " +
+  "of region target → node id (unfused regions bake; a region with kernel " +
+  "\"node\" needs no fusing — it exports as its node's own shader). With the desktop " +
   "app and After Effects, run_ae_script then compare_ae_renders at the " +
   "plan's frames; stop on a match, after 4 rounds, or on no progress, and " +
   "say which. Never call a bake a port, and never script the user's open " +

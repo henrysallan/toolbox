@@ -972,7 +972,10 @@ export const BRIDGED_TOOLS = [
       "Classifies every node feeding the composition's Output onto the AE " +
       "ladder (vector, style, transform, layer, mask, effect, expression, " +
       "instances, text → native AE objects; shader → the Toolbox Shader " +
-      "host plugin, one fused GLSL region per shader region; bake → rendered " +
+      "host plugin, one fused GLSL region per shader region — except a " +
+      "region with kernel \"node\" (a lone node like Noise), which exports " +
+      "as that node's own shader with its params as live controls and needs " +
+      "no fusing; bake → rendered " +
       "footage; unsupported → live inputs that need a recorded take) and " +
       "returns a readable report, then the JSON plan. The report starts with " +
       "the `route` — direct (all native), direct+bake, direct+shader (host " +
@@ -1023,7 +1026,8 @@ export const BRIDGED_TOOLS = [
       "now — the playhead moves — and copied sources), toolbox.json and " +
       "README.txt. Call plan_ae_export first; for every shader region you " +
       "fused, pass fused { \"<region target>\": \"<glsl-expression id>\" } " +
-      "(a region without one bakes). Writes ONLY under main's own export folder " +
+      "(a region without one bakes, unless its kernel is \"node\": that one " +
+      "runs as its node's own shader). Writes ONLY under main's own export folder " +
       "(desktop, destination \"folder\", the default there) or as a zip " +
       "download (\"zip\", the web default) — you choose no path. Returns " +
       "`location` (the package folder, or the zip's file name), `report` " +
@@ -1100,7 +1104,9 @@ export const BRIDGED_TOOLS = [
     timeoutMs: AE_SHADER_TIMEOUT_MS,
     description:
       "The After Effects get_shader_errors: turn a fused glsl-expression node " +
-      "into its Toolbox Shader bundle (GLSL ES 3.00 → MSL, channels → host " +
+      "— or a node After Effects runs as its own shader (a plan_ae_export " +
+      "region with kernel \"node\", e.g. a lone Noise; its params become the " +
+      "controls) — into its Toolbox Shader bundle (GLSL ES 3.00 → MSL, channels → host " +
       "sliders / colors / checkboxes, ramps / curves → LUTs) and validate it " +
       "before anything reaches After Effects. On the desktop the host's own " +
       "tbxshader-check compiles it with Metal; on the web the checks are " +
@@ -1110,7 +1116,7 @@ export const BRIDGED_TOOLS = [
       "`warnings`, `bundle` (id, the param slots, inputs, readsTime, luts, " +
       "hostMin) and `compile`. Fix every error before export_ae_package.",
     inputSchema: {
-      node: z.string().optional().describe("The glsl-expression node id (default: the selected node)."),
+      node: z.string().optional().describe("The glsl-expression node id, or an own-shader node's (default: the selected node)."),
     },
   },
   {

@@ -31,6 +31,7 @@
 import { evaluateKeyframesAt, type KeyframeAnimationBlock } from "@/engine/keyframes";
 import { resolveAeEffectMap, type AeDerivedProp, type AeEffectContext, type AeEffectStep, type AeInputLayer, type AeParamMap } from "../calibration";
 import { numericTrackToAe, sampledTrackToAe, uv01AxisAffine } from "../convert";
+import { nodeShaderSpec } from "../shader/node-shaders";
 import type { AeEffect, AeLayer, AePlanNode, AeProp } from "../types";
 import {
   colorProp,
@@ -489,12 +490,14 @@ export function mapEffects(scope: Scope, id: string): MappedEffects | { refusal:
   return { effects, helpers };
 }
 
-// A node with no AE effect: its own shader region (opts.fused) or a bake.
+// A node with no AE effect: its own shader region (opts.fused, or its own
+// shader when node-shaders.ts has a host spec for it) or a bake.
 function shaderOrBake(scope: Scope, endpoint: string, pn: AePlanNode, em: Emitters, why: string): Rendered {
   const { ctx } = scope;
   const { id } = parseOut(endpoint);
-  if (ctx.policy.shaderHost && ctx.fused[endpoint]) {
-    ctx.report.reclass(id, "shader", "exact", `${why} → its fused shader (${ctx.fused[endpoint]})`);
+  const own = endpoint === `${id}:out` && !!nodeShaderSpec(ctx.graph.node(id)?.type);
+  if (ctx.policy.shaderHost && (ctx.fused[endpoint] || own)) {
+    ctx.report.reclass(id, "shader", "exact", `${why} → ${ctx.fused[endpoint] ? `its fused shader (${ctx.fused[endpoint]})` : "its own shader"}`);
     const r = em.shader(scope, endpoint, { ...pn, class: "shader" });
     if (r) return r;
   }

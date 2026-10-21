@@ -745,7 +745,7 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
   "points-to-text": { class: "text", ae: "layer:text", fidelity: "approx", requires: ["explode"], note: "One text layer per point (layer budget applies); fonts as Text." },
   "point-labels": { class: "text", ae: "layer:text", fidelity: "approx", requires: ["explode"], note: "One text layer per labelled point (layer budget applies)." },
   // ---- shader: no AE twin (§3 rung 5) -------------------------------------------
-  noise: shader("Fractal Noise is a look-alike, not a port — the fused shader reproduces the selected algorithm exactly."),
+  noise: { ...shader("Fractal Noise is a look-alike, not a port. Alone in its region the host runs Noise's own shader (type baked, every other param a live control); in a larger region the fused shader reproduces the selected algorithm exactly."), ownShader: true },
   lyapunov: shader(),
   "shape-cells": shader(),
   "texture-coordinate": shader("UV field — only meaningful inside a fused region."),

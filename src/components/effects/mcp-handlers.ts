@@ -2212,23 +2212,43 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const id = aeStr(nodeArg) ?? deps.status.selectedNodeId;
       if (!id) throw new Error("Pass `node` (the fused glsl-expression's id from get_graph) — nothing is selected in the editor.");
       const n = nodeOrThrow(id);
-      if (n.data.defType !== "glsl-expression")
-        throw new Error(`"${n.id}" is a ${n.data.defType}; validate_ae_shader takes a glsl-expression node (the fused region).`);
-      const [{ bundleFromGlslExpression }, { validateAeShader }, { writeTbxfx }, { hostCheckResult }] = await Promise.all([
+      const [{ bundleFromGlslExpression }, { bundleFromNodeShader }, { nodeShaderSpec }, { validateAeShader }, { writeTbxfx }, { hostCheckResult }] = await Promise.all([
         import("@/lib/ae-export/shader/bundle"),
+        import("@/lib/ae-export/shader/node-bundle"),
+        import("@/lib/ae-export/shader/node-shaders"),
         import("@/lib/ae-export/shader/validate"),
         import("@/lib/ae-export/shader/tbxfx"),
         import("@/lib/ae-export/package/shader-check"),
       ]);
+      // A node the host runs as its own shader (a lone shader region, plan
+      // kernel "node"): its own source, its params as the controls.
+      const own = n.data.defType !== "glsl-expression" && nodeShaderSpec(n.data.defType);
+      if (n.data.defType !== "glsl-expression" && !own)
+        throw new Error(`"${n.id}" is a ${n.data.defType}; validate_ae_shader takes a glsl-expression node (the fused region) or a node After Effects runs as its own shader (a plan region with kernel "node").`);
       const params = n.data.params;
-      const prelude = glslExpressionPreludeLines(params);
-      const body = (line?: number) => (line ? { line, bodyLine: line - prelude } : {});
-      const r = bundleFromGlslExpression(params, {
-        name: n.data.name || "GLSL Expression",
-        fps: deps.status.fps,
-        loopFrames: deps.status.loopFrames,
-        canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
-      });
+      const prelude = own ? 0 : glslExpressionPreludeLines(params);
+      const body = (line?: number) => (line ? (own ? { line } : { line, bodyLine: line - prelude }) : {});
+      const inputs: Record<string, "image" | "value"> = {};
+      for (const e of deps.edgesRef.current) {
+        if (e.target !== n.id || !/^in:/.test(e.targetHandle ?? "") || /^in:(param:|mask)/.test(e.targetHandle ?? "")) continue;
+        const src = deps.nodesRef.current.find((x) => x.id === e.source);
+        const def = src ? getNodeDef(src.data.defType) : undefined;
+        const outName = (e.sourceHandle ?? "").replace(/^out:(aux:)?/, "");
+        const type = !def ? "image" : outName === "primary" || !e.sourceHandle ? def.primaryOutput : def.auxOutputs?.find((a) => a.name === outName)?.type;
+        inputs[e.targetHandle!.slice(3)] = type === "image" || type === "uv" || type === "mask" ? "image" : "value";
+      }
+      const name = n.data.name || (own ? own.node.name : "GLSL Expression");
+      const canvas = { width: deps.status.canvasWidth, height: deps.status.canvasHeight };
+      const nr = own ? bundleFromNodeShader(n.data.defType, params, inputs, { name, fps: deps.status.fps, canvas }) : null;
+      if (nr && !nr.ok)
+        return {
+          ok: false,
+          stage: "translate",
+          node: n.id,
+          errors: "refused" in nr ? [{ message: nr.refused }] : nr.errors.map((e) => ({ message: e.message, ...body(e.line) })),
+          note: "line = the node's own fragment shader as rewritten for the host (node-shaders.ts); a refusal means export_ae_package bakes this node.",
+        };
+      const r = nr ? { ok: true as const, bundle: nr.bundle, warnings: [] as string[] } : bundleFromGlslExpression(params, { name, fps: deps.status.fps, loopFrames: deps.status.loopFrames, canvas });
       if (!r.ok)
         return {
           ok: false,
@@ -2267,7 +2287,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         warnings: [
           ...r.warnings,
           ...v.warnings,
-          ...(wired.some((s) => s !== "a" && s !== "b" && s !== "c" && s !== "d")
+          ...(!own && wired.some((s) => s !== "a" && s !== "b" && s !== "c" && s !== "d")
             ? [`wired channels (${wired.filter((s) => !["a", "b", "c", "d"].includes(s)).join(", ")}) ship at their row values; key the TBX Shader control in AE to animate them`]
             : []),
         ],

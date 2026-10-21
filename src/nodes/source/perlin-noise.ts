@@ -606,7 +606,7 @@ const NOISE_TYPES = [
   "phasor",
 ] as const;
 
-function noiseTypeToInt(t: string): number {
+export function noiseTypeToInt(t: string): number {
   switch (t) {
     case "perlin":
       return 0;
