@@ -20,6 +20,7 @@ import {
   AE_OVERRIDE_LABEL,
   AE_ROUTE_TEXT,
   aeConvertPrompt,
+  aeRegionsToFuse,
   aeCoverage,
   aeOptionsFromPolicy,
   aePolicyFromOptions,
@@ -78,6 +79,7 @@ function ExportAeModalBody(props: AeExportModalProps): JSX.Element {
   }, [replan, policy, overrides]);
 
   const plan = planned.plan;
+  const toFuse = plan ? aeRegionsToFuse(plan) : [];
   const coverage = plan ? aeCoverage(plan) : [];
   const route = plan ? AE_ROUTE_TEXT[plan.route] : null;
   const trimmedName = name.trim();
@@ -241,16 +243,17 @@ function ExportAeModalBody(props: AeExportModalProps): JSX.Element {
           <Section title={`Shader regions (${plan.shaderRegions.length})`}>
             {plan.shaderRegions.map((r) => (
               <div key={r.id} style={rowStyle()}>
-                <span style={{ color: "var(--tb-a-violet-400)" }}>◆</span>
+                <span style={{ color: "var(--tb-a-violet-400)" }}>{r.kernel === "node" ? "◇" : "◆"}</span>
                 <span>{r.target}</span>
                 <span style={{ color: "var(--tb-n-10)" }}>
-                  {r.nodes.length} node{r.nodes.length === 1 ? "" : "s"}
+                  {r.kernel === "node" ? "its own shader" : `${r.nodes.length} node${r.nodes.length === 1 ? "" : "s"}`}
                 </span>
                 {r.summary && <span style={{ color: "var(--tb-n-11)" }}>— {r.summary}</span>}
               </div>
             ))}
             <div style={{ color: "var(--tb-n-11)", lineHeight: 1.4, marginTop: 2 }}>
-              Without conversion these bake. &ldquo;Convert with Claude&rdquo; fuses each into a shader that the Toolbox Shader plug-in runs in AE.
+              {toFuse.length < plan.shaderRegions.length && "◇ runs as its node's own shader in the Toolbox Shader plug-in, with live controls. "}
+              {toFuse.length > 0 && <>Without conversion the other regions bake. &ldquo;Convert with Claude&rdquo; fuses each into a shader that the Toolbox Shader plug-in runs in AE.</>}
             </div>
           </Section>
         )}
@@ -410,7 +413,7 @@ function ExportAeModalBody(props: AeExportModalProps): JSX.Element {
             {result?.ok ? "Done" : "Cancel"}
           </button>
           <div style={{ display: "flex", gap: 6 }}>
-            {plan && plan.shaderRegions.length > 0 && (
+            {toFuse.length > 0 && (
               <button onClick={convert} disabled={busy} style={btnStyle()} title="Open the agent panel with a prompt that fuses each shader region, then exports">
                 Convert with Claude
               </button>

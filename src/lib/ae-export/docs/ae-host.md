@@ -2,7 +2,8 @@
 title: The Toolbox Shader plug-in and shader bundles
 ---
 
-How a fused GLSL Expression runs inside After Effects. The AE user
+How a fused GLSL Expression (or a lone node's own shader) runs inside
+After Effects. The AE user
 installs one plug-in, **Toolbox Shader** (match name `TBX Shader`, in the
 Effect ▸ AE Plugins menu); every shader region ships as a bundle it loads.
 Source: `../AE_Plugins/toolbox-shader` (C++ / Metal, Mac only for now).
@@ -43,6 +44,20 @@ Source: `../AE_Plugins/toolbox-shader` (C++ / Metal, Mac only for now).
   only the bundle's own controls (hidden ones refuse `setValue`).
 - The project must be saved before Bundle ID is set, or the plug-in has no
   folder to find `shaders/` in (aerender can use `TBX_SHADER_BUNDLES`).
+
+## Single nodes: the node's own shader
+
+A shader region that is one node with a host spec
+(`src/lib/ae-export/shader/node-shaders.ts`; the plan marks the region
+`kernel: "node"`; today: Noise) needs no fused GLSL Expression. The
+exporter rewrites the node's own fragment shader into the bundle's shape:
+each param becomes a control named and labelled after it, the node's
+uniforms are set from the controls at the top of `main()` exactly as its
+`compute()` binds them (per-frame JS like the looping evolution is ported
+against `u_frame`), enums are baked, and wired image inputs become Layer
+A–D. Its mask and Opacity apply outside the shader, as for any layer.
+`validate_ae_shader` takes such a node too. `check-shader-nodes` holds
+each spec to the node's real `compute()` and renders both sides.
 
 ## Channel → param
 

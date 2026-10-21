@@ -69,6 +69,10 @@ export interface AeExportEntry {
   // Toolbox param → AE property + unit rule, e.g. { radius: "Blurriness ← radius·W·k" }.
   params?: Record<string, string>;
   requires?: AeRequirement[];
+  // A `shader` node the host runs as its own fragment shader when it is a
+  // region alone (shader/node-shaders.ts has its spec; check-shader-nodes
+  // holds the two lists equal) — no fused node, no conversion step.
+  ownShader?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +204,10 @@ export interface AeShaderRegion {
   frames: number[];
   // One-line summary of the plan_glsl_translation result for this target.
   summary?: string;
+  // "node": one node the Toolbox Shader host runs as its own fragment shader
+  // (shader/node-shaders.ts) — exported as is, no fused GLSL Expression.
+  // Absent: the region needs one (opts.fused) or bakes.
+  kernel?: "node";
 }
 
 export interface AeBakeItem {

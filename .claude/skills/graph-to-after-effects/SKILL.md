@@ -29,8 +29,10 @@ is "package written, not verified" — say that plainly.
 3. **Read.** `get_ae_docs()` for the core docs, plus
    `get_ae_docs({ types: [...] })` for every approximate or shader node the
    plan names.
-4. **Shader regions.** For each region in the plan, run the graph-to-glsl
-   loop on its target: `plan_glsl_translation` → `get_glsl_docs` → write the
+4. **Shader regions.** A region with `kernel: "node"` (a lone Noise, say)
+   exports as that node's own shader, its params the effect's controls:
+   skip fusing it (`validate_ae_shader` on the node still checks it). For
+   every other region, run the graph-to-glsl loop on its target: `plan_glsl_translation` → `get_glsl_docs` → write the
    glsl-expression node, unwired downstream → `get_shader_errors` →
    `compare_renders` until it matches. Then `validate_ae_shader` on the new
    node and fix anything it refuses (`ae-host` lists the refusals). Keep a

@@ -15,14 +15,25 @@
 //
 // The solid's startTime puts the layer's own time on the toolbox layer's
 // clock (u_time = layer seconds × Time Speed 1).
+//
+// A region that is ONE node with a host spec (shader/node-shaders.ts: Noise)
+// needs no fused node: emitNodeShader builds the bundle from the node's own
+// fragment shader, its params become the effect's controls (keyed → keys,
+// wired → an expression or per-frame keys, like any effect param), and the
+// node's mask and universal opacity apply as for any source or effect.
 
 import { numericTrackToAe, sampledTrackToAe } from "../convert";
 import { bundleFromGlslExpression, TBX_SHADER_HOST_MIN } from "../shader";
-import { TBX_SHADER_MATCH_NAME, tbxShaderParamMatch, type AeEffect, type AeLayer, type AePlanNode, type AeProp, type AeShaderRegion } from "../types";
-import { keyCtx, markDriven, windowFrames, type WalkCtx } from "./context";
+import { bundleFromNodeShader, controlLabel, nodeShaderParams } from "../shader/node-bundle";
+import { nodeShaderSpec, type NodeShaderEnv } from "../shader/node-shaders";
+import { TBX_SHADER_MATCH_NAME, tbxShaderParamMatch, type AeEffect, type AeLayer, type AePlanNode, type AeProp, type AeShaderBundle, type AeShaderRegion } from "../types";
+import { colorProp, evalBlock, isAnimatedParam, keyCtx, markDriven, scalarProp, windowFrames, type WalkCtx } from "./context";
+import { maskedOver, withNodeOpacity } from "./effects";
 import { exprProp } from "./expressions";
 import { numbersOf, parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, collapse, compSolid, type Rendered, type Scope } from "./layers";
+import { applyImageMask, isSplineEndpoint } from "./masks";
+import { isSdfContour } from "./sdf";
 
 // A channel's wire. Its socket is "in:<row id>" (glsl-expression
 // resolveInputs), so the handle is "in:in:<id>"; "in:<id>" as the Skia
@@ -48,6 +59,8 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
   const members = region?.nodes ?? [id];
   const fusedId = ctx.fused[target] ?? ctx.fused[endpoint];
   if (!fusedId) {
+    const lone = members.length === 1 && members[0] === id;
+    if (lone && nodeShaderSpec(ctx.graph.node(id)?.type)) return emitNodeShader(scope, endpoint, pn, region);
     throw new BakeSignal(`${region?.id ?? "shader region"} (${target}) has no fused GLSL Expression in opts.fused — run the graph-to-glsl loop on it ("Convert shader regions with Claude") for an editable Toolbox Shader; until then it bakes`);
   }
   const fused = ctx.graph.node(fusedId);
@@ -79,14 +92,7 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
   for (const slot of bundle.inputs) {
     const w = ctx.graph.wireInto(fusedId, `in:${slot}`);
     if (!w) throw new BakeSignal(`fused shader ${fusedId} samples input ${slot}, but nothing is wired into it`);
-    // A layer param reads the referenced layer's own pixels: a comp-sized
-    // precomp with an identity transform is comp space exactly.
-    const inner = scope.render(sourceEndpoint(w));
-    const plainPrecomp = inner.main && inner.main.kind === "precomp" && inner.layers.length === 1 && ctx.free.has(inner.main);
-    const ref = plainPrecomp ? inner : collapse(scope, { layers: inner.layers }, `${ctx.graph.name(w.source)} → ${slot}`);
-    ref.main!.enabled = false;
-    helpers.push(...ref.layers);
-    props[tbxShaderParamMatch("layer", slot.charCodeAt(0) - 96)] = { v: { layerRef: ref.main!.id } };
+    layerInput(scope, sourceEndpoint(w), `${ctx.graph.name(w.source)} → ${slot}`, slot, props, helpers);
   }
   const kc = keyCtx(ctx, clock);
   for (const p of bundle.params) {
@@ -134,4 +140,114 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
   L.startTime = clock.offsetTicks / (ctx.tpf * ctx.fps);
   L.effects = [fx];
   return { layers: [...helpers, L], main: L };
+}
+
+// A layer param reads the referenced layer's own pixels: a comp-sized
+// precomp with an identity transform is comp space exactly.
+function layerInput(scope: Scope, source: string, name: string, slot: AeShaderBundle["inputs"][number], props: Record<string, AeProp>, helpers: AeLayer[]): void {
+  const { ctx } = scope;
+  const inner = scope.render(source);
+  const plainPrecomp = inner.main && inner.main.kind === "precomp" && inner.layers.length === 1 && ctx.free.has(inner.main);
+  const ref = plainPrecomp ? inner : collapse(scope, { layers: inner.layers }, name);
+  ref.main!.enabled = false;
+  helpers.push(...ref.layers);
+  props[tbxShaderParamMatch("layer", slot.charCodeAt(0) - 96)] = { v: { layerRef: ref.main!.id } };
+}
+
+// One node's own fragment shader on the host (shader/node-shaders.ts).
+function emitNodeShader(scope: Scope, endpoint: string, pn: AePlanNode, region: AeShaderRegion | undefined): Rendered {
+  const { ctx, clock } = scope;
+  const { id } = parseOut(endpoint);
+  const node = ctx.graph.node(id)!;
+  const spec = nodeShaderSpec(node.type)!;
+  const name = ctx.graph.name(id);
+  if (endpoint !== `${id}:out`) throw new BakeSignal(`${name}: only its image output runs as its own shader on the host, not ${endpoint}`);
+  for (const p of spec.bakes ?? [])
+    if (isAnimatedParam(ctx, id, p)) throw new BakeSignal(`${name}: ${p} is keyed or wired, but the host bakes it into the shader (it has no popups) — the region bakes`);
+
+  // What arrives on each wired input (the mask applies outside the shader).
+  const inputs: NodeShaderEnv["inputs"] = {};
+  for (const w of ctx.graph.into(id)) {
+    const socket = w.targetHandle.replace(/^in:/, "");
+    if (!w.targetHandle.startsWith("in:") || socket.startsWith("param:") || socket === "mask" || socket.startsWith("mask:")) continue;
+    inputs[socket] = scope.nodes.get(w.source)?.class === "expression" ? "value" : "image";
+  }
+  // Bundle defaults: a keyed control starts at its value on the window's first frame.
+  const params = nodeShaderParams(spec, ctx.graph.params(id));
+  const first = clock.inFrame * ctx.tpf - clock.offsetTicks;
+  for (const d of spec.node.params) {
+    const b = ctx.graph.block(id, d.name);
+    if (d.type === "scalar" && b && b.keyframes.length > 1) params[d.name] = evalBlock(b, first, Number(params[d.name]) || 0);
+  }
+  const res = bundleFromNodeShader(node.type, params, inputs, {
+    name: `${ctx.name} ${region?.id ?? id}`,
+    fps: ctx.fps,
+    canvas: { width: ctx.canvas.width, height: ctx.canvas.height },
+  });
+  if (!res.ok) {
+    if ("refused" in res) throw new BakeSignal(`${name}: ${res.refused}`);
+    const e = res.errors[0];
+    const w = `${name}'s own shader does not translate to MSL (${res.errors.length} error${res.errors.length === 1 ? "" : "s"}; line ${e?.line ?? "?"}: ${e?.message ?? "?"}) — the region bakes`;
+    ctx.out.warnings.push(w);
+    throw new BakeSignal(w);
+  }
+  const bundle = res.bundle;
+  if (!ctx.out.bundles.some((b) => b.id === bundle.id)) ctx.out.bundles.push(bundle);
+  ctx.report.shaderHost = TBX_SHADER_HOST_MIN;
+  ctx.report.reclass(id, "shader", pn.fidelity === "approx" ? "approx" : "exact", `its own shader → Toolbox Shader bundle ${bundle.id}, ${res.controls.length} controls named after its params (no conversion step)`);
+  const defs = new Map(spec.node.params.map((d) => [d.name, d]));
+  if (res.baked.length) ctx.report.note(id, `baked into the shader at their current values (the host has no popups): ${res.baked.map((p) => `${p} = ${JSON.stringify(params[p])}`).join(", ")}`);
+
+  const props: Record<string, AeProp> = { [tbxShaderParamMatch("bundle")]: { v: bundle.id } };
+  const helpers: AeLayer[] = [];
+  for (const [socket, slot] of Object.entries(res.inputs)) {
+    const w = ctx.graph.wireInto(id, `in:${socket}`)!;
+    layerInput(scope, sourceEndpoint(w), `${ctx.graph.name(w.source)} → ${name} ${socket}`, slot, props, helpers);
+  }
+  for (const c of res.controls) {
+    const def = defs.get(c.param)!;
+    const key = tbxShaderParamMatch(c.kind, c.slot);
+    const label = `${name} ${controlLabel(def)}`;
+    if (c.kind === "slider") props[key] = scalarProp(ctx, clock, id, c.param, { fallback: Number(def.default) || 0, label });
+    else if (c.kind === "color") props[key] = colorProp(ctx, clock, id, c.param, { shapeOrSolid: false, fallback: String(def.default), label }).color;
+    else props[key] = checkboxProp(scope, id, c.param, params[c.param] === true, label);
+  }
+  const fx: AeEffect = { match: TBX_SHADER_MATCH_NAME, name, props, bundle: String(bundle.id) };
+  const L = compSolid(scope, `${region?.id ?? "shader"} (${name})`, [id]);
+  L.id = ctx.uid(region?.id ?? `shader:${id}`);
+  L.startTime = clock.offsetTicks / (ctx.tpf * ctx.fps);
+  L.effects = [fx];
+  let out: Rendered = { layers: [...helpers, L], main: L };
+
+  // The evaluator's order: the universal mask (mix over the def's first
+  // image input when it has one), then the universal opacity. AE applies a
+  // layer's masks BEFORE its effects, and the shader writes every pixel
+  // (measured: the solid's spline mask left the shader unclipped), so a
+  // spline mask goes on a precomp of the shader layer.
+  const mask = ctx.graph.wireInto(id, "in:mask");
+  if (mask) {
+    const maskEp = sourceEndpoint(mask);
+    const baseSocket = spec.node.noMaskBase ? undefined : spec.node.inputs.find((i) => i.type === "image" && i.name !== "mask")?.name;
+    const base = baseSocket ? ctx.graph.wireInto(id, `in:${baseSocket}`) : undefined;
+    if (base) out = maskedOver(scope, id, out, scope.render(sourceEndpoint(base)), maskEp);
+    else {
+      if (isSplineEndpoint(scope, maskEp) && !isSdfContour(scope, maskEp)) out = collapse(scope, out, name, true);
+      out = applyImageMask(scope, out, id, maskEp);
+    }
+  }
+  return withNodeOpacity(scope, id, out);
+}
+
+// A boolean param → a checkbox: keyed → hold keys (a toggle has no
+// in-between); wired → its current value, reported.
+function checkboxProp(scope: Scope, id: string, param: string, now: boolean, label: string): AeProp {
+  const { ctx, clock } = scope;
+  const b = ctx.graph.block(id, param);
+  if (b && b.keyframes.length > 1)
+    return {
+      keys: b.keyframes.map((k) => ({ t: (k.tick + clock.offsetTicks) / (ctx.tpf * ctx.fps), v: k.value === true ? 1 : 0, inInterp: "hold" as const, outInterp: "hold" as const })),
+      dims: 1,
+    };
+  if (isAnimatedParam(ctx, id, param)) ctx.report.approx(id, `${label}: wired — exported at its current value`);
+  return { v: now ? 1 : 0 };
 }

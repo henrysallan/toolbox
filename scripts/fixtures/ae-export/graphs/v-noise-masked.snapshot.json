@@ -1,0 +1,511 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Noise",
+    "name": "V noise masked · Noise",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "shader-1",
+      "name": "shader-1 (Noise)",
+      "kind": "solid",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ph"
+      ],
+      "solid": {
+       "color": [
+        0,
+        0,
+        0
+       ],
+       "width": 1280,
+       "height": 720
+      },
+      "effects": [
+       {
+        "match": "TBX Shader",
+        "name": "Noise",
+        "props": {
+         "TBX Shader-0001": {
+          "v": "bundle#1"
+         },
+         "TBX Shader-0020": {
+          "v": 6
+         },
+         "TBX Shader-0021": {
+          "v": 4
+         },
+         "TBX Shader-0022": {
+          "v": 0.5
+         },
+         "TBX Shader-0023": {
+          "v": 2
+         },
+         "TBX Shader-0024": {
+          "v": 0
+         },
+         "TBX Shader-0025": {
+          "v": 0
+         },
+         "TBX Shader-0026": {
+          "v": 0
+         },
+         "TBX Shader-0027": {
+          "v": 0
+         },
+         "TBX Shader-0080": {
+          "v": 0
+         },
+         "TBX Shader-0028": {
+          "v": 0
+         },
+         "TBX Shader-0029": {
+          "v": 120
+         },
+         "TBX Shader-0030": {
+          "v": 1
+         },
+         "TBX Shader-0031": {
+          "v": 1
+         },
+         "TBX Shader-0032": {
+          "v": 3
+         },
+         "TBX Shader-0033": {
+          "v": 30
+         },
+         "TBX Shader-0034": {
+          "v": 0.4
+         },
+         "TBX Shader-0060": {
+          "v": [
+           0,
+           0,
+           0
+          ]
+         },
+         "TBX Shader-0061": {
+          "v": [
+           1,
+           1,
+           1
+          ]
+         },
+         "TBX Shader-0035": {
+          "v": 1
+         }
+        },
+        "bundle": "bundle#1"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "V noise masked",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Noise",
+      "name": "Phasor",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 50
+       }
+      },
+      "origin": [
+       "ph"
+      ],
+      "source": "comp:Noise",
+      "masks": [
+       {
+        "name": "Circle",
+        "path": {
+         "v": {
+          "vertices": [
+           [
+            640,
+            160
+           ],
+           [
+            840,
+            360
+           ],
+           [
+            640,
+            560
+           ],
+           [
+            440,
+            360
+           ]
+          ],
+          "inTangents": [
+           [
+            -110.45694996615866,
+            0
+           ],
+           [
+            0,
+            -110.45694996615866
+           ],
+           [
+            110.45694996615866,
+            0
+           ],
+           [
+            0,
+            110.45694996615866
+           ]
+          ],
+          "outTangents": [
+           [
+            110.45694996615866,
+            0
+           ],
+           [
+            0,
+            110.45694996615866
+           ],
+           [
+            -110.45694996615866,
+            0
+           ],
+           [
+            0,
+            -110.45694996615866
+           ]
+          ],
+          "closed": true
+         }
+        },
+        "mode": "add",
+        "inverted": false,
+        "feather": {
+         "v": [
+          0,
+          0
+         ]
+        },
+        "expansion": {
+         "v": 0
+        },
+        "opacity": {
+         "v": 100
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+shader",
+   "native": [
+    {
+     "id": "disc",
+     "type": "circle",
+     "class": "mask",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LV1",
+     "type": "layer",
+     "name": "Phasor",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [
+    {
+     "id": "ph",
+     "type": "noise",
+     "class": "shader",
+     "fidelity": "exact",
+     "note": "its own shader → Toolbox Shader bundle bundle#1, 19 controls named after its params (no conversion step) · baked into the shader at their current values (the host has no popups): type = \"phasor\" · spline mask → layer mask (add)"
+    }
+   ],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": [],
+    "shaderHost": "1.0.0"
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [
+  {
+   "inputs": [],
+   "params": [
+    {
+     "name": "scale",
+     "label": "Scale",
+     "kind": "slider",
+     "slot": 1,
+     "default": 6,
+     "min": 0.1,
+     "max": 40
+    },
+    {
+     "name": "octaves",
+     "label": "Octaves",
+     "kind": "slider",
+     "slot": 2,
+     "default": 4,
+     "min": 1,
+     "max": 8
+    },
+    {
+     "name": "persistence",
+     "label": "Persistence",
+     "kind": "slider",
+     "slot": 3,
+     "default": 0.5,
+     "min": 0,
+     "max": 1
+    },
+    {
+     "name": "lacunarity",
+     "label": "Lacunarity",
+     "kind": "slider",
+     "slot": 4,
+     "default": 2,
+     "min": 1,
+     "max": 4
+    },
+    {
+     "name": "offset_x",
+     "label": "Offset X",
+     "kind": "slider",
+     "slot": 5,
+     "default": 0,
+     "min": -50,
+     "max": 50
+    },
+    {
+     "name": "offset_y",
+     "label": "Offset Y",
+     "kind": "slider",
+     "slot": 6,
+     "default": 0,
+     "min": -50,
+     "max": 50
+    },
+    {
+     "name": "seed",
+     "label": "Seed",
+     "kind": "slider",
+     "slot": 7,
+     "default": 0,
+     "min": 0,
+     "max": 1000
+    },
+    {
+     "name": "w",
+     "label": "W (Evolution)",
+     "kind": "slider",
+     "slot": 8,
+     "default": 0,
+     "min": -100,
+     "max": 10
+    },
+    {
+     "name": "animated",
+     "label": "Animated",
+     "kind": "checkbox",
+     "slot": 1,
+     "default": false
+    },
+    {
+     "name": "anim_start",
+     "label": "Start (frame)",
+     "kind": "slider",
+     "slot": 9,
+     "default": 0,
+     "min": 0,
+     "max": 300
+    },
+    {
+     "name": "anim_end",
+     "label": "End (frame)",
+     "kind": "slider",
+     "slot": 10,
+     "default": 120,
+     "min": 1,
+     "max": 300
+    },
+    {
+     "name": "anim_rate",
+     "label": "Rate",
+     "kind": "slider",
+     "slot": 11,
+     "default": 1,
+     "min": 0,
+     "max": 4
+    },
+    {
+     "name": "contrast",
+     "label": "Contrast",
+     "kind": "slider",
+     "slot": 12,
+     "default": 1,
+     "min": 0.1,
+     "max": 5
+    },
+    {
+     "name": "phasor_frequency",
+     "label": "Frequency",
+     "kind": "slider",
+     "slot": 13,
+     "default": 3,
+     "min": 0.1,
+     "max": 8
+    },
+    {
+     "name": "phasor_orientation",
+     "label": "Orientation (deg)",
+     "kind": "slider",
+     "slot": 14,
+     "default": 30,
+     "min": -180,
+     "max": 180
+    },
+    {
+     "name": "phasor_isotropy",
+     "label": "Isotropy",
+     "kind": "slider",
+     "slot": 15,
+     "default": 0.4,
+     "min": 0,
+     "max": 1
+    },
+    {
+     "name": "color_a",
+     "label": "Color A (low)",
+     "kind": "color",
+     "slot": 1,
+     "default": [
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    {
+     "name": "color_b",
+     "label": "Color B (high)",
+     "kind": "color",
+     "slot": 2,
+     "default": [
+      1,
+      1,
+      1,
+      1
+     ]
+    },
+    {
+     "name": "alpha",
+     "label": "Alpha",
+     "kind": "slider",
+     "slot": 16,
+     "default": 1,
+     "min": 0,
+     "max": 1
+    }
+   ],
+   "readsTime": true,
+   "fps": 30,
+   "loopFrames": 0
+  }
+ ],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

@@ -573,10 +573,10 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
       const target = endpointOut(id, eligible);
       let glsl: TranslationPlan | undefined;
       let why = "";
-      try {
-        glsl = planTranslation({
+      const planRegion = (edges: typeof L.edges) =>
+        planTranslation({
           nodes: L.nodes.map((n) => (reach.has(n.id) && eligible(n.id) ? n : { ...n, type: NATIVE_PREFIX + n.type })),
-          edges: L.edges,
+          edges,
           target: parseEndpoint(target).handle === "out" ? id : target,
           scopeId: L.id,
           infoOf,
@@ -593,6 +593,16 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
           loopFrames: comp.durationFrames,
           canvas: { width: comp.width, height: comp.height },
         });
+      try {
+        // A node the host runs as its own shader takes its universal mask
+        // outside the shader (an AE layer mask or matte, as any source), so
+        // a spline there doesn't stop it — when it is a region alone.
+        const maskOf = (e: (typeof L.edges)[number]) => {
+          const t = parseEndpoint(e.to);
+          return t.id === id && isMaskSocket(t.handle);
+        };
+        const alone = classOf(s.node.type).ownShader && L.edges.some(maskOf) ? planRegion(L.edges.filter((e) => !maskOf(e))) : undefined;
+        glsl = alone && alone.region.length === 1 && alone.region[0] === id && !alone.refusal ? alone : planRegion(L.edges);
       } catch (e) {
         why = e instanceof Error ? e.message : String(e);
       }
@@ -691,7 +701,13 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
       const g = r.glsl!;
       const nodes = g.region.filter((x) => r.nodes.has(x));
       const id = `shader-${acc.shaderRegions.length + 1}`;
-      acc.shaderRegions.push({ id, target: r.target, nodes, frames: g.time.frames, summary: shaderSummary(g, nodes, byId) });
+      // One node the host runs as its own shader (node-shaders.ts): no
+      // fused node needed. The scene walk still bakes a state its spec
+      // refuses, and says why.
+      const lone = nodes.length === 1 && r.target === `${nodes[0]}:out` ? byId.get(nodes[0]) : undefined;
+      const kernel = lone && classOf(lone.type).ownShader ? { kernel: "node" as const } : {};
+      const summary = "kernel" in kernel ? ownShaderSummary(g, lone!) : shaderSummary(g, nodes, byId);
+      acc.shaderRegions.push({ id, target: r.target, nodes, frames: g.time.frames, summary, ...kernel });
       for (const x of nodes) st.get(x)!.notes.push(`In ${id} (Toolbox Shader, target ${r.target}).`);
     } else {
       const anim = [...r.nodes].some((x) => animated.has(x));
@@ -1224,6 +1240,13 @@ function instanceCount(
 
 function bakeMB(codec: AeBakeCodec, width: number, height: number, frames: number): number {
   return round1((BAKE_BITS_PER_PIXEL[codec] * width * height * Math.max(1, frames)) / 8 / 1e6);
+}
+
+function ownShaderSummary(g: TranslationPlan, n: PlanNode): string {
+  return [
+    `${n.type}'s own shader → Toolbox Shader (no conversion; its params are the effect's controls)`,
+    g.time.dependent ? `animated — parity frames ${g.time.frames.join(", ")}` : `static (frame ${g.time.frames[0]})`,
+  ].join("; ");
 }
 
 function shaderSummary(g: TranslationPlan, nodes: string[], byId: Map<string, PlanNode>): string {

@@ -160,15 +160,26 @@ export function aeWithBudget(o: AeModalOptions, raw: string): AeModalOptions {
   return { ...o, layerBudget: clampBudget(Number(raw)) };
 }
 
+// Shader regions that need a fused GLSL Expression: not the ones the host
+// runs as their node's own shader (kernel "node").
+export function aeRegionsToFuse(plan: AeExportPlan): AeExportPlan["shaderRegions"] {
+  return plan.shaderRegions.filter((r) => r.kernel !== "node");
+}
+
 // What "Convert shader regions with Claude" sends to the agent panel. It
 // names every region and the exact tool sequence (spec §7.6), and asks for
 // the fused map export_ae_package takes.
 export function aeConvertPrompt(plan: AeExportPlan, name: string, policy: Partial<AeExportPolicy>): string {
-  const regions = plan.shaderRegions;
+  const regions = aeRegionsToFuse(plan);
+  const own = plan.shaderRegions.filter((r) => r.kernel === "node");
   const lines: string[] = [];
   lines.push(`Export this composition to After Effects as "${name}". Use the graph-to-after-effects skill if you have it.`);
   lines.push("");
   lines.push(`1. Call plan_ae_export and confirm the route (it is currently "${plan.route}").`);
+  if (own.length > 0)
+    lines.push(
+      `   ${own.map((r) => r.target).join(", ")} ${own.length === 1 ? "runs" : "run"} as ${own.length === 1 ? "its node's" : "their nodes'"} own shader in the Toolbox Shader plug-in — export ${own.length === 1 ? "it" : "them"} as is, no fusing.`
+    );
   if (regions.length > 0) {
     lines.push(
       `2. These ${regions.length} shader region${regions.length === 1 ? " has" : "s have"} no native AE form. Fuse each into one GLSL Expression node:`

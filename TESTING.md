@@ -1141,6 +1141,15 @@ that pair). Offline node tests should push each input through
   `npx tsx scripts/ae-export-spike/gen-runtime.mts` and the new
   `shasum -a 256` in `electron/ae-core.js` `BUILD_JSX_SHA256`
   (package-paths and runtime fail otherwise).
+  - `shader-nodes` — a lone node exported as its own shader
+    (`src/lib/ae-export/shader/node-shaders.ts`). It runs the node's real
+    `compute()` on a recording GL (any platform): every uniform needs a
+    rule, every param is a control, bake or ignored, and every control
+    must change a binding. A param or uniform added to the node fails here
+    until the spec classifies it. On macOS it also renders the node's own
+    source with `compute()`'s uniforms (WebGL2) against the bundle (Metal,
+    fast math). If WebGL2 is unavailable that half prints a skip note and
+    passes. Editing a node's shader or `compute()` means rerunning it.
   - Live checks (not gates): they need After Effects 26.x, never touch the
     AE GUI, and take the AE lock (`scripts/ae-export-spike/ae-lock.mts`,
     one aerender run at a time across checkouts):
