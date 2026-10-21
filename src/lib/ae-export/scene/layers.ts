@@ -107,9 +107,10 @@ export function rendered(main: AeLayer, helpers: AeLayer[] = []): Rendered {
   return { layers: [...helpers, main], main };
 }
 
-// Several visible layers → one precomp layer on the same clock.
-export function collapse(scope: Scope, r: Rendered, name: string): Rendered {
-  if (r.main && r.layers.filter(isVisible).length === 1) return r;
+// Several visible layers → one precomp layer on the same clock (`force`:
+// even one, e.g. a group whose promoted inputs need a precomp of their own).
+export function collapse(scope: Scope, r: Rendered, name: string, force = false): Rendered {
+  if (!force && r.main && r.layers.filter(isVisible).length === 1) return r;
   const { ctx } = scope;
   const comp: AeComp = {
     id: ctx.uid(`comp:${name}`),
@@ -279,6 +280,12 @@ export function emitToolboxLayer(
     const scope = makeScope(clock);
     let r = scope.render(input.output);
     if (!r.layers.length) return { layers: [] };
+    // Promoted inputs (knobs.ts): the layer's content as a precomp, so its
+    // layer in the main comp shows them as Essential Properties.
+    if (layerNode && ctx.knobs.ownsKnobs(layerNode.id)) {
+      r = collapse(scope, r, plan.name, true);
+      ctx.knobs.home(layerNode.id, r.main!.source);
+    }
     if (layerNode && needsOwnLayer(ctx, layerNode.id, r)) r = collapse(scope, { layers: r.layers }, plan.name);
     if (!r.main) r = collapse(scope, r, plan.name);
     return finish([r.layers], [r.main!]);
@@ -301,6 +308,7 @@ export function emitToolboxLayer(
     layers: r.layers,
   };
   ctx.out.comps.push(comp);
+  ctx.knobs.home(plan.id, comp.id);
   ctx.report.note(plan.id, `${timings.length} clip windows on different clocks → one precomp, placed ${timings.length}×`);
   const units: AeLayer[][] = [];
   const mains: AeLayer[] = [];
@@ -345,6 +353,7 @@ function decorate(ctx: WalkCtx, plan: AePlanLayer, layerId: string, layers: AeLa
     const o = typeof opSrc === "number" ? opSrc : 1;
     if (o !== 1) main.transform.opacity = scaleProp(contentOpacity, Math.max(0, Math.min(1, o)));
   }
+  main.transform.opacity = ctx.knobs.layerOpacity(ctx, layerId, contentOpacity, main.transform.opacity);
 
   // TRS + parenting. The unit's layers must follow the toolbox layer's world
   // transform (parent ∘ own TRS) and nothing else: an interior transform on

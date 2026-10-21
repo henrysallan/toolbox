@@ -130,6 +130,7 @@ function prop(p: unknown, path: string, out: string[], check: ValueCheck, opts: 
   }
   if (!isObj(p)) return void out.push(`${path}: expected {v} or {keys, dims}`);
   if ("expression" in p && !isStr(p.expression)) out.push(`${path}.expression: expected a string`);
+  else if (isStr(p.expression) && /\$tbxKnob\d+l\d+\$/.test(p.expression)) out.push(`${path}.expression: an unresolved knob placeholder (scene/knobs.ts finish() did not run)`);
   const hasV = "v" in p;
   const hasKeys = "keys" in p;
   if (hasV === hasKeys) return void out.push(`${path}: needs exactly one of v / keys`);
@@ -388,6 +389,7 @@ export function validateAeScene(scene: unknown): string[] {
       continue;
     }
     const layerIds = new Map<string, any>();
+    const essentials = new Set<string>();
     c.layers.forEach((L: any, li: number) => {
       if (!isObj(L) || !isStr(L.id)) return;
       if (layerIds.has(L.id)) out.push(`${cp}.layers[${li}].id: duplicate "${L.id}"`);
@@ -445,6 +447,19 @@ export function validateAeScene(scene: unknown): string[] {
             prop(fx.compositingMask?.opacity, `${fp}.compositingMask.opacity`, out, num, { required: false });
           }
           if ("preset" in fx && !presets.has(fx.preset)) out.push(`${fp}.preset: "${fx.preset}" is not in scene.presets`);
+          if ("menuItems" in fx) {
+            if (fx.match !== "ADBE Dropdown Control") out.push(`${fp}.menuItems: only a Dropdown Menu Control has menu items`);
+            if (!Array.isArray(fx.menuItems) || !fx.menuItems.length || !fx.menuItems.every((x: unknown) => isStr(x) && x.length > 0)) out.push(`${fp}.menuItems: expected non-empty item names`);
+          }
+          // AE renames a Dropdown Menu Control's match name ("Pseudo/@@…")
+          // once its menu is set: its value must be keyed "#1".
+          if (fx.match === "ADBE Dropdown Control" && isObj(fx.props) && Object.keys(fx.props).some((k) => !k.startsWith("#"))) out.push(`${fp}.props: a Dropdown Menu Control's value is "#1" (AE renames its match name when the menu is set)`);
+          if ("essential" in fx) {
+            if (!isStr(fx.essential) || !fx.essential) out.push(`${fp}.essential: expected the Essential Graphics name`);
+            else if (essentials.has(fx.essential)) out.push(`${fp}.essential: "${fx.essential}" is already in this comp's Essential Graphics`);
+            else essentials.add(fx.essential);
+            if (!/ Control$/.test(fx.match)) out.push(`${fp}.essential: only Expression Controls go to the Essential Graphics`);
+          }
         });
       }
       if ("text" in L) {
@@ -499,6 +514,17 @@ export function validateAeScene(scene: unknown): string[] {
     oneOf(r.route, new Set(["direct", "direct+bake", "direct+shader", "blocked"]), "report.route", out);
     for (const k of ["native", "approx", "shader", "baked", "blocked", "warnings"]) if (!Array.isArray(r[k])) out.push(`report.${k}: expected an array`);
     if (!isObj(r.requires) || !Array.isArray(r.requires.fonts)) out.push("report.requires.fonts: expected an array");
+    if ("controls" in r) {
+      if (!Array.isArray(r.controls)) out.push("report.controls: expected an array");
+      else r.controls.forEach((l: any, i: number) => {
+        const lp = `report.controls[${i}]`;
+        if (!isObj(l) || !isStr(l.node) || !isStr(l.param) || !isStr(l.label)) return void out.push(`${lp}: expected {node, param, label, …}`);
+        oneOf(l.landed, new Set(["controls", "essential", "baked", "unlinked"]), `${lp}.landed`, out);
+        oneOf(l.source, new Set(["control", "promoted"]), `${lp}.source`, out);
+        if (!Array.isArray(l.at) || !Array.isArray(l.drives)) out.push(`${lp}: expected at / drives arrays`);
+        else if ((l.landed === "controls" || l.landed === "essential") !== l.at.length > 0) out.push(`${lp}.at: a linked knob names its control, an unlinked one none`);
+      });
+    }
   }
   return out;
 }

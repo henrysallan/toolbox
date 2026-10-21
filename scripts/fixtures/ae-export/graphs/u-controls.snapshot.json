@@ -1,0 +1,343 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "U controls",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "controls:comp:main",
+      "name": "Controls",
+      "kind": "null",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "effects": [
+       {
+        "match": "ADBE Slider Control",
+        "name": "Size · Value",
+        "props": {
+         "ADBE Slider Control-0001": {
+          "v": 0.125
+         }
+        }
+       },
+       {
+        "match": "ADBE Angle Control",
+        "name": "Turn · Rotate (°)",
+        "props": {
+         "ADBE Angle Control-0001": {
+          "v": 30
+         }
+        }
+       },
+       {
+        "match": "ADBE Slider Control",
+        "name": "Turn · Translate X",
+        "props": {
+         "ADBE Slider Control-0001": {
+          "v": 0.078125
+         }
+        }
+       },
+       {
+        "match": "ADBE Color Control",
+        "name": "Paint · Color",
+        "props": {
+         "ADBE Color Control-0001": {
+          "v": [
+           1,
+           0.5019607843137255,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "origin": [
+       "size",
+       "turn",
+       "paint"
+      ]
+     },
+     {
+      "id": "paint",
+      "name": "Chip",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "paint",
+       "chip",
+       "turn"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Paint",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Turn",
+          "contents": [
+           {
+            "kind": "rect",
+            "name": "Rectangle",
+            "size": {
+             "v": [
+              160,
+              160
+             ],
+             "expression": "[1280 * (Math.round(thisComp.layer(\"Controls\").effect(\"Size · Value\")(1) / 0.001) * 0.001), 1280 * (Math.round(thisComp.layer(\"Controls\").effect(\"Size · Value\")(1) / 0.001) * 0.001)]"
+            },
+            "position": {
+             "v": [
+              400,
+              360
+             ]
+            },
+            "roundness": {
+             "v": 0
+            }
+           }
+          ],
+          "transform": {
+           "anchor": {
+            "v": [
+             400,
+             360
+            ]
+           },
+           "position": {
+            "v": [
+             500,
+             360
+            ],
+            "expression": "[1280 * thisComp.layer(\"Controls\").effect(\"Turn · Translate X\")(1) + 400, value[1]]"
+           },
+           "scale": {
+            "v": [
+             100,
+             100
+            ]
+           },
+           "rotation": {
+            "v": 30,
+            "expression": "thisComp.layer(\"Controls\").effect(\"Turn · Rotate (°)\")(1)"
+           }
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.5019607843137255,
+            0
+           ],
+           "expression": "thisComp.layer(\"Controls\").effect(\"Paint · Color\")(1)"
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "size",
+     "type": "constant",
+     "name": "Size",
+     "class": "expression",
+     "fidelity": "exact"
+    },
+    {
+     "id": "chip",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "turn",
+     "type": "transform",
+     "name": "Turn",
+     "class": "transform",
+     "fidelity": "exact"
+    },
+    {
+     "id": "paint",
+     "type": "spline-fill",
+     "name": "Paint",
+     "class": "style",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LU0",
+     "type": "layer",
+     "name": "Chip",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   },
+   "controls": [
+    {
+     "node": "size",
+     "param": "value",
+     "label": "Size · Value",
+     "source": "control",
+     "control": "slider",
+     "landed": "controls",
+     "at": [
+      "U controls › Controls › Size · Value"
+     ],
+     "drives": [
+      "Rectangle › size width",
+      "Rectangle › size height"
+     ]
+    },
+    {
+     "node": "turn",
+     "param": "rotate",
+     "label": "Turn · Rotate (°)",
+     "source": "control",
+     "control": "angle",
+     "landed": "controls",
+     "at": [
+      "U controls › Controls › Turn · Rotate (°)"
+     ],
+     "drives": [
+      "Turn › Rotation"
+     ]
+    },
+    {
+     "node": "turn",
+     "param": "translateX",
+     "label": "Turn · Translate X",
+     "source": "control",
+     "control": "slider",
+     "landed": "controls",
+     "at": [
+      "U controls › Controls › Turn · Translate X"
+     ],
+     "drives": [
+      "Turn › Position"
+     ]
+    },
+    {
+     "node": "paint",
+     "param": "color",
+     "label": "Paint · Color",
+     "source": "control",
+     "control": "color",
+     "landed": "controls",
+     "at": [
+      "U controls › Controls › Paint · Color"
+     ],
+     "drives": [
+      "Paint › color"
+     ]
+    }
+   ]
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

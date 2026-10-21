@@ -17,7 +17,7 @@
 //     different (but render-stable) draw; emit.ts prints the RNG as such;
 //   - leaves: a value node's static param (an exposed knob or a group input
 //     folded in by flatten) goes through exprLeaf (index.ts), the one place
-//     the Essential Properties lane links them to a live control;
+//     an exposed knob links to its live control (knobs.ts);
 //   - keyframes inside the closure refuse (AE has no inline form of toolbox's
 //     eases yet): the walk samples that property as before.
 //
@@ -52,8 +52,8 @@ export const AE_EXTRA_VALUE_TYPES: ReadonlySet<string> = new Set([
 
 // A static value a program reads (a value node's param or a group input), as
 // exprLeaf resolves it: the toolbox value, and optionally the AE code that
-// reads it live (the Essential Properties lane). Without code it prints as
-// the literal.
+// reads its knob's control live (knobs.ts). Without code it prints as the
+// literal.
 export interface ExprLeaf {
   value: number;
   code?: string;

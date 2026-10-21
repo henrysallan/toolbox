@@ -169,13 +169,17 @@ export function nodeTransform(
     });
     for (const [k, rep] of Object.entries(r.reports)) ctx.report.track(id, `${opts.label ?? ""}${k}`, rep);
     for (const n of r.notes) ctx.report.note(id, n);
-    return r.transform;
+    return r;
   };
   if (t.driven) {
     const aabbAt = opts.space === "local" ? (opts.aabbAt ?? (() => opts.aabb ?? null)) : undefined;
-    const ex = expressionTransform(ctx, clock, id, tracked, aabbAt);
+    const ex = expressionTransform(ctx, clock, id, () => tracked().transform, aabbAt);
     if ("transform" in ex) return { transform: ex.transform, sampled: false };
     return { transform: sampledTransform(ctx, clock, id, aabbAt, ex.refused), sampled: true };
   }
-  return { transform: tracked(), sampled: false };
+  const r = tracked();
+  // TRS knobs → expressions reading their controls (knobs.ts).
+  const box = opts.space === "local" ? (opts.aabbAt ? opts.aabbAt(windowFrames(clock)[0] * ctx.tpf - clock.offsetTicks) : opts.aabb) : null;
+  ctx.knobs.trs(ctx, clock, id, t, r, box, opts.space);
+  return { transform: r.transform, sampled: false };
 }

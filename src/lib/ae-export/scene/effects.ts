@@ -354,8 +354,10 @@ export function withNodeOpacity(scope: Scope, id: string, r: Rendered): Rendered
 
 // --- raster ------------------------------------------------------------------------------
 
-function mapParam(scope: Scope, id: string, param: string, m: AeParamMap, ectx: AeEffectContext): AeProp {
+function mapParam(scope: Scope, id: string, param: string, m: AeParamMap, ectx: AeEffectContext, effect = ""): AeProp {
   const { ctx, clock } = scope;
+  const knob = ctx.knobs.mapped(ctx, clock, id, param, m, ectx, effect);
+  if (knob) return knob;
   if (m.kind === "color") return colorProp(ctx, clock, id, param, { shapeOrSolid: false }).color as AeProp;
   const kc = keyCtx(ctx, clock);
   const d = driverOf(ctx, id, param);
@@ -471,7 +473,7 @@ export function mapEffects(scope: Scope, id: string): MappedEffects | { refusal:
   const effects = steps.map((st): AeEffect => {
     const props: Record<string, AeProp> = {};
     for (const [k, v] of Object.entries(st.fixed ?? {})) props[k] = { v };
-    for (const [param, m] of Object.entries(st.params ?? {})) props[m.prop] = mapParam(scope, id, param, m, ectx);
+    for (const [param, m] of Object.entries(st.params ?? {})) props[m.prop] = mapParam(scope, id, param, m, ectx, st.match);
     for (const d of st.derived ?? []) {
       if (d.kind === "layer") {
         const ref = inputLayer(scope, id, d.map(values, ectx) as AeInputLayer);

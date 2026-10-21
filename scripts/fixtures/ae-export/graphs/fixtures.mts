@@ -593,6 +593,69 @@ SCENE_FIXTURES.push({
     buildCorpus(g, P_EXPRESSION_CASES);
   },
 });
+// --- U (lane 6): exposed knobs → Expression Controls / Essential Properties -------------
+SCENE_FIXTURES.push(
+  {
+    // Control-toggled knobs in the main comp: a Transform's rotate and
+    // translateX, a fill color, and a Constant wired into the rectangle's
+    // width and height → one Controls null, expressions on the driven props.
+    name: "u-controls",
+    title: "U controls",
+    comp,
+    build(g) {
+      const L = g.layer("LU0", "Chip");
+      g.node(L, "size", "constant", { value: 160 / W }, undefined, { name: "Size", controlParams: ["value"] });
+      g.node(L, "chip", "rectangle", { originX: 400 / W, originY: 0.5, width: 0.1, height: 0.1, stroke_enabled: false }, undefined, { exposedParams: ["width", "height"] });
+      g.node(L, "turn", "transform", { space: "global", pivotX: 400 / W, pivotY: 0.5, rotate: 30, translateX: 100 / W }, undefined, { name: "Turn", controlParams: ["rotate", "translateX"] });
+      g.node(L, "paint", "spline-fill", { color: "#ff8000" }, undefined, { name: "Paint", controlParams: ["color"] });
+      g.wire("size:out", "chip:param:width");
+      g.wire("size:out", "chip:param:height");
+      g.wire("chip:out", "turn:in:image");
+      g.wire("turn:out", "paint:in:path");
+      g.out(L, "paint:out");
+    },
+    probe: {
+      frames: [0],
+      pixels: [
+        // A 160 px square about (500, 360), turned 30°: its top corner sits
+        // at (470.7, 250.7), the top edge at y 256 for x 480.
+        { frame: 0, x: 500, y: 360, want: [255, 128, 0, 255], tol: 2, label: "chip centre: Paint's color, moved by Turn's translateX" },
+        { frame: 0, x: 400, y: 360, want: [null, null, null, 0], label: "the untranslated centre is empty" },
+        { frame: 0, x: 480, y: 262, want: [255, 128, 0, 255], tol: 2, label: "the turned top corner reaches above the unturned edge (y 280)" },
+      ],
+    },
+  },
+  {
+    // A node-group with two promoted inputs (one fanned out to radiusX and
+    // radiusY) → a precomp of its own whose Controls are Essential Properties.
+    name: "u-group-essential",
+    title: "U group essential",
+    comp,
+    build(g) {
+      const L = g.layer("LU1", "Badges");
+      const sockets = [{ name: "Radius", type: "scalar" }, { name: "Color", type: "vec4" }];
+      g.node(L, "badge", "node-group", { interface: { inputs: sockets, outputs: [{ name: "image", type: "image" }] }, inputValues: { Radius: 90 / W, Color: "#33cc66" } }, undefined, { name: "Badge" });
+      g.node("badge", "badge.in", "group-input", { sockets });
+      g.node("badge", "badge.out", "group-output", { sockets: [{ name: "image", type: "image" }] });
+      g.node("badge", "disc", "circle", { centerX: 640 / W, centerY: 0.5, radiusX: 0.05, radiusY: 0.05, stroke_enabled: false }, undefined, { exposedParams: ["radiusX", "radiusY"] });
+      g.node("badge", "tint", "spline-fill", { color: "#ffffff" }, undefined, { exposedParams: ["color"] });
+      g.wire("badge.in:aux:Radius", "disc:param:radiusX");
+      g.wire("badge.in:aux:Radius", "disc:param:radiusY");
+      g.wire("badge.in:aux:Color", "tint:param:color");
+      g.wire("disc:out", "tint:in:path");
+      g.wire("tint:out", "badge.out:in:image");
+      g.out(L, "badge:aux:image");
+    },
+    probe: {
+      frames: [0],
+      pixels: [
+        { frame: 0, x: 640, y: 360, want: [51, 204, 102, 255], tol: 2, label: "the badge: its Color input" },
+        { frame: 0, x: 720, y: 360, want: [51, 204, 102, 255], tol: 2, label: "inside its Radius input (90 px)" },
+        { frame: 0, x: 740, y: 360, want: [null, null, null, 0], label: "outside it" },
+      ],
+    },
+  }
+);
 
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");

@@ -15,7 +15,7 @@ import { BUILD_JSX_FILE, BUILD_JSX_SOURCE, BUILD_JSX_VERSION } from "../runtime"
 import { validateAeScene } from "../runtime/validate";
 import { writeTbxfx } from "../shader/tbxfx";
 import { validateAeShader } from "../shader/validate";
-import type { AePlanReport, AeReportLine, AeScene, AeShaderBundle } from "../types";
+import type { AeControlLine, AePlanReport, AeReportLine, AeScene, AeShaderBundle } from "../types";
 import type { AeBakeRequest, AeSceneBuild } from "../scene";
 
 export const AE_PACKAGE_EXT = ".aepkg";
@@ -113,6 +113,12 @@ export interface AeBakeOutcome {
 
 const lineName = (l: AeReportLine) => `${l.name ?? l.type} (${l.id})${l.note ? ` — ${l.note}` : ""}`;
 
+// An exposed knob and where it landed (scene/knobs.ts).
+const controlName = (l: AeControlLine) => {
+  const where = l.landed === "controls" || l.landed === "essential" ? ` → ${l.at.join("; ")}${l.landed === "essential" ? " (Essential Properties)" : ""}${l.drives.length ? `, drives ${l.drives.join(", ")}` : ""}` : ` — ${l.landed}`;
+  return `${l.label} (${l.node}.${l.param})${where}${l.note ? ` — ${l.note}` : ""}`;
+};
+
 function section(title: string, items: string[]): string[] {
   if (!items.length) return [`${title} (0): none`];
   return [`${title} (${items.length}):`, ...items.map((s) => `  - ${s}`)];
@@ -170,6 +176,7 @@ export function aePackageReport(build: AeSceneBuild, bakes: AeBakeOutcome[] = []
     ...section("Shader bundles", build.bundles.map((b) => `${b.name} → ${shaderBundlePath(b)} (Toolbox Shader ${b.hostMin} or later)`)),
     ...section("Baked footage", bakeLines),
     ...section("Blocked", r.blocked.map(lineName)),
+    ...(r.controls?.length ? section("Controls (exposed knobs)", r.controls.map(controlName)) : []),
     `Needs: ${needs.shaderHost ? `the Toolbox Shader plug-in ${needs.shaderHost} or later` : "no plug-ins"}; fonts: ${needs.fonts.length ? needs.fonts.join(", ") : "none"}.`,
   ];
   const warnings = [...new Set([...(r.warnings ?? []), ...build.warnings])];

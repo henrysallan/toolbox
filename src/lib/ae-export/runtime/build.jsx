@@ -274,6 +274,9 @@
   var problems = [];
   var warnings = [];
   var counts = { comps: 0, layers: 0, keys: 0, effects: 0, masks: 0, presets: 0, expressions: 0 };
+  // Expressions that named a layer, comp or control not built yet (a
+  // Controls null, the main comp): re-assigned once everything exists.
+  var laterExpressions = [];
 
   function has(o, k) {
     return o !== null && o !== undefined && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
@@ -491,6 +494,37 @@
     if (has(ap, "expression") && ap.expression) {
       prop.expression = ap.expression;
       counts.expressions++;
+      if (prop.expressionError) laterExpressions.push({ layer: prop.propertyGroup(prop.propertyDepth), path: propertyPath(prop), text: ap.expression, where: where });
+    }
+  }
+
+  // A property's indices below its layer (layer.property(i).property(j)...):
+  // references held across the build can go stale, layers and indices do not.
+  function propertyPath(prop) {
+    var path = [];
+    var p = prop;
+    while (p && p.parentProperty) {
+      path.unshift(p.propertyIndex);
+      p = p.parentProperty;
+    }
+    return path;
+  }
+
+  // AE records an error (and keeps the expression on) when an expression
+  // names something that does not exist yet; it evaluates once it does.
+  // Re-assigning clears the stale message; one that still fails is real.
+  function recheckExpressions() {
+    var j;
+    for (j = 0; j < laterExpressions.length; j++) {
+      (function (e) {
+        step(e.where + " expression", function () {
+          var p = e.layer;
+          var k;
+          for (k = 0; k < e.path.length; k++) p = p.property(e.path[k]);
+          p.expression = e.text;
+          if (p.expressionError) warnings.push(e.where + ": expression error - " + p.expressionError);
+        });
+      }(laterExpressions[j]));
     }
   }
 
@@ -505,6 +539,13 @@
 
   function applyProject(p) {
     var proj = app.project;
+    // A new project inherits the last project's color settings (AE's sticky
+    // "AE Last Project Settings"). OCIO (1) refuses 8 / 16 bpc and ICC working
+    // spaces; the scene's settings are Adobe color management (0). Measured
+    // in 26.5: no ColorManagementSystem enum, the number sets.
+    if (proj.colorManagementSystem !== undefined && proj.colorManagementSystem !== 0) {
+      step("project colorManagementSystem", function () { proj.colorManagementSystem = 0; });
+    }
     step("project bitsPerChannel", function () { proj.bitsPerChannel = p.bitsPerChannel; });
     if (has(p, "workingSpace")) step("project workingSpace", function () { proj.workingSpace = p.workingSpace; });
     step("project linearBlending", function () { proj.linearBlending = p.linearBlending === true; });
@@ -1016,6 +1057,9 @@
           parade().addProperty(fx.match);
           var index = parade().numProperties;
           var get = function () { return parade().property(index); };
+          // A Dropdown Menu Control's items first: setPropertyParameters gives
+          // the effect a new match name and resets its display name.
+          if (has(fx, "menuItems")) get().property(1).setPropertyParameters(fx.menuItems);
           if (has(fx, "name") && fx.name) get().name = fx.name;
           var k, key;
           if (tbx) {
@@ -1040,6 +1084,7 @@
           }
           if (has(fx, "preset") && fx.preset) applyPresetTo(layer, get, fx.preset, ctx, where + " " + fx.match);
           if (has(fx, "enabled")) get().enabled = fx.enabled === true;
+          if (has(fx, "essential") && fx.essential) ctx.essential.push({ layer: layer, index: index, name: fx.essential, where: where });
           counts.effects++;
         });
       }(effects[j], j + 1));
@@ -1196,6 +1241,7 @@
     var j, L, layer;
     var byId = {};
     var made = [];
+    ctx.essential = [];
     // Pass 1: create, bottom-up, so layers[0] ends at index 1.
     for (j = C.layers.length - 1; j >= 0; j--) {
       L = C.layers[j];
@@ -1239,6 +1285,17 @@
         }(made[j]));
       }
     }
+    // Essential Graphics: each add lands at the top of the comp's list, so
+    // add in reverse to keep scene order (measured, AE 26.5).
+    for (j = ctx.essential.length - 1; j >= 0; j--) {
+      (function (e) {
+        step(e.where + " Essential Graphics \"" + e.name + "\"", function () {
+          var p = e.layer.property("ADBE Effect Parade").property(e.index).property(1);
+          if (!p.addToMotionGraphicsTemplateAs(comp, e.name)) throw new Error("After Effects refused to add it to the Essential Graphics");
+        });
+      }(ctx.essential[j]));
+    }
+    if (ctx.essential.length) step(C.name + " Essential Graphics name", function () { comp.motionGraphicsTemplateName = C.name; });
   }
 
   // ---------------------------------------------------------------------------
@@ -1313,6 +1370,11 @@
       for (j = 0; j < r.approx.length && j < 8; j++) lines.push("  " + (r.approx[j].name || r.approx[j].type) + (r.approx[j].note ? " - " + r.approx[j].note : ""));
     }
     if (r.requires && r.requires.fonts && r.requires.fonts.length) lines.push("Fonts: " + r.requires.fonts.join(", "));
+    if (r.controls && r.controls.length) {
+      var linked = 0;
+      for (j = 0; j < r.controls.length; j++) if (r.controls[j].landed === "controls" || r.controls[j].landed === "essential") linked++;
+      lines.push("Controls: " + linked + " of " + r.controls.length + " toolbox knobs are Expression Controls (the Controls layers)");
+    }
     if (r.requires && r.requires.shaderHost) lines.push("Needs the Toolbox Shader plug-in " + r.requires.shaderHost);
     for (j = 0; j < warnings.length && j < 6; j++) lines.push("Note: " + warnings[j]);
     if (problems.length) {
@@ -1378,6 +1440,7 @@
         counts.comps++;
       }
       for (j = 0; j < comps.length; j++) buildComp(comps[j].comp, comps[j].C, ctx);
+      recheckExpressions();
 
       if (!has(ctx.items, scene.main)) throw new Error("main comp \"" + scene.main + "\" is not in scene.json");
       var main = ctx.items[scene.main];

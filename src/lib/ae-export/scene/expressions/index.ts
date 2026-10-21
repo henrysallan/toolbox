@@ -26,6 +26,7 @@ import type { WalkClock, WalkCtx } from "../context";
 import { sourceEndpoint } from "../graph";
 import { AeBuilder, compileEndpoint, finishProgram, Refusal, type ExprLeaf } from "./compile";
 import { emitAeExpression, HEADER_MARK } from "./emit";
+import { knobExpression } from "../knobs";
 
 export { AE_EXTRA_VALUE_TYPES, type ExprLeaf } from "./compile";
 export { emitAeExpression, scaleExpression, HEADER_MARK, OUT_LINE } from "./emit";
@@ -33,15 +34,17 @@ export { emitAeExpression, scaleExpression, HEADER_MARK, OUT_LINE } from "./emit
 // A static value a compiled expression reads: a value node's param or group
 // input inside the driver graph, or the consumer's own static param beside a
 // wired one. Exposed knobs and group inputs arrive here as their current
-// value (flatten folds them in). The Essential Properties lane links them:
-// return { value, code } with `code` the AE expression that reads the live
-// control, and the compiled expression reads that instead of the literal
-// (the per-frame check still runs on `value`).
+// value (flatten folds them in). A Slider / Angle knob, or one channel of a
+// Color knob ("color.r"), reads its live control instead (knobs.ts
+// knobExpression); the per-frame check still runs on `value`.
 export function exprLeaf(ctx: WalkCtx, nodeId: string, param: string, value: number): ExprLeaf {
-  void ctx;
-  void nodeId;
-  void param;
-  return { value };
+  const ch = /^(.+)\.([rgb])$/.exec(param);
+  const name = ch ? ch[1] : param;
+  const k = ctx.knobs.knobAt(nodeId, name) ?? ctx.knobs.knobAt(nodeId, `in:${name}`);
+  if (!k || (ch ? k.control !== "color" : k.control !== "slider" && k.control !== "angle")) return { value };
+  const code = knobExpression(ctx, nodeId, k.param);
+  if (!code) return { value };
+  return { value, code: ch ? `(${code})[${"rgb".indexOf(ch[2])}]` : code };
 }
 
 // What an AE property reads: a consumer param (wire > keys > constant; keys
