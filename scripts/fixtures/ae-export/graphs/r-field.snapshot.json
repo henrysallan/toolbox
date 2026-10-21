@@ -1,0 +1,615 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Copy-to-Points-instance",
+    "name": "R field · Copy to Points instance",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "box",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            64,
+            38.4
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Field-copies",
+    "name": "R field · Field copies",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy#10",
+      "name": "Copy to Points 10",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         1088.0000305175781,
+         520
+        ]
+       },
+       "scale": {
+        "v": [
+         135.09803921568627,
+         135.09803921568627
+        ]
+       },
+       "rotation": {
+        "v": 31.588235294117645
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#9",
+      "name": "Copy to Points 9",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         864.0000152587891,
+         520
+        ]
+       },
+       "scale": {
+        "v": [
+         117.45098039215686,
+         117.45098039215686
+        ]
+       },
+       "rotation": {
+        "v": 15.70588235294118
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#8",
+      "name": "Copy to Points 8",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         520
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#7",
+      "name": "Copy to Points 7",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         415.99998474121094,
+         520
+        ]
+       },
+       "scale": {
+        "v": [
+         82.54901960784314,
+         82.54901960784314
+        ]
+       },
+       "rotation": {
+        "v": -15.705882352941176
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#6",
+      "name": "Copy to Points 6",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         192.00000762939453,
+         520
+        ]
+       },
+       "scale": {
+        "v": [
+         64.90196078431373,
+         64.90196078431373
+        ]
+       },
+       "rotation": {
+        "v": -31.588235294117645
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#5",
+      "name": "Copy to Points 5",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         1088.0000305175781,
+         200
+        ]
+       },
+       "scale": {
+        "v": [
+         135.09803921568627,
+         135.09803921568627
+        ]
+       },
+       "rotation": {
+        "v": 31.588235294117645
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#4",
+      "name": "Copy to Points 4",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         864.0000152587891,
+         200
+        ]
+       },
+       "scale": {
+        "v": [
+         117.45098039215686,
+         117.45098039215686
+        ]
+       },
+       "rotation": {
+        "v": 15.70588235294118
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         200
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         415.99998474121094,
+         200
+        ]
+       },
+       "scale": {
+        "v": [
+         82.54901960784314,
+         82.54901960784314
+        ]
+       },
+       "rotation": {
+        "v": -15.705882352941176
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     },
+     {
+      "id": "copy",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         192.00000762939453,
+         200
+        ]
+       },
+       "scale": {
+        "v": [
+         64.90196078431373,
+         64.90196078431373
+        ]
+       },
+       "rotation": {
+        "v": -31.588235294117645
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance"
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "R field",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Field-copies",
+      "name": "Field copies",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Field-copies"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "ramp",
+     "type": "gradient",
+     "class": "effect",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR15",
+     "type": "layer",
+     "name": "Field copies",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "scale_field sampled at each copy at export (8-bit readback of ramp:out) · rotate_field sampled at each copy at export (8-bit readback of ramp:out) · content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 10 copies → 10 layers of one instance precomp"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

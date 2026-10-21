@@ -1,0 +1,751 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "R array",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ink2",
+      "name": "Rotated lattice",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ink2"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Fill",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Copy to Points",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "Copy to Points row",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "Copy to Points instance",
+              "contents": [
+               {
+                "kind": "polystar",
+                "name": "Polygon",
+                "type": "polygon",
+                "points": {
+                 "v": 3
+                },
+                "position": {
+                 "v": [
+                  640,
+                  360
+                 ]
+                },
+                "rotation": {
+                 "v": 0
+                },
+                "outerRadius": {
+                 "v": 25.6
+                },
+                "outerRoundness": {
+                 "v": 0
+                }
+               }
+              ],
+              "transform": {
+               "position": {
+                "v": [
+                 -357.5985336303711,
+                 52.2686828613281
+                ]
+               }
+              }
+             },
+             {
+              "kind": "repeater",
+              "name": "Copy to Points columns",
+              "copies": {
+               "v": 4
+              },
+              "offset": {
+               "v": 0
+              },
+              "composite": "above",
+              "transform": {
+               "anchor": {
+                "v": [
+                 0,
+                 0
+                ]
+               },
+               "position": {
+                "v": [
+                 94.31663513183594,
+                 39.87645467122396
+                ]
+               },
+               "scale": {
+                "v": [
+                 100,
+                 100
+                ]
+               },
+               "rotation": {
+                "v": 0
+               },
+               "startOpacity": {
+                "v": 100
+               },
+               "endOpacity": {
+                "v": 100
+               }
+              }
+             }
+            ]
+           },
+           {
+            "kind": "repeater",
+            "name": "Copy to Points rows",
+            "copies": {
+             "v": 3
+            },
+            "offset": {
+             "v": 0
+            },
+            "composite": "above",
+            "transform": {
+             "anchor": {
+              "v": [
+               0,
+               0
+              ]
+             },
+             "position": {
+              "v": [
+               -39.87643241882324,
+               94.31663513183594
+              ]
+             },
+             "scale": {
+              "v": [
+               100,
+               100
+              ]
+             },
+             "rotation": {
+              "v": 0
+             },
+             "startOpacity": {
+              "v": 100
+             },
+             "endOpacity": {
+              "v": 100
+             }
+            }
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0.8,
+            0.5333333333333333,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "box",
+      "name": "Point array",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box",
+       "copy"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Copy to Points",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Copy to Points row",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "Copy to Points instance",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "Rectangle",
+              "contents": [
+               {
+                "kind": "rect",
+                "name": "Rectangle",
+                "size": {
+                 "v": [
+                  64,
+                  38.4
+                 ]
+                },
+                "position": {
+                 "v": [
+                  640,
+                  360
+                 ]
+                },
+                "roundness": {
+                 "v": 0
+                }
+               },
+               {
+                "kind": "fill",
+                "color": {
+                 "v": [
+                  0.4,
+                  1,
+                  0.4
+                 ]
+                },
+                "opacity": {
+                 "v": 100
+                },
+                "rule": "evenodd"
+               }
+              ]
+             }
+            ],
+            "transform": {
+             "anchor": {
+              "v": [
+               640,
+               360
+              ]
+             },
+             "position": {
+              "v": [
+               768.0000305175781,
+               155.20000457763672
+              ]
+             },
+             "scale": {
+              "v": [
+               80.0000011920929,
+               80.0000011920929
+              ]
+             },
+             "rotation": {
+              "v": 30.000000834826057
+             }
+            }
+           },
+           {
+            "kind": "repeater",
+            "name": "Copy to Points columns",
+            "copies": {
+             "v": 3
+            },
+            "offset": {
+             "v": 0
+            },
+            "composite": "above",
+            "transform": {
+             "anchor": {
+              "v": [
+               0,
+               0
+              ]
+             },
+             "position": {
+              "v": [
+               127.99999237060547,
+               0
+              ]
+             },
+             "scale": {
+              "v": [
+               100,
+               100
+              ]
+             },
+             "rotation": {
+              "v": 0
+             },
+             "startOpacity": {
+              "v": 100
+             },
+             "endOpacity": {
+              "v": 100
+             }
+            }
+           }
+          ]
+         },
+         {
+          "kind": "repeater",
+          "name": "Copy to Points rows",
+          "copies": {
+           "v": 2
+          },
+          "offset": {
+           "v": 0
+          },
+          "composite": "above",
+          "transform": {
+           "anchor": {
+            "v": [
+             0,
+             0
+            ]
+           },
+           "position": {
+            "v": [
+             0,
+             102.39997863769531
+            ]
+           },
+           "scale": {
+            "v": [
+             100,
+             100
+            ]
+           },
+           "rotation": {
+            "v": 0
+           },
+           "startOpacity": {
+            "v": 100
+           },
+           "endOpacity": {
+            "v": 100
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "ink",
+      "name": "Spline array",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ink"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Fill",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "Array",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "Array row",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "Array instance",
+              "contents": [
+               {
+                "kind": "polystar",
+                "name": "Star",
+                "type": "star",
+                "points": {
+                 "v": 5
+                },
+                "position": {
+                 "v": [
+                  640,
+                  360
+                 ]
+                },
+                "rotation": {
+                 "v": 0
+                },
+                "outerRadius": {
+                 "v": 51.2
+                },
+                "innerRadius": {
+                 "v": 23.04
+                },
+                "outerRoundness": {
+                 "v": 0
+                },
+                "innerRoundness": {
+                 "v": 0
+                }
+               }
+              ],
+              "transform": {
+               "anchor": {
+                "v": [
+                 640,
+                 360
+                ]
+               },
+               "position": {
+                "v": [
+                 332.8,
+                 -177.6
+                ]
+               },
+               "scale": {
+                "v": [
+                 80,
+                 80
+                ]
+               },
+               "rotation": {
+                "v": 20
+               }
+              }
+             },
+             {
+              "kind": "repeater",
+              "name": "Array columns",
+              "copies": {
+               "v": 4
+              },
+              "offset": {
+               "v": 0
+              },
+              "composite": "above",
+              "transform": {
+               "anchor": {
+                "v": [
+                 0,
+                 0
+                ]
+               },
+               "position": {
+                "v": [
+                 153.6,
+                 0
+                ]
+               },
+               "scale": {
+                "v": [
+                 100,
+                 100
+                ]
+               },
+               "rotation": {
+                "v": 0
+               },
+               "startOpacity": {
+                "v": 100
+               },
+               "endOpacity": {
+                "v": 100
+               }
+              }
+             }
+            ]
+           },
+           {
+            "kind": "repeater",
+            "name": "Array rows",
+            "copies": {
+             "v": 2
+            },
+            "offset": {
+             "v": 0
+            },
+            "composite": "above",
+            "transform": {
+             "anchor": {
+              "v": [
+               0,
+               0
+              ]
+             },
+             "position": {
+              "v": [
+               0,
+               153.6
+              ]
+             },
+             "scale": {
+              "v": [
+               100,
+               100
+              ]
+             },
+             "rotation": {
+              "v": 0
+             },
+             "startOpacity": {
+              "v": 100
+             },
+             "endOpacity": {
+              "v": 100
+             }
+            }
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.6666666666666666,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "st",
+     "type": "star",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "arr",
+     "type": "array",
+     "class": "instances",
+     "fidelity": "exact",
+     "note": "4×2 array → Repeaters (X inside)"
+    },
+    {
+     "id": "ink",
+     "type": "spline-fill",
+     "class": "style",
+     "fidelity": "exact"
+    },
+    {
+     "id": "one",
+     "type": "point",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "arr2",
+     "type": "array",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "turn",
+     "type": "point-expression",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "tri",
+     "type": "polygon",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "copies",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "exact",
+     "note": "regular 4×3 lattice, one instance → Repeaters"
+    },
+    {
+     "id": "ink2",
+     "type": "spline-fill",
+     "class": "style",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR12",
+     "type": "layer",
+     "name": "Spline array",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR13",
+     "type": "layer",
+     "name": "Point array",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR14",
+     "type": "layer",
+     "name": "Rotated lattice",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · regular 3×2 lattice → two Repeaters on the instance's shape layer"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

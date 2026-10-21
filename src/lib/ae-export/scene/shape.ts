@@ -45,7 +45,7 @@ import {
 } from "./context";
 import { parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, newLayer, rendered, type Rendered, type Scope } from "./layers";
-import { repeaterGeom } from "./instances";
+import { arrayGeom, repeaterGeom } from "./instances";
 import { applyImageMask } from "./masks";
 import { nodeTransform, nodeTrs, sampledTransform } from "./trs";
 import { styleGroups, STYLE_TYPES } from "./style";
@@ -76,15 +76,34 @@ export function animatedUpstream(ctx: WalkCtx, id: string): boolean {
     const n = ctx.graph.node(x);
     if (!n) return false;
     const def = getNodeDef(n.type);
+    // tickDriven / stable: false defs (Stagger, LFO) read the clock without
+    // declaring it in facts. A cacheable def can only change over time
+    // through its fingerprint, so when it has one that decides (a timed
+    // Point Expression; a Gradient reads time only in wave mode).
     const own =
       Object.values(n.animation ?? {}).some((b) => b?.animated && (b.keyframes?.length ?? 0) > 1) ||
-      !!def?.facts?.reads?.includes("time") ||
-      !!def?.simulation;
+      (!!def?.facts?.reads?.includes("time") && !def.fingerprintExtras) ||
+      !!def?.tickDriven ||
+      def?.stable === false ||
+      !!def?.simulation ||
+      fingerprintReadsTime(def, n.params ?? {});
     const r = own || ctx.graph.into(x).some((w) => visit(w.source, seen));
     memo!.set(x, r);
     return r;
   };
   return visit(id, new Set());
+}
+
+// Does a def's fingerprint change with the clock (its compute reads time)?
+function fingerprintReadsTime(def: ReturnType<typeof getNodeDef>, params: Record<string, unknown>): boolean {
+  const fe = def?.fingerprintExtras;
+  if (!fe) return false;
+  const at = (s: number) => ({ time: s, frame: Math.floor(s * 30), tick: s * 30_000, fps: 30, ticksPerFrame: 1000, width: 1, height: 1, state: {} }) as unknown as RenderContext;
+  try {
+    return fe(params, at(0)) !== fe(params, at(1.37));
+  } catch {
+    return false;
+  }
 }
 
 export function splineAt(scope: Scope, endpoint: string, compFrame: number): SplineValue {
@@ -197,6 +216,10 @@ export function geometry(scope: Scope, endpoint: string, opts: GeomOpts): Geom {
   if (t === "copy-to-points") {
     const rg = repeaterGeom(scope, id);
     if (rg) return rg;
+  }
+  if (t === "array") {
+    const ag = arrayGeom(scope, id);
+    if (ag) return ag;
   }
 
   // Everything else: the evaluated geometry.

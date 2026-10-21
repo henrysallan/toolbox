@@ -867,14 +867,14 @@
      "type": "copy-to-points",
      "class": "instances",
      "fidelity": "approx",
-     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds — strokes widen them) · regular 4×3 grid → two Repeaters on the instance's shape layer"
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · regular 4×3 lattice → two Repeaters on the instance's shape layer"
     },
     {
      "id": "copy2",
      "type": "copy-to-points",
      "class": "instances",
      "fidelity": "approx",
-     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds — strokes widen them) · 12 copies → 12 layers of one instance precomp"
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 12 copies → 12 layers of one instance precomp"
     }
    ],
    "shader": [],

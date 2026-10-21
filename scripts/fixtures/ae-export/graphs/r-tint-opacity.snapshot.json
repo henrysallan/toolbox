@@ -1,0 +1,1017 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Copy-to-Points-instance",
+    "name": "R tint opacity · Copy to Points instance",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "dot",
+      "name": "Circle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "dot"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Circle",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "v": [
+            76.8,
+            76.8
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Tinted-dots",
+    "name": "R tint opacity · Tinted dots",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy#8",
+      "name": "Copy to Points 8",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         1024.000015258789,
+         347.99999237060547
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.31222599744796753,
+           0.3552691340446472,
+           0.34808459877967834
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#7",
+      "name": "Copy to Points 7",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         768.0000305175781,
+         347.99999237060547
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 89.99999761581421
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.6818524599075317,
+           0.9758255481719971,
+           0.4087315499782562
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#6",
+      "name": "Copy to Points 6",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         512.0000076293945,
+         347.99999237060547
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 80.0000011920929
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.04962726682424545,
+           0.8177209496498108,
+           0.5775161981582642
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#5",
+      "name": "Copy to Points 5",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         256.00000381469727,
+         347.99999237060547
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 69.9999988079071
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.7397701740264893,
+           0.7976804971694946,
+           0.17879362404346466
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#4",
+      "name": "Copy to Points 4",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         1024.000015258789,
+         92.00000762939453
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 60.00000238418579
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.9741224050521851,
+           0.2937973439693451,
+           0.2596298158168793
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         768.0000305175781,
+         92.00000762939453
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 50
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.7841817140579224,
+           0.5706872344017029,
+           0.6761127710342407
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         512.0000076293945,
+         92.00000762939453
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 40.00000059604645
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.6207417845726013,
+           0.08827690035104752,
+           0.20300300419330597
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         256.00000381469727,
+         92.00000762939453
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 30.000001192092896
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Copy-to-Points-instance",
+      "effects": [
+       {
+        "match": "ADBE Fill",
+        "name": "Tint",
+        "props": {
+         "ADBE Fill-0002": {
+          "v": [
+           0.44302406907081604,
+           0.0868912786245346,
+           0.8741223812103271
+          ]
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Copy-to-Points-instance#2",
+    "name": "R tint opacity · Copy to Points instance 2",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "box",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "box"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            76.8,
+            46.08
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 6
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 4
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            0.5019607843137255,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:Tinted-boxes",
+    "name": "R tint opacity · Tinted boxes",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "copy2#3",
+      "name": "Copy to Points 3",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         960,
+         540
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2",
+      "effects": [
+       {
+        "match": "ADBE CHANNEL MIXER",
+        "name": "Tint",
+        "props": {
+         "ADBE CHANNEL MIXER-0001": {
+          "v": 47.997286915779114
+         },
+         "ADBE CHANNEL MIXER-0006": {
+          "v": 86.85647249221802
+         },
+         "ADBE CHANNEL MIXER-0011": {
+          "v": 69.96601223945618
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy2#2",
+      "name": "Copy to Points 2",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         540
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2",
+      "effects": [
+       {
+        "match": "ADBE CHANNEL MIXER",
+        "name": "Tint",
+        "props": {
+         "ADBE CHANNEL MIXER-0001": {
+          "v": 78.27827334403992
+         },
+         "ADBE CHANNEL MIXER-0006": {
+          "v": 49.72202181816101
+         },
+         "ADBE CHANNEL MIXER-0011": {
+          "v": 11.15529090166092
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "copy2",
+      "name": "Copy to Points 1",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         320,
+         540
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Copy-to-Points-instance#2",
+      "effects": [
+       {
+        "match": "ADBE CHANNEL MIXER",
+        "name": "Tint",
+        "props": {
+         "ADBE CHANNEL MIXER-0001": {
+          "v": 95.397287607193
+         },
+         "ADBE CHANNEL MIXER-0006": {
+          "v": 39.078304171562195
+         },
+         "ADBE CHANNEL MIXER-0011": {
+          "v": 59.46725010871887
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "R tint opacity",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Tinted-boxes",
+      "name": "Tinted boxes",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy2"
+      ],
+      "source": "comp:Tinted-boxes"
+     },
+     {
+      "id": "pre:Tinted-dots",
+      "name": "Tinted dots",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "copy"
+      ],
+      "source": "comp:Tinted-dots"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "pts",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "hue",
+     "type": "set-named-attribute",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "fade",
+     "type": "set-named-attribute",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "dot",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "row",
+     "type": "grid",
+     "class": "instances",
+     "fidelity": "exact"
+    },
+    {
+     "id": "hue2",
+     "type": "set-named-attribute",
+     "class": "instances",
+     "fidelity": "sampled"
+    },
+    {
+     "id": "box",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR0",
+     "type": "layer",
+     "name": "Tinted dots",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LR1",
+     "type": "layer",
+     "name": "Tinted boxes",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "copy",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 8 copies → 8 layers of one instance precomp (tint, opacity)"
+    },
+    {
+     "id": "copy2",
+     "type": "copy-to-points",
+     "class": "instances",
+     "fidelity": "approx",
+     "note": "content-center anchor from the instance's spline bounds (toolbox reads its alpha bounds at ≤ 128 px — strokes widen them) · 3 copies → 3 layers of one instance precomp (tint)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

@@ -263,7 +263,7 @@ void main() {
 // field / rotate field / driver field). Cached per slot, keyed on the
 // source ImageValue's identity — the evaluator hands back the same
 // value object while an upstream is cached, so identity ⇒ same pixels.
-type LumaSampler = (u: number, v: number) => number;
+export type LumaSampler = (u: number, v: number) => number;
 type SamplerSlot = "pick" | "scale" | "rotate" | "driver";
 interface LumaSamplerEntry {
   src: ImageValue;
@@ -497,27 +497,43 @@ function getLumaSampler(
   const cached = state.samplers[slot];
   if (cached && cached.src === img) return cached.sample;
   if (img.width <= 0 || img.height <= 0) return null;
-  const MAX = 256;
-  const aspect = img.width / img.height;
-  let w: number;
-  let h: number;
-  if (img.width >= img.height) {
-    w = Math.min(MAX, img.width);
-    h = Math.max(1, Math.round(w / aspect));
-  } else {
-    h = Math.min(MAX, img.height);
-    w = Math.max(1, Math.round(h * aspect));
-  }
+  const [w, h] = lumaReadbackSize(img.width, img.height);
   const data = ctx.readImagePixels(img, w, h);
   if (!data) return null;
+  const canvasAspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
+  const sample = lumaSamplerOf(data, w, h, canvasAspect);
+  state.samplers[slot] = { src: img, sample };
+  return sample;
+}
+
+// The readback size of a luminance sampler: the long edge ≤ 256 px.
+// Exported with lumaSamplerOf for the After Effects export, which samples
+// the same readback at export time (lib/ae-export/scene/instances.ts).
+export function lumaReadbackSize(width: number, height: number): [number, number] {
+  const MAX = 256;
+  const aspect = width / height;
+  if (width >= height) {
+    const w = Math.min(MAX, width);
+    return [w, Math.max(1, Math.round(w / aspect))];
+  }
+  const h = Math.min(MAX, height);
+  return [Math.max(1, Math.round(h * aspect)), h];
+}
+
+// Nearest-texel luminance of an RGBA readback (row 0 = visual top).
+export function lumaSamplerOf(
+  data: ArrayLike<number>,
+  w: number,
+  h: number,
+  canvasAspect: number
+): LumaSampler {
   // Callers pass AUTHORED point coords; the grid covers the canvas.
   // Convert y (authored is aspect-compressed around 0.5) so the sample
   // lands where the point visually sits — without it, localized fields
   // (Cursor falloff) drifted on non-square canvases. The canvas aspect
   // is the right one even if the texture isn't canvas-sized: display
   // stretches the texture over the canvas.
-  const canvasAspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
-  const sample: LumaSampler = (u, v) => {
+  return (u, v) => {
     // Authored y-DOWN → canvas y-DOWN (matches image-data row order —
     // row 0 = visual top — so no flip on the read).
     const vc = 0.5 + (v - 0.5) * canvasAspect;
@@ -528,8 +544,6 @@ function getLumaSampler(
       (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255
     );
   };
-  state.samplers[slot] = { src: img, sample };
-  return sample;
 }
 
 // Deterministic per-point hash → [0, 1). Index-stable so a static
@@ -546,7 +560,8 @@ function hash01(index: number, seed: number): number {
 // Resolve which groupIndex to instance at one target point, per the
 // pick mode. `null` means "no filtering — emit every variant" (the
 // `all` mode, single-group instances, or image mode with no pick wired).
-function chooseVariantGroup(opts: {
+// Exported for the After Effects export, which replays the same picks.
+export function chooseVariantGroup(opts: {
   pickMode: string;
   distinct: number[];
   index: number;
