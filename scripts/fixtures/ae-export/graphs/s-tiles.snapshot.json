@@ -1,0 +1,300 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S tiles",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Tiles",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "blob",
+       "grid"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Repeat",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "SDF Repeat -4..4 × -2..2",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "SDF Repeat clip",
+              "contents": [
+               {
+                "kind": "ellipse",
+                "name": "SDF Circle",
+                "size": {
+                 "v": [
+                  140,
+                  140
+                 ]
+                },
+                "position": {
+                 "v": [
+                  680,
+                  360
+                 ]
+                }
+               },
+               {
+                "kind": "rect",
+                "name": "SDF Repeat cell",
+                "size": {
+                 "v": [
+                  160,
+                  268.00000000000006
+                 ]
+                },
+                "position": {
+                 "v": [
+                  640,
+                  360
+                 ]
+                },
+                "roundness": {
+                 "v": 0
+                }
+               },
+               {
+                "kind": "merge",
+                "mode": "intersect"
+               }
+              ]
+             },
+             {
+              "kind": "repeater",
+              "name": "SDF Repeat x",
+              "copies": {
+               "v": 9
+              },
+              "offset": {
+               "v": -4
+              },
+              "composite": "below",
+              "transform": {
+               "position": {
+                "v": [
+                 160,
+                 0
+                ]
+               },
+               "scale": {
+                "v": [
+                 100,
+                 100
+                ]
+               },
+               "rotation": {
+                "v": 0
+               }
+              }
+             },
+             {
+              "kind": "repeater",
+              "name": "SDF Repeat y",
+              "copies": {
+               "v": 5
+              },
+              "offset": {
+               "v": -2
+              },
+              "composite": "below",
+              "transform": {
+               "position": {
+                "v": [
+                 0,
+                 -160
+                ]
+               },
+               "scale": {
+                "v": [
+                 100,
+                 100
+                ]
+               },
+               "rotation": {
+                "v": 0
+               }
+              }
+             }
+            ]
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0.2,
+            0.8,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "grid",
+     "type": "sdf-repeat",
+     "class": "vector",
+     "fidelity": "exact",
+     "note": "→ Repeater: 45 copies"
+    },
+    {
+     "id": "blob",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS4",
+     "type": "layer",
+     "name": "Tiles",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · 45 repeated copies in one shape layer · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

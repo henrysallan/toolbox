@@ -1,0 +1,156 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "bake:ras",
+    "path": "footage/bake_ras.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "SDF Rasterize (baked)"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S shader",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Smooth",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "l",
+       "r",
+       "blend"
+      ],
+      "source": "bake:ras"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+bake",
+   "native": [
+    {
+     "id": "LS7",
+     "type": "layer",
+     "name": "Smooth",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [
+    {
+     "id": "l",
+     "type": "sdf-circle",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with ras:out"
+    },
+    {
+     "id": "r",
+     "type": "sdf-circle",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with ras:out"
+    },
+    {
+     "id": "blend",
+     "type": "sdf-smooth-union",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with ras:out"
+    },
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "shader-1 (ras:out) has no fused GLSL Expression in opts.fused — run the graph-to-glsl loop on it (\"Convert shader regions with Claude\") for an editable Toolbox Shader; until then it bakes · baked: shader-1 (ras:out) has no fused GLSL Expression in opts.fused — run the graph-to-glsl loop on it (\"Convert shader regions with Claude\") for an editable Toolbox Shader; until then it bakes · static — one frame (AE holds a one-frame movie as a still)"
+    }
+   ],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [
+  {
+   "id": "bake:ras",
+   "output": "ras:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_ras.mov",
+   "reason": "shader-1 (ras:out) has no fused GLSL Expression in opts.fused — run the graph-to-glsl loop on it (\"Convert shader regions with Claude\") for an editable Toolbox Shader; until then it bakes"
+  }
+ ],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

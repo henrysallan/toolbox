@@ -1,0 +1,451 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Contour",
+    "name": "S contour · Contour",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "layers": [
+     {
+      "id": "trace2",
+      "name": "SDF to Spline matte",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "trace2"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "matte",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "SDF Circle",
+          "size": {
+           "v": [
+            240,
+            240
+           ]
+          },
+          "position": {
+           "v": [
+            1000,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ],
+      "enabled": false
+     },
+     {
+      "id": "slab",
+      "name": "Rectangle",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "slab",
+       "stack"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Rectangle",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "Rectangle",
+          "size": {
+           "v": [
+            300,
+            400
+           ]
+          },
+          "position": {
+           "v": [
+            1000,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "evenodd"
+         }
+        ]
+       }
+      ],
+      "matte": {
+       "layer": "trace2",
+       "type": "ALPHA"
+      }
+     },
+     {
+      "id": "line",
+      "name": "Stroke",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "line",
+       "a",
+       "b",
+       "u",
+       "trace",
+       "stack"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Stroke",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "ellipse",
+            "name": "SDF Circle",
+            "size": {
+             "v": [
+              280,
+              280
+             ]
+            },
+            "position": {
+             "v": [
+              380,
+              360
+             ]
+            }
+           },
+           {
+            "kind": "rect",
+            "name": "SDF Rectangle",
+            "size": {
+             "v": [
+              300,
+              140
+             ]
+            },
+            "position": {
+             "v": [
+              560,
+              360
+             ]
+            },
+            "roundness": {
+             "v": 0
+            }
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "stroke",
+          "color": {
+           "v": [
+            1,
+            0.2,
+            0.4
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "width": {
+           "v": 6
+          },
+          "cap": "round",
+          "join": "round",
+          "miterLimit": 10
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "S contour",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Contour",
+      "name": "Contour",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "trace2",
+       "slab",
+       "stack",
+       "line",
+       "a",
+       "b",
+       "u",
+       "trace"
+      ],
+      "source": "comp:Contour"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "a",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "b",
+     "type": "sdf-rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "u",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "line",
+     "type": "spline-stroke",
+     "class": "style",
+     "fidelity": "exact"
+    },
+    {
+     "id": "slab",
+     "type": "rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "c2",
+     "type": "sdf-circle",
+     "class": "mask",
+     "fidelity": "exact"
+    },
+    {
+     "id": "stack",
+     "type": "merge",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "layer 1: in:mask:m1 → ALPHA track matte"
+    },
+    {
+     "id": "LS6",
+     "type": "layer",
+     "name": "Contour",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "trace",
+     "type": "sdf-to-spline",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → its exact outline as Merge Paths geometry for the consumer (toolbox traces the contour on a resolution² grid); iso → an offset. · toolbox traces the contour on a 512² grid of the [0, 1]² square (straight segments 2.50 px long; measured ~0.7 px right of the zero set at 512); AE gets the exact outline"
+    },
+    {
+     "id": "trace2",
+     "type": "sdf-to-spline",
+     "class": "mask",
+     "fidelity": "approx",
+     "note": "→ an ALPHA track matte: a hidden shape layer of the SDF tree's outline (Merge Paths cannot be a mask path). · toolbox traces the contour on a 512² grid of the [0, 1]² square (straight segments 2.50 px long; measured ~0.7 px right of the zero set at 512); AE gets the exact outline"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

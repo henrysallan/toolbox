@@ -1,0 +1,239 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S animated",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Animated",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "pulse",
+       "move"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Translate",
+          "contents": [
+           {
+            "kind": "ellipse",
+            "name": "SDF Circle",
+            "size": {
+             "keys": [
+              {
+               "t": 0,
+               "v": [
+                120,
+                120
+               ],
+               "inInterp": "linear",
+               "outInterp": "bezier",
+               "easeOut": [
+                {
+                 "influence": 33.33333333333333,
+                 "speed": 600
+                },
+                {
+                 "influence": 33.33333333333333,
+                 "speed": 600
+                }
+               ]
+              },
+              {
+               "t": 0.8,
+               "v": [
+                280,
+                280
+               ],
+               "inInterp": "bezier",
+               "outInterp": "linear",
+               "easeIn": [
+                {
+                 "influence": 33.333333333333336,
+                 "speed": 0
+                },
+                {
+                 "influence": 33.333333333333336,
+                 "speed": 0
+                }
+               ]
+              }
+             ],
+             "dims": 2
+            },
+            "position": {
+             "v": [
+              400,
+              360
+             ]
+            }
+           }
+          ],
+          "transform": {
+           "position": {
+            "keys": [
+             {
+              "t": 0,
+              "v": [
+               0,
+               0
+              ],
+              "inInterp": "linear",
+              "outInterp": "bezier",
+              "easeOut": [
+               {
+                "influence": 33.33333333333333,
+                "speed": 1125
+               }
+              ]
+             },
+             {
+              "t": 0.8,
+              "v": [
+               300,
+               0
+              ],
+              "inInterp": "bezier",
+              "outInterp": "linear",
+              "easeIn": [
+               {
+                "influence": 33.333333333333336,
+                "speed": 0
+               }
+              ]
+             }
+            ],
+            "dims": 2
+           }
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "move",
+     "type": "sdf-translate",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "pulse",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS5",
+     "type": "layer",
+     "name": "Animated",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · bg_alpha 0: toolbox mixes an edge pixel's colour toward the background colour (a fringe of it), AE keeps the fill colour on its edge · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

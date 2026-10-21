@@ -42,6 +42,7 @@ import {
   isGlslFusable,
   SDF_CHAIN_TYPES,
 } from "./classes";
+import { SDF_NATIVE_CONSUMERS, sdfChainVerdict, type SdfChainGraph } from "./sdf-chain";
 import {
   DEFAULT_AE_POLICY,
   TBX_SHADER_MATCH_NAME,
@@ -418,6 +419,12 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     return s.entry.class === "unsupported" && VALUE_SOCKETS.has(infoOf(id)?.primaryOutput ?? "");
   };
 
+  // SDF chains (sdf-chain.ts): a hard tree under sdf-rasterize / sdf-to-mask /
+  // sdf-to-spline is one shape layer's geometry (vector); any other keeps the
+  // shader route — or, under sdf-to-spline (a GPU-traced contour), bakes —
+  // and says which node stopped it.
+  const sdfTree = planSdfChains(order, st, byId, inputsOf, outputsOf, input, tracksOf);
+
   // Spline producers that only feed universal `mask` sockets are layer masks.
   for (const id of reverse) {
     const s = st.get(id)!;
@@ -429,11 +436,15 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     );
     if (!allMask) continue;
     s.mask = true;
+    // An SDF outline is Merge Paths geometry, which no mask path holds.
+    const sdfOutline = sdfTree.has(id) || s.node.type === "sdf-to-spline";
     s.entry = {
       ...s.entry,
       class: "mask",
-      ae: "mask:path",
-      note: "→ a mask path on the consuming layer (mode add); on an effect → its Compositing Options mask.",
+      ae: sdfOutline ? "shape:merge" : "mask:path",
+      note: sdfOutline
+        ? "→ an ALPHA track matte: a hidden shape layer of the SDF tree's outline (Merge Paths cannot be a mask path)."
+        : "→ a mask path on the consuming layer (mode add); on an effect → its Compositing Options mask.",
     };
   }
 
@@ -575,7 +586,8 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
   };
   for (const id of order) {
     const s = st.get(id)!;
-    if (isValue(id) || s.mask || zoneShell(id)) continue;
+    // A native SDF tree joins its consumer's segment (one shape layer).
+    if (isValue(id) || s.mask || zoneShell(id) || sdfTree.has(id)) continue;
     if (s.region) {
       if (s.region.segment === undefined) {
         s.region.segment = segs.length;
@@ -868,6 +880,101 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
 // ---------------------------------------------------------------------------
 // Pieces
 // ---------------------------------------------------------------------------
+
+// AE objects a native SDF tree node becomes (scene/sdf.ts).
+const SDF_AE: Record<string, { ae: string; note: string }> = {
+  "sdf-circle": { ae: "shape:ellipse", note: "→ an Ellipse (radius + offsets)." },
+  "sdf-rectangle": { ae: "shape:rect", note: "→ a Rect (corner radius → Roundness; offsets grow both)." },
+  "sdf-line-segment": { ae: "shape:rect", note: "→ a capsule: a Rect of length |b − a| + 2·thickness, Roundness = thickness, turned to the segment." },
+  "sdf-polygon": { ae: "shape:polystar", note: "→ a Polystar polygon (its SDF is the edge-line distance, so offsets keep sharp corners: circumradius + δ/cos(π/n))." },
+  "sdf-star": { ae: "shape:polystar", note: "→ a Polystar star (inner radius r·sin(π/m − π/n)/sin(π/m)); an offset adds Offset Paths, Round join." },
+  "sdf-triangle": { ae: "shape:path", note: "→ a Path; an offset adds Offset Paths, Round join." },
+  "sdf-union": { ae: "shape:merge", note: "→ Merge Paths Add." },
+  "sdf-smooth-union": { ae: "shape:merge", note: "→ Merge Paths Add (smoothness ≤ 0)." },
+  "sdf-intersection": { ae: "shape:merge", note: "→ Merge Paths Intersect." },
+  "sdf-smooth-intersection": { ae: "shape:merge", note: "→ Merge Paths Intersect (smoothness ≤ 0)." },
+  "sdf-subtraction": { ae: "shape:merge", note: "→ Merge Paths Subtract (a, then b)." },
+  "sdf-smooth-subtraction": { ae: "shape:merge", note: "→ Merge Paths Subtract (smoothness ≤ 0)." },
+  "sdf-round": { ae: "shape:group", note: "→ an offset of every leaf below it (round distributes over min / max)." },
+  "sdf-onion": { ae: "shape:merge", note: "→ the tree offset out by `thickness` minus the tree offset in by it (Merge Paths Subtract)." },
+  "sdf-material": { ae: "shape:fill", note: "→ the fill colour (distance-only consumers ignore it)." },
+  "sdf-translate": { ae: "shape:group", note: "→ a group Position." },
+  "sdf-rotate": { ae: "shape:group", note: "→ a group Rotation about the pivot (SDF space is Y-up: −degrees)." },
+  "sdf-scale": { ae: "shape:group", note: "→ a group Scale about its center." },
+  "sdf-mirror": { ae: "shape:group", note: "→ the kept half and its reflection (scale −100), Merge Paths Add." },
+  "sdf-repeat": { ae: "shape:repeater", note: "→ a Repeater per axis over the cell (clipped where the shape overflows it)." },
+  "sdf-polar": { ae: "shape:repeater", note: "→ a Repeater turning 360°/segments about the center (clipped to the wedge where needed)." },
+};
+
+const SDF_CONSUMER_NOTE: Record<string, string> = {
+  "sdf-rasterize": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only).",
+  "sdf-to-mask": "Hard SDF chain → a white-on-black shape layer (luma matte where it masks); threshold → an offset. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep.",
+  "sdf-to-spline": "Hard SDF chain → its exact outline as Merge Paths geometry for the consumer (toolbox traces the contour on a resolution² grid); iso → an offset.",
+};
+
+function planSdfChains(
+  order: string[],
+  st: Map<string, NodeState>,
+  byId: Map<string, PlanNode>,
+  inputsOf: Map<string, Wire[]>,
+  outputsOf: Map<string, Wire[]>,
+  input: AePlanInput,
+  tracksOf: (id: string) => AePlanTrack[]
+): Set<string> {
+  const g: SdfChainGraph = {
+    type: (id) => byId.get(id)?.type,
+    values: (id) => input.valuesOf(id),
+    input(id, socket) {
+      const w = (inputsOf.get(id) ?? []).find((x) => x.toHandle === `in:${socket}`);
+      return w ? { id: w.fromId, handle: w.fromHandle } : undefined;
+    },
+    animated: (id) =>
+      new Set([
+        ...(byId.get(id)?.keyframed ?? []),
+        ...tracksOf(id).map((t) => t.param),
+        ...(inputsOf.get(id) ?? []).filter((w) => w.toHandle.startsWith("param:")).map((w) => w.toHandle.slice(6)),
+      ]),
+  };
+  const native = new Set<string>();
+  const consumers: string[] = [];
+  for (const id of order) {
+    const s = st.get(id)!;
+    if (!SDF_NATIVE_CONSUMERS.has(s.node.type) || s.entry.class === "bake" || s.entry.class === "unsupported") continue;
+    const v = sdfChainVerdict(id, g);
+    if (v.native) {
+      consumers.push(id);
+      for (const x of v.nodes) native.add(x);
+      s.entry = { class: "vector", ae: "shape:merge", fidelity: "approx", note: SDF_CONSUMER_NOTE[s.node.type] };
+      s.requires = new Set();
+      for (const n of v.notes) s.notes.push(n);
+      continue;
+    }
+    const at = `${v.type} (${v.node}): ${v.reason}`;
+    if (s.node.type === "sdf-to-spline") {
+      s.entry = { class: "bake", ae: "layer:footage", fidelity: "bake", requires: ["footage"], note: `SDF chain AE can't draw — ${at}. Its contour is traced on the GPU per frame, so it bakes with what it feeds.` };
+      s.requires = new Set(["footage"]);
+    } else s.notes.push(`SDF chain stays a shader region — ${at}.`);
+  }
+  // A tree node that also feeds something outside the native trees (another
+  // consumer's shader region) keeps its shader class there.
+  const ok = (x: string) => native.has(x) || consumers.includes(x);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const x of [...native])
+      if ((outputsOf.get(x) ?? []).some((w) => !ok(w.toId))) {
+        native.delete(x);
+        changed = true;
+      }
+  }
+  for (const x of native) {
+    const s = st.get(x);
+    if (!s) continue;
+    const m = SDF_AE[s.node.type];
+    s.entry = { class: "vector", ae: m?.ae ?? "shape:group", fidelity: "exact", note: `SDF tree node ${m?.note ?? "→ shape-layer geometry."}` };
+    s.requires = new Set();
+  }
+  return native;
+}
 
 function layerWindows(L: AePlanLayerInput, durationFrames: number): AePlanWindow[] {
   const end = Math.max(1, Math.round(durationFrames));

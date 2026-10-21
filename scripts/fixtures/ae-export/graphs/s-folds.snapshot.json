@@ -1,0 +1,552 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S folds",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Folds",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "lens",
+       "mir",
+       "dot",
+       "rep",
+       "spoke",
+       "pol",
+       "all"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "SDF Mirror",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "SDF Mirror clip",
+              "contents": [
+               {
+                "kind": "ellipse",
+                "name": "SDF Circle",
+                "size": {
+                 "v": [
+                  200,
+                  200
+                 ]
+                },
+                "position": {
+                 "v": [
+                  300,
+                  360
+                 ]
+                }
+               },
+               {
+                "kind": "rect",
+                "name": "SDF Mirror half",
+                "size": {
+                 "v": [
+                  224,
+                  328.00000000000006
+                 ]
+                },
+                "position": {
+                 "v": [
+                  352,
+                  360
+                 ]
+                },
+                "roundness": {
+                 "v": 0
+                }
+               },
+               {
+                "kind": "merge",
+                "mode": "intersect"
+               }
+              ]
+             },
+             {
+              "kind": "group",
+              "name": "SDF Mirror reflection",
+              "contents": [
+               {
+                "kind": "group",
+                "name": "SDF Mirror clip",
+                "contents": [
+                 {
+                  "kind": "ellipse",
+                  "name": "SDF Circle",
+                  "size": {
+                   "v": [
+                    200,
+                    200
+                   ]
+                  },
+                  "position": {
+                   "v": [
+                    300,
+                    360
+                   ]
+                  }
+                 },
+                 {
+                  "kind": "rect",
+                  "name": "SDF Mirror half",
+                  "size": {
+                   "v": [
+                    224,
+                    328.00000000000006
+                   ]
+                  },
+                  "position": {
+                   "v": [
+                    352,
+                    360
+                   ]
+                  },
+                  "roundness": {
+                   "v": 0
+                  }
+                 },
+                 {
+                  "kind": "merge",
+                  "mode": "intersect"
+                 }
+                ]
+               }
+              ],
+              "transform": {
+               "anchor": {
+                "v": [
+                 240,
+                 360
+                ]
+               },
+               "position": {
+                "v": [
+                 240,
+                 360
+                ]
+               },
+               "scale": {
+                "v": [
+                 -100,
+                 100
+                ]
+               }
+              }
+             },
+             {
+              "kind": "merge",
+              "mode": "add"
+             }
+            ]
+           },
+           {
+            "kind": "group",
+            "name": "SDF Repeat",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "SDF Repeat -1..1 × 0..0",
+              "contents": [
+               {
+                "kind": "ellipse",
+                "name": "SDF Circle",
+                "size": {
+                 "v": [
+                  80,
+                  80
+                 ]
+                },
+                "position": {
+                 "v": [
+                  560,
+                  360
+                 ]
+                }
+               },
+               {
+                "kind": "repeater",
+                "name": "SDF Repeat x",
+                "copies": {
+                 "v": 3
+                },
+                "offset": {
+                 "v": -1
+                },
+                "composite": "below",
+                "transform": {
+                 "position": {
+                  "v": [
+                   120,
+                   0
+                  ]
+                 },
+                 "scale": {
+                  "v": [
+                   100,
+                   100
+                  ]
+                 },
+                 "rotation": {
+                  "v": 0
+                 }
+                }
+               }
+              ]
+             },
+             {
+              "kind": "merge",
+              "mode": "add"
+             }
+            ]
+           },
+           {
+            "kind": "group",
+            "name": "SDF Polar",
+            "contents": [
+             {
+              "kind": "group",
+              "name": "SDF Polar clip",
+              "contents": [
+               {
+                "kind": "rect",
+                "name": "SDF Rectangle",
+                "size": {
+                 "v": [
+                  180,
+                  60
+                 ]
+                },
+                "position": {
+                 "v": [
+                  1100,
+                  360
+                 ]
+                },
+                "roundness": {
+                 "v": 0
+                }
+               },
+               {
+                "kind": "path",
+                "name": "SDF Polar sector",
+                "path": {
+                 "v": {
+                  "vertices": [
+                   [
+                    1000,
+                    360
+                   ],
+                   [
+                    1222.0089383317809,
+                    488.1769203083567
+                   ],
+                   [
+                    1296.0119177757078,
+                    360
+                   ],
+                   [
+                    1222.0089383317809,
+                    231.82307969164322
+                   ]
+                  ],
+                  "inTangents": [
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ]
+                  ],
+                  "outTangents": [
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ],
+                   [
+                    0,
+                    0
+                   ]
+                  ],
+                  "closed": true
+                 }
+                }
+               },
+               {
+                "kind": "merge",
+                "mode": "intersect"
+               }
+              ]
+             },
+             {
+              "kind": "repeater",
+              "name": "SDF Polar copies",
+              "copies": {
+               "v": 6
+              },
+              "offset": {
+               "v": 0
+              },
+              "composite": "below",
+              "transform": {
+               "anchor": {
+                "v": [
+                 1000,
+                 360
+                ]
+               },
+               "position": {
+                "v": [
+                 0,
+                 0
+                ]
+               },
+               "scale": {
+                "v": [
+                 100,
+                 100
+                ]
+               },
+               "rotation": {
+                "v": 60
+               }
+              }
+             },
+             {
+              "kind": "merge",
+              "mode": "add"
+             }
+            ]
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "mir",
+     "type": "sdf-mirror",
+     "class": "vector",
+     "fidelity": "exact",
+     "note": "the shape crosses the mirror line — the kept half is an Intersect with the half-plane"
+    },
+    {
+     "id": "lens",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "rep",
+     "type": "sdf-repeat",
+     "class": "vector",
+     "fidelity": "exact",
+     "note": "→ Repeater: 3 copies"
+    },
+    {
+     "id": "dot",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "pol",
+     "type": "sdf-polar",
+     "class": "vector",
+     "fidelity": "exact",
+     "note": "the shape crosses its sector — each copy is an Intersect with the wedge · → Repeater: 6 copies turned 60° about the center"
+    },
+    {
+     "id": "spoke",
+     "type": "sdf-rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "all",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS3",
+     "type": "layer",
+     "name": "Folds",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · 9 repeated copies in one shape layer · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

@@ -66,13 +66,14 @@ export default async function run(): Promise<number> {
     .filter(([t, g]) => (g.class === "stateful" || g.class === "opaque") && aeExportEntry(t).class === "shader")
     .map(([t]) => t);
   c.check("no stateful/opaque GLSL node sits on the shader rung", statefulShader.length === 0, statefulShader.join(", "));
-  const sdfTree = visible
-    .filter((d) => d.type.startsWith("sdf-") && (d.primaryOutput === "sdf" || d.primaryOutput === "position"))
-    .map((d) => d.type)
-    .filter((t) => !TRANSLATION_CLASSES[t]);
+  const sdfTree = visible.filter((d) => d.type.startsWith("sdf-") && (d.primaryOutput === "sdf" || d.primaryOutput === "position")).map((d) => d.type);
   const sdfDrift = sdfTree.filter((t) => !SDF_CHAIN_TYPES.has(t) && aeExportEntry(t).class !== "bake");
   const sdfStale = [...SDF_CHAIN_TYPES].filter((t) => !sdfTree.includes(t));
   c.check("SDF_CHAIN_TYPES lists the registry's SDF tree nodes (texture-backed ones bake)", sdfDrift.length === 0 && sdfStale.length === 0, JSON.stringify({ sdfDrift, sdfStale }));
+  // The GLSL table classes the same tree nodes `compiled` (they fuse into
+  // their consumer), and the texture-backed ones opaque.
+  const sdfGlsl = sdfTree.filter((t) => (TRANSLATION_CLASSES[t]?.class === "compiled") !== SDF_CHAIN_TYPES.has(t));
+  c.check("the GLSL table classes exactly the SDF chain nodes compiled", sdfGlsl.length === 0, sdfGlsl.join(", "));
 
   // --- the rungs the v1 scope (§11.8) and the task pin ------------------------------
   const blur = aeExportEntry("blur");

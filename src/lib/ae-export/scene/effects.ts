@@ -57,6 +57,7 @@ import {
   type Scope,
 } from "./layers";
 import { applyImageMask, isSplineEndpoint, matteSource, splineMasks } from "./masks";
+import { isSdfContour } from "./sdf";
 import { nodeTransform, nodeTrs, type NodeTrs } from "./trs";
 
 export function effectContext(ctx: WalkCtx): AeEffectContext {
@@ -487,7 +488,8 @@ export function emitRaster(scope: Scope, endpoint: string, pn: AePlanNode, em: E
   let base = effectTarget(scope, scope.render(input), ctx.graph.name(input.split(":")[0]));
   // A spline mask on an AE effect: its Compositing Options mask on every
   // step (one layer); each step then acts only inside the mask.
-  const splineMask = maskEp && isSplineEndpoint(scope, maskEp);
+  // (An SDF contour has no mask path: its Merge Paths outline mattes instead.)
+  const splineMask = maskEp && isSplineEndpoint(scope, maskEp) && !isSdfContour(scope, maskEp);
   for (const fx of mapped.effects) {
     if (SOURCE_READERS.has(fx.match) && base.main.effects?.length) {
       ctx.report.note(id, `${fx.match} reads its layer's source: the layer with effects before it is precomposed first`);

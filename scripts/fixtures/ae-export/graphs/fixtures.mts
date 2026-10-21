@@ -16,6 +16,7 @@
 import type { Edge } from "@xyflow/react";
 import type { GraphNode } from "@/state/graph-ops";
 import type { AeSceneOptions } from "@/lib/ae-export/scene";
+import { SDF_SCENE_FIXTURES } from "./sdf-fixtures.mts";
 
 export interface FixturePixel {
   frame: number;
@@ -577,6 +578,9 @@ SCENE_FIXTURES.push({
     ],
   },
 });
+
+// --- M4 lane 4: hard SDF chains (sdf-fixtures.mts) ----------------------------------
+SCENE_FIXTURES.push(...SDF_SCENE_FIXTURES);
 
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");

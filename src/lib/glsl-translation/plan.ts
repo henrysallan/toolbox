@@ -335,7 +335,15 @@ export function planTranslation(input: PlanInput): TranslationPlan {
     };
 
     // Can `n` join the region? Returns a reason when not.
+    const blockMemo = new Map<string, string | null>();
     const blocker = (n: PlanNode): string | null => {
+      if (blockMemo.has(n.id)) return blockMemo.get(n.id)!;
+      blockMemo.set(n.id, null); // acyclic by contract; a cycle reads as fusable
+      const why = blockerOf(n);
+      blockMemo.set(n.id, why);
+      return why;
+    };
+    const blockerOf = (n: PlanNode): string | null => {
       const forced = forceExcluded.get(n.id);
       if (forced) return forced;
       const entry = classOf(n.type);
@@ -355,7 +363,13 @@ export function planTranslation(input: PlanInput): TranslationPlan {
         if (w.toHandle.startsWith("param:")) continue; // manual frontier, handled below
         const producer = byId.get(w.fromId);
         const pEntry = producer ? classOf(producer.type) : null;
-        if (pEntry?.class === "compiled") continue; // SDF/position chain — stays fusable
+        if (pEntry?.class === "compiled") {
+          // An SDF / position value is an AST that compiles into this node's
+          // shader — it cannot cross a frontier, so its producer must fuse too.
+          const up = producer ? blocker(producer) : null;
+          if (up) return `its ${t} input "${w.toHandle.slice(3)}" comes from ${producer!.type} (${producer!.id}), which cannot fuse (${up}) — an ${t} tree compiles whole or not at all`;
+          continue;
+        }
         return `input "${w.toHandle.slice(3)}" carries ${t} from ${producer?.type ?? w.fromId} — this node is not a per-pixel function of images here`;
       }
       return null;
@@ -440,6 +454,10 @@ export function planTranslation(input: PlanInput): TranslationPlan {
 
   const forced = new Map<string, string>();
   let g = grow(forced);
+  // The target's own inputs can refuse it (an SDF tree with a non-closed-form
+  // leaf): say so instead of returning an empty region with no refusal.
+  const targetOut = g.excluded.find((x) => x.id === targetId);
+  if (targetOut) return { ...emptyPlan(targetOut.reason), excluded: g.excluded };
   let targetMask = splitTargetMask(g);
   // Shrink: drop the deepest region node carrying frontier images until the
   // distinct-producer count fits the sampler budget.

@@ -1,0 +1,348 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S chain",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Chain",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "plank",
+       "turn",
+       "egg",
+       "squash",
+       "pent",
+       "shift",
+       "all"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "SDF Rotate",
+            "contents": [
+             {
+              "kind": "rect",
+              "name": "SDF Rectangle",
+              "size": {
+               "v": [
+                320,
+                80
+               ]
+              },
+              "position": {
+               "v": [
+                300,
+                360
+               ]
+              },
+              "roundness": {
+               "v": 0
+              }
+             }
+            ],
+            "transform": {
+             "anchor": {
+              "v": [
+               300,
+               360
+              ]
+             },
+             "position": {
+              "v": [
+               300,
+               360
+              ]
+             },
+             "rotation": {
+              "v": -30
+             }
+            }
+           },
+           {
+            "kind": "group",
+            "name": "SDF Scale",
+            "contents": [
+             {
+              "kind": "ellipse",
+              "name": "SDF Circle",
+              "size": {
+               "v": [
+                200,
+                200
+               ]
+              },
+              "position": {
+               "v": [
+                700,
+                360
+               ]
+              }
+             }
+            ],
+            "transform": {
+             "anchor": {
+              "v": [
+               700,
+               360
+              ]
+             },
+             "position": {
+              "v": [
+               700,
+               360
+              ]
+             },
+             "scale": {
+              "v": [
+               160,
+               60
+              ]
+             }
+            }
+           },
+           {
+            "kind": "group",
+            "name": "SDF Translate",
+            "contents": [
+             {
+              "kind": "polystar",
+              "name": "SDF Polygon",
+              "type": "polygon",
+              "points": {
+               "v": 5
+              },
+              "position": {
+               "v": [
+                900,
+                360
+               ]
+              },
+              "rotation": {
+               "v": 0
+              },
+              "outerRadius": {
+               "v": 90
+              },
+              "outerRoundness": {
+               "v": 0
+              }
+             }
+            ],
+            "transform": {
+             "position": {
+              "v": [
+               120,
+               150
+              ]
+             }
+            }
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "turn",
+     "type": "sdf-rotate",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "plank",
+     "type": "sdf-rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "squash",
+     "type": "sdf-scale",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "egg",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "shift",
+     "type": "sdf-translate",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "pent",
+     "type": "sdf-polygon",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "all",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS2",
+     "type": "layer",
+     "name": "Chain",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

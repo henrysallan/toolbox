@@ -20,7 +20,10 @@ export default async function run(): Promise<number> {
   for (const s of nodeSlugs) {
     const type = s.slice("ae-nodes/".length);
     c.check(`${s} names a registered node type`, !!getNodeDef(type));
+    for (const a of AE_DOCS[s].aliases ?? []) c.check(`${s} alias ${a} is a registered node type without a page of its own`, !!getNodeDef(a) && !AE_DOCS[`ae-nodes/${a}`]);
   }
+  const fam = nodeSlugs.find((s) => AE_DOCS[s].aliases?.length);
+  if (fam) c.check("an alias resolves to its family page", resolveAeDocSlugs({ types: [AE_DOCS[fam].aliases![0]] }).slugs.join() === fam);
 
   const core = getAeDocs();
   c.check("no args → the three core docs, in order", core.indexOf("## ae-conventions") < core.indexOf("## ae-host") && core.indexOf("## ae-host") < core.indexOf("## ae-parity"));

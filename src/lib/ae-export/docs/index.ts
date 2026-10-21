@@ -45,7 +45,10 @@ export function resolveAeDocSlugs(args: GetAeDocsArgs): { slugs: string[]; missi
   }
   for (const t of types) {
     const slug = `ae-nodes/${t}`;
+    // A family page lists its other types as aliases.
+    const family = Object.keys(AE_DOCS).find((s) => AE_DOCS[s].aliases?.includes(t));
     if (AE_DOCS[slug]) push(slug);
+    else if (family) push(family);
     else missing.push(slug);
   }
   return { slugs: out, missing };
