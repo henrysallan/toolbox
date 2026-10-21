@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import sharp from "sharp";
 
+import { withAeLock } from "../ae-lock.mts";
+
 export const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO = resolve(HERE, "../../..");
 const AE_DIR = process.env.AE_DIR ?? "/Applications/Adobe After Effects 2026";
@@ -91,17 +93,18 @@ export async function runAeJob(name: string, job: string, cfg: Record<string, un
       "",
     ].join("\n")
   );
-  removeHook();
-  mkdirSync(STARTUP, { recursive: true });
-  copyFileSync(join(HERE, "hook.jsx"), HOOK);
   const t0 = Date.now();
   const log = join(work, `${name}-aerender.log`);
-  let code: number;
-  try {
-    code = await aerender({ TBX_AE_CALIBRATE_DRIVER: driver }, ["-project", project, "-sound", "OFF"], log, timeoutMs);
-  } finally {
+  const code = await withAeLock(`calibrate ${name}`, async () => {
     removeHook();
-  }
+    mkdirSync(STARTUP, { recursive: true });
+    copyFileSync(join(HERE, "hook.jsx"), HOOK);
+    try {
+      return await aerender({ TBX_AE_CALIBRATE_DRIVER: driver }, ["-project", project, "-sound", "OFF"], log, timeoutMs);
+    } finally {
+      removeHook();
+    }
+  });
   const seconds = (Date.now() - t0) / 1000;
   if (existsSync(join(work, "hook-error.txt"))) throw new Error(`hook error: ${readFileSync(join(work, "hook-error.txt"), "utf8")}`);
   if (!existsSync(outPath)) throw new Error(`job ${name} wrote no ${outPath} (aerender exit ${code}; log ${log})`);
@@ -112,7 +115,7 @@ export async function runAeJob(name: string, job: string, cfg: Record<string, un
 // Renders a saved project's queue (no hook).
 export async function renderQueue(project: string, work: string, timeoutMs = 1_200_000): Promise<{ code: number; seconds: number }> {
   const t0 = Date.now();
-  const code = await aerender({}, ["-project", project, "-sound", "OFF"], join(work, `render-${Date.now()}.log`), timeoutMs);
+  const code = await withAeLock("calibrate render", () => aerender({}, ["-project", project, "-sound", "OFF"], join(work, `render-${Date.now()}.log`), timeoutMs));
   return { code, seconds: (Date.now() - t0) / 1000 };
 }
 

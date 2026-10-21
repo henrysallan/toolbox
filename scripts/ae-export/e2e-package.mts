@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
 import { loadRegistry } from "./harness.mts";
+import { acquireAeLock } from "../ae-export-spike/ae-lock.mts";
 import { syncChannelInputs } from "@/engine/expr-channels";
 import { compareRgba } from "@/lib/glsl-translation/compare";
 import { createAeExportRunner, folderSink } from "@/lib/ae-export/package";
@@ -50,6 +51,8 @@ const outIdx = args.indexOf("--out");
 const OUT = outIdx >= 0 ? resolve(args[outIdx + 1]) : join(tmpdir(), `toolbox-ae-e2e-${Date.now()}`);
 const filters = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--out");
 mkdirSync(OUT, { recursive: true });
+// One After Effects run at a time across checkouts (held until exit).
+await acquireAeLock("e2e-package");
 
 // ---------------------------------------------------------------------------
 // The Electron host

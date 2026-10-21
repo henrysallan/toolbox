@@ -50,6 +50,7 @@ import { easeOf } from "@/engine/keyframes";
 import { compareRgba } from "@/lib/glsl-translation/compare";
 import { synthesizeGradientPreset } from "@/lib/ae-export/runtime/ffx";
 import type { AeScene, AeShapeItem } from "@/lib/ae-export/types";
+import { acquireAeLock } from "./ae-lock.mts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -585,6 +586,8 @@ const aeArgs = [
   "-sound", "OFF",
 ];
 
+// Held until exit: the build launch and the per-project renders below.
+await acquireAeLock("ae-export-spike/run");
 removeHook();
 mkdirSync(STARTUP, { recursive: true });
 copyFileSync(join(HERE, "hook.jsx"), HOOK);
