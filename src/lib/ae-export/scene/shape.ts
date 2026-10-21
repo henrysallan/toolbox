@@ -46,6 +46,7 @@ import {
 import { parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, newLayer, rendered, type Rendered, type Scope } from "./layers";
 import { repeaterGeom } from "./instances";
+import { emitSdfLayer, sdfContourGeometry } from "./sdf";
 import { applyImageMask } from "./masks";
 import { nodeTransform, nodeTrs, sampledTransform } from "./trs";
 import { styleGroups, STYLE_TYPES } from "./style";
@@ -198,6 +199,9 @@ export function geometry(scope: Scope, endpoint: string, opts: GeomOpts): Geom {
     const rg = repeaterGeom(scope, id);
     if (rg) return rg;
   }
+
+  // An SDF contour is traced on the GPU: its tree's own outline instead.
+  if (t === "sdf-to-spline") return sdfContourGeometry(scope, id);
 
   // Everything else: the evaluated geometry.
   if (pn && pn.fidelity === "sampled" && animatedUpstream(ctx, id)) ctx.report.sampled(id, "evaluated path → path keys per frame");
@@ -441,6 +445,7 @@ export function emitVector(scope: Scope, endpoint: string, pn: AePlanNode): Rend
   const { id, out } = parseOut(endpoint);
   const n = ctx.graph.node(id);
   if (!n) return null;
+  if (n.type === "sdf-rasterize" || n.type === "sdf-to-mask") return emitSdfLayer(scope, endpoint, pn);
   const bundled = out === "out:aux:image";
   const isStyle = STYLE_TYPES.has(n.type) && out === "out:primary";
   if (!isStyle && !bundled) return null;

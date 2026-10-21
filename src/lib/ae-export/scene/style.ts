@@ -30,6 +30,7 @@ import { colorProp, isAnimatedParam, scalarProp, staticNumber, type WalkCtx } fr
 import { sourceEndpoint } from "./graph";
 import { BakeSignal, type Scope } from "./layers";
 import { animatedUpstream, splineAt, type Geom } from "./shape";
+import { isSdfContour } from "./sdf";
 
 export const STYLE_TYPES = new Set(["spline-fill", "spline-stroke", "rasterize-spline"]);
 
@@ -176,7 +177,10 @@ function strokeStyle(scope: Scope, id: string, name: string, geom: Geom): AeShap
   if (p.thickness_source === "vary") throw new BakeSignal("Stroke thickness_source = vary (per-subpath widths)");
   if (p.close_open_paths) ctx.report.approx(id, "close_open_paths: AE strokes open paths open");
   // Stroke width maps to the widest anchor; the taper scales it down.
-  const widthProfiled = !animatedUpstream(ctx, ctx.graph.wireInto(id, "in:path")?.source ?? id) ? subpathsOf(scope, id, "width profile") : [];
+  const pathWire = ctx.graph.wireInto(id, "in:path");
+  // (An SDF contour carries no per-anchor widths, and is traced on the GPU.)
+  const contour = !!pathWire && isSdfContour(scope, sourceEndpoint(pathWire));
+  const widthProfiled = !contour && !animatedUpstream(ctx, pathWire?.source ?? id) ? subpathsOf(scope, id, "width profile") : [];
   const taper = taperOf(scope, id, widthProfiled);
   if (taper) {
     const max = Math.max(...widthProfiled[0].anchors.map((a) => (typeof a.width === "number" ? a.width : 1)));

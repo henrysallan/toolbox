@@ -1,0 +1,343 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Soft",
+    "name": "S soft · Soft",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "layers": [
+     {
+      "id": "ras",
+      "name": "SDF Rasterize",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "dome",
+       "plate",
+       "both"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "ellipse",
+            "name": "SDF Circle",
+            "size": {
+             "v": [
+              300,
+              300
+             ]
+            },
+            "position": {
+             "v": [
+              520,
+              360
+             ]
+            }
+           },
+           {
+            "kind": "rect",
+            "name": "SDF Rectangle",
+            "size": {
+             "v": [
+              320,
+              160
+             ]
+            },
+            "position": {
+             "v": [
+              760,
+              400
+             ]
+            },
+            "roundness": {
+             "v": 30
+            }
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ],
+      "effects": [
+       {
+        "match": "ADBE Gaussian Blur 2",
+        "name": "edge softness",
+        "props": {
+         "ADBE Gaussian Blur 2-0001": {
+          "v": 4.584381620488347
+         },
+         "ADBE Gaussian Blur 2-0002": {
+          "v": 1
+         },
+         "ADBE Gaussian Blur 2-0003": {
+          "v": 0
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "ras#2",
+      "name": "SDF Rasterize background",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "S soft",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Soft",
+      "name": "Soft",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "dome",
+       "plate",
+       "both"
+      ],
+      "source": "comp:Soft"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "dome",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "plate",
+     "type": "sdf-rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "both",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS9",
+     "type": "layer",
+     "name": "Soft",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · edge softness 3 px → Gaussian Blur 2, Blurriness 4.584 on the fill (toolbox's smoothstep is an Epanechnikov edge; AE's blur a Gaussian over its 1-px coverage)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

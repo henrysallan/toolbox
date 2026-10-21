@@ -1,0 +1,391 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S erode",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "ras",
+      "name": "Erode",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "ras",
+       "hex",
+       "grow",
+       "star",
+       "thin",
+       "tri",
+       "tthin",
+       "box",
+       "bthin",
+       "all"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF Rasterize",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "polystar",
+            "name": "SDF Polygon",
+            "type": "polygon",
+            "points": {
+             "v": 6
+            },
+            "position": {
+             "v": [
+              200,
+              360
+             ]
+            },
+            "rotation": {
+             "v": 0
+            },
+            "outerRadius": {
+             "v": 133.09401076758502
+            },
+            "outerRoundness": {
+             "v": 0
+            }
+           },
+           {
+            "kind": "group",
+            "name": "SDF Star offset",
+            "contents": [
+             {
+              "kind": "polystar",
+              "name": "SDF Star",
+              "type": "star",
+              "points": {
+               "v": 6
+              },
+              "position": {
+               "v": [
+                520,
+                360
+               ]
+              },
+              "rotation": {
+               "v": 0
+              },
+              "outerRadius": {
+               "v": 170
+              },
+              "innerRadius": {
+               "v": 98.14954576223639
+              },
+              "outerRoundness": {
+               "v": 0
+              },
+              "innerRoundness": {
+               "v": 0
+              }
+             },
+             {
+              "kind": "offset",
+              "amount": {
+               "v": -14
+              },
+              "join": "round",
+              "miterLimit": 4
+             }
+            ]
+           },
+           {
+            "kind": "group",
+            "name": "SDF Triangle offset",
+            "contents": [
+             {
+              "kind": "path",
+              "name": "SDF Triangle",
+              "path": {
+               "v": {
+                "vertices": [
+                 [
+                  820,
+                  180
+                 ],
+                 [
+                  700,
+                  540
+                 ],
+                 [
+                  960,
+                  540
+                 ]
+                ],
+                "inTangents": [
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ]
+                ],
+                "outTangents": [
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ]
+                ],
+                "closed": true
+               }
+              }
+             },
+             {
+              "kind": "offset",
+              "amount": {
+               "v": -12
+              },
+              "join": "round",
+              "miterLimit": 4
+             }
+            ]
+           },
+           {
+            "kind": "rect",
+            "name": "SDF Rectangle",
+            "size": {
+             "v": [
+              160,
+              220
+             ]
+            },
+            "position": {
+             "v": [
+              1130,
+              360
+             ]
+            },
+            "roundness": {
+             "v": 0
+            }
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "hex",
+     "type": "sdf-polygon",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "grow",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "star",
+     "type": "sdf-star",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "thin",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tri",
+     "type": "sdf-triangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tthin",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "box",
+     "type": "sdf-rectangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "bthin",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "all",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS10",
+     "type": "layer",
+     "name": "Erode",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "ras",
+     "type": "sdf-rasterize",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → one shape layer: the tree as Merge Paths, Fill = foreground, Stroke = contour, a comp-sized Rect = background. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep of the distance (edge pixels only). · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

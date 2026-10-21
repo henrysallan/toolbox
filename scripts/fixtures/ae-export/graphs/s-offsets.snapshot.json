@@ -1,0 +1,420 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S offsets",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "mask",
+      "name": "Offsets",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "mask",
+       "star",
+       "soft",
+       "ringc",
+       "ring",
+       "bar",
+       "tri",
+       "tround",
+       "all"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "SDF to Mask",
+        "contents": [
+         {
+          "kind": "group",
+          "name": "SDF Union",
+          "contents": [
+           {
+            "kind": "group",
+            "name": "SDF Star offset",
+            "contents": [
+             {
+              "kind": "polystar",
+              "name": "SDF Star",
+              "type": "star",
+              "points": {
+               "v": 5
+              },
+              "position": {
+               "v": [
+                240,
+                360
+               ]
+              },
+              "rotation": {
+               "v": 0
+              },
+              "outerRadius": {
+               "v": 150
+              },
+              "innerRadius": {
+               "v": 92.70509831248424
+              },
+              "outerRoundness": {
+               "v": 0
+              },
+              "innerRoundness": {
+               "v": 0
+              }
+             },
+             {
+              "kind": "offset",
+              "amount": {
+               "v": 16
+              },
+              "join": "round",
+              "miterLimit": 4
+             }
+            ]
+           },
+           {
+            "kind": "group",
+            "name": "SDF Onion",
+            "contents": [
+             {
+              "kind": "ellipse",
+              "name": "SDF Circle",
+              "size": {
+               "v": [
+                260,
+                260
+               ]
+              },
+              "position": {
+               "v": [
+                560,
+                360
+               ]
+              }
+             },
+             {
+              "kind": "ellipse",
+              "name": "SDF Circle",
+              "size": {
+               "v": [
+                180,
+                180
+               ]
+              },
+              "position": {
+               "v": [
+                560,
+                360
+               ]
+              }
+             },
+             {
+              "kind": "merge",
+              "mode": "subtract"
+             }
+            ]
+           },
+           {
+            "kind": "group",
+            "name": "SDF Line Segment segment",
+            "contents": [
+             {
+              "kind": "rect",
+              "name": "SDF Line Segment",
+              "size": {
+               "v": [
+                433.35924528226417,
+                56
+               ]
+              },
+              "position": {
+               "v": [
+                0,
+                0
+               ]
+              },
+              "roundness": {
+               "v": 28
+              }
+             }
+            ],
+            "transform": {
+             "position": {
+              "v": [
+               860,
+               360
+              ]
+             },
+             "rotation": {
+              "v": 57.9946167919165
+             }
+            }
+           },
+           {
+            "kind": "group",
+            "name": "SDF Triangle offset",
+            "contents": [
+             {
+              "kind": "path",
+              "name": "SDF Triangle",
+              "path": {
+               "v": {
+                "vertices": [
+                 [
+                  1130,
+                  220
+                 ],
+                 [
+                  1010,
+                  500
+                 ],
+                 [
+                  1240,
+                  500
+                 ]
+                ],
+                "inTangents": [
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ]
+                ],
+                "outTangents": [
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ],
+                 [
+                  0,
+                  0
+                 ]
+                ],
+                "closed": true
+               }
+              }
+             },
+             {
+              "kind": "offset",
+              "amount": {
+               "v": 12
+              },
+              "join": "round",
+              "miterLimit": 4
+             }
+            ]
+           },
+           {
+            "kind": "merge",
+            "mode": "add"
+           }
+          ]
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            1,
+            1,
+            1
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       },
+       {
+        "kind": "group",
+        "name": "background",
+        "contents": [
+         {
+          "kind": "rect",
+          "name": "frame",
+          "size": {
+           "v": [
+            1280,
+            720
+           ]
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          },
+          "roundness": {
+           "v": 0
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0,
+            0,
+            0
+           ]
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "star",
+     "type": "sdf-star",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "soft",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "ringc",
+     "type": "sdf-circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "ring",
+     "type": "sdf-onion",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "bar",
+     "type": "sdf-line-segment",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tri",
+     "type": "sdf-triangle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tround",
+     "type": "sdf-round",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "all",
+     "type": "sdf-union",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LS1",
+     "type": "layer",
+     "name": "Offsets",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "mask",
+     "type": "sdf-to-mask",
+     "class": "vector",
+     "fidelity": "approx",
+     "note": "Hard SDF chain → a white-on-black shape layer (luma matte where it masks); threshold → an offset. Edges: AE's coverage anti-aliasing vs toolbox's smoothstep. · → white on black shape layer (a luma matte where it masks) · edge: AE's coverage anti-aliasing (a 1-px box) stands in for toolbox's smoothstep over ±1 px of the distance — edge pixels only (measured: ≤ 1.5 % of pixels off by > 16/255 at 1 px, geometry within 0.05 px)"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

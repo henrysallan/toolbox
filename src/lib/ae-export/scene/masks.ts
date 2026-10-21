@@ -23,6 +23,7 @@ import { keyCtx, windowFrames } from "./context";
 import { parseOut } from "./graph";
 import { BakeSignal, collapse, newLayer, rendered, type Rendered, type Scope } from "./layers";
 import { animatedUpstream, geometry, splineAt } from "./shape";
+import { isSdfContour } from "./sdf";
 
 // Does this endpoint carry a spline?
 export function isSplineEndpoint(scope: Scope, endpoint: string): boolean {
@@ -98,7 +99,7 @@ export function applyImageMask(scope: Scope, r: Rendered, id: string, maskEp: st
   const { ctx } = scope;
   const s = collapse(scope, r, ctx.graph.name(id));
   const main = s.main!;
-  if (isSplineEndpoint(scope, maskEp) && ctx.free.has(main)) {
+  if (isSplineEndpoint(scope, maskEp) && !isSdfContour(scope, maskEp) && ctx.free.has(main)) {
     main.masks = [...(main.masks ?? []), ...splineMasks(scope, maskEp)];
     ctx.report.note(id, "spline mask → layer mask (add)");
     return s;

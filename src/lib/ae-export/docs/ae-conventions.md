@@ -147,6 +147,52 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - Text animators, text on a path, keyed text documents and gradient or
   image fills bake for now.
 
+## SDF chains
+
+- **SDF space is Y-up**, unlike canvas01: the compiled shader samples
+  `p = v_uv` with y rescaled about 0.5 (*measured*: a circle at y 0.3 renders
+  0.2·W *below* the centre). `X = x·W`, `Y = H/2 − (y − 0.5)·W`, lengths
+  `·W`; a positive SDF rotation turns counter-clockwise on screen, so AE's
+  rotation is `−degrees`.
+- A **hard** chain under `sdf-rasterize`, `sdf-to-mask` or `sdf-to-spline`
+  exports as one shape layer (the rules: `sdf-chain.ts`; per-family notes:
+  `ae-nodes/sdf-rasterize`, `sdf-circle`, `sdf-union`, `sdf-translate`):
+  - primitives → parametric Ellipse / Rect / Polystar (a line segment is a
+    capsule Rect; a triangle a Path);
+  - union / intersection / subtraction → Merge Paths Add / Intersect /
+    Subtract, one group per operand in tree order. Subtract keeps the
+    **first** operand in the group and removes the ones after it
+    (*measured*);
+  - round and onion are offsets, pushed onto the leaves: an offset
+    distributes over min / max and flips sign under a subtracted side.
+    Circle, rect, capsule and polygon grow parametrically (polySdf is an
+    edge-line distance, so its offsets keep sharp corners); star and triangle
+    get Offset Paths, Round join; onion(X) = X grown by t minus X shrunk by t;
+  - translate / rotate / scale → group transforms (nearest the leaf =
+    innermost); mirror → the kept half (an Intersect with the half-plane when
+    the shape crosses the line) plus its reflection; repeat → a Repeater per
+    axis over the cell (clipped where the shape overflows it; a bounded
+    repeat's edge copies keep their overflow); polar → a Repeater turning
+    360°/n about the centre over the wedge.
+- What keeps the **shader** route: smooth booleans (except at smoothness
+  ≤ 0), displace, twist, morph, per-pixel scalar fields (polygon sides,
+  rotation angle), repeat jitter, `sdf-spline` / `sdf-from-image`
+  (per-eval distance textures), per-shape materials under a rasterize, and
+  the shading consumers (`sdf-shade`, `sdf-bevel`, `sdf-to-distance-image`).
+  Under `sdf-to-spline` such a chain bakes (its contour is traced on the GPU).
+- `sdf-rasterize`: Fill = foreground, a centred Stroke 2·contour_width px =
+  the contour, a comp-sized Rect = the background. Toolbox's edge is
+  `smoothstep` across ±max(softness, 0.5) px of the distance; AE's
+  coverage anti-aliasing is a 1-px box, so a softness ≥ ~0.75 px becomes a
+  Gaussian Blur 2 on the fill layer over its own background layer
+  (Blurriness = √(soft²/5 − 1/12) / 0.2858).
+- Toolbox **replaces** the background under a translucent fill (a mix, not
+  an over): with fg_alpha < 1 the background is knocked out under the shape.
+- `sdf-to-mask` is white on black (a luma matte where it masks);
+  `sdf-to-spline` is its tree's exact outline as geometry — toolbox traces it
+  on a resolution² grid of the [0, 1]² SDF square, so the clip to that square
+  is kept.
+
 ## ExtendScript
 
 - AE 26.5's ExtendScript reads `a ? x : b ? y : z` as

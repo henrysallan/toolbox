@@ -1,0 +1,150 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "bake:paint",
+    "path": "footage/bake_paint.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "Fill (baked)"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "S twist",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 1,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "paint",
+      "name": "Twisted",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 1,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "paint"
+      ],
+      "source": "bake:paint"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+bake",
+   "native": [
+    {
+     "id": "LS8",
+     "type": "layer",
+     "name": "Twisted",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [
+    {
+     "id": "tw",
+     "type": "sdf-twist",
+     "class": "bake",
+     "fidelity": "bake"
+    },
+    {
+     "id": "arm",
+     "type": "sdf-rectangle",
+     "class": "bake",
+     "fidelity": "bake"
+    },
+    {
+     "id": "trace",
+     "type": "sdf-to-spline",
+     "class": "bake",
+     "fidelity": "bake"
+    },
+    {
+     "id": "paint",
+     "type": "spline-fill",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "its SDF chain has no shape-layer form at sdf-twist (tw): twist bends straight edges into spirals (a non-affine fold) · baked: its SDF chain has no shape-layer form at sdf-twist (tw): twist bends straight edges into spirals (a non-affine fold) · static — one frame (AE holds a one-frame movie as a still)"
+    }
+   ],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [
+  {
+   "id": "bake:paint",
+   "output": "paint:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_paint.mov",
+   "reason": "its SDF chain has no shape-layer form at sdf-twist (tw): twist bends straight edges into spirals (a non-affine fold)"
+  }
+ ],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

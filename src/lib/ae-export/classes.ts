@@ -240,9 +240,9 @@ const SIM_INPUT_TYPES = [
 
 // SDF tree nodes: they carry an `sdf` / `position` value that compiles INTO
 // the sdf-rasterize / sdf-to-mask / sdf-shade / sdf-bevel /
-// sdf-to-distance-image consumer (compileSdf), so they fuse with it. The GLSL
-// table leaves them unclassified (only the compiled consumers are listed);
-// planAeExport passes them to planTranslation as `compiled`. Not here:
+// sdf-to-distance-image consumer (compileSdf), so they fuse with it — the
+// GLSL table classes them `compiled` too. Under a hard chain (sdf-chain.ts)
+// planAeExport makes them shape-layer geometry instead. Not here:
 // sdf-from-image and sdf-spline, whose distance textures are computed per
 // eval (JFA / spline distance) and are not a closed-form part of the shader.
 export const SDF_CHAIN_TYPES: ReadonlySet<string> = new Set([
@@ -431,7 +431,7 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
   "accretive-growth": sampledPath("Growth is revealed by Progress — animated reveal → path keys per frame (anchor count changes; resample or bake)."),
   "shortest-path": sampledPath(),
   "image-trace": sampledPath("Traced from an image; an animated source changes the anchor count every frame → bake."),
-  "sdf-to-spline": sampledPath("Contour of an SDF → path; animated SDFs change the anchor count → bake."),
+  "sdf-to-spline": sampledPath("Contour of an SDF. A hard chain (sdf-chain.ts) exports its tree's exact outline as Merge Paths geometry (planAeExport refines it per graph); any other chain is traced on the GPU per frame → bake."),
   // ---- vector: simulations (bake by default) ---------------------------------
   "differential-growth": bake("Spline simulation — its frames depend on history; bakes (or sampled path keys if the anchor count is held)."),
   "rope-simulator": bake("Spline simulation — bakes."),
@@ -769,10 +769,10 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
   "shock-filter": shaderApprox("Iterated; the fused form approximates."),
   "line-art": shaderApprox("Five passes; the fused form approximates."),
   ascii: shaderApprox("Cell average + glyph atlas; the atlas ships as a LUT texture or the glyphs are drawn procedurally."),
-  "sdf-rasterize": shader("compileSdf emits the body; the SDF tree upstream fuses with it."),
+  "sdf-rasterize": shader("compileSdf emits the body; the SDF tree upstream fuses with it. A hard chain (sdf-chain.ts: primitives, booleans, round / onion, translate / rotate / scale / mirror / repeat / polar) is a native shape layer instead — planAeExport refines it per graph."),
   "sdf-shade": shader(),
   "sdf-bevel": shader(),
-  "sdf-to-mask": shader(),
+  "sdf-to-mask": shader("A hard chain (sdf-chain.ts) is a native white-on-black shape layer instead — planAeExport refines it per graph."),
   "sdf-to-distance-image": shader(),
   "sdf-from-image": bake("JFA distance transform of an image, computed per eval — not part of a closed-form shader; the SDF chain it feeds bakes."),
   "sdf-spline": bake("Spline distance texture computed per eval — the SDF chain it feeds bakes (an analytic spline SDF in the fused shader is possible, not planned)."),
@@ -839,7 +839,7 @@ for (const t of AUDIO_TYPES) AE_EXPORT_CLASSES[t] = bake(AUDIO_NOTE);
 for (const t of MESH_TYPES) AE_EXPORT_CLASSES[t] = bake(MESH_NOTE);
 for (const t of SIM_INPUT_TYPES) AE_EXPORT_CLASSES[t] = bake(SIM_INPUT_NOTE);
 for (const t of SDF_CHAIN_TYPES)
-  AE_EXPORT_CLASSES[t] = shader("SDF tree node — compiles into the sdf-rasterize / sdf-to-mask it feeds (one shader region).");
+  AE_EXPORT_CLASSES[t] = shader("SDF tree node — compiles into the sdf-rasterize / sdf-to-mask it feeds (one shader region). Under a hard chain (sdf-chain.ts) it is shape-layer geometry instead (planAeExport refines it per graph).");
 for (const t of AE_STRUCTURAL_TYPES) AE_EXPORT_CLASSES[t] ??= STRUCTURAL;
 
 const UNCLASSIFIED: AeExportEntry = {

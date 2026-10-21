@@ -1,0 +1,511 @@
+{
+ "measured": "2026-10-21",
+ "comp": [
+  1280,
+  720
+ ],
+ "rows": [
+  {
+   "case": "s-boolean",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00029,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.236,
+   "edgePx": 14147,
+   "biasPx": 0.0017,
+   "over2": 0.00834,
+   "over16": 0.006199,
+   "maxPremult": 0.236
+  },
+  {
+   "case": "s-boolean~s0.5b1",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 0.5
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00008,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.347,
+   "edgePx": 14147,
+   "biasPx": 0.0013,
+   "over2": 0.003926,
+   "over16": 0.001069,
+   "maxPremult": 0.347
+  },
+  {
+   "case": "s-boolean~s2b0",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 0,
+   "meanAbs": 0.00086,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.3164,
+   "edgePx": 14147,
+   "biasPx": 0.0017,
+   "over2": 0.016819,
+   "over16": 0.010383,
+   "maxPremult": 0.3164
+  },
+  {
+   "case": "s-boolean~s2b0.8",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 0.8,
+   "meanAbs": 0.00043,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.2582,
+   "edgePx": 17241,
+   "biasPx": -0.0402,
+   "over2": 0.016974,
+   "over16": 0.008209,
+   "maxPremult": 0.2582
+  },
+  {
+   "case": "s-boolean~s2b1",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00041,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.2896,
+   "edgePx": 18236,
+   "biasPx": -0.0526,
+   "over2": 0.015396,
+   "over16": 0.00654,
+   "maxPremult": 0.2896
+  },
+  {
+   "case": "s-boolean~s2b1.2",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 1.2,
+   "meanAbs": 0.00049,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.3052,
+   "edgePx": 19738,
+   "biasPx": -0.0555,
+   "over2": 0.01833,
+   "over16": 0.006812,
+   "maxPremult": 0.3052
+  },
+  {
+   "case": "s-boolean~s4b0",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 0,
+   "meanAbs": 0.00179,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.4739,
+   "edgePx": 14147,
+   "biasPx": -0.046,
+   "over2": 0.028372,
+   "over16": 0.020806,
+   "maxPremult": 0.4739
+  },
+  {
+   "case": "s-boolean~s4b0.8",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 0.8,
+   "meanAbs": 0.00147,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.3804,
+   "edgePx": 20874,
+   "biasPx": -0.1039,
+   "over2": 0.030578,
+   "over16": 0.021697,
+   "maxPremult": 0.3804
+  },
+  {
+   "case": "s-boolean~s4b1",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00166,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.3961,
+   "edgePx": 21706,
+   "biasPx": -0.1166,
+   "over2": 0.028337,
+   "over16": 0.024056,
+   "maxPremult": 0.3961
+  },
+  {
+   "case": "s-boolean~s4b1.2",
+   "fixture": "s-boolean",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 1.2,
+   "meanAbs": 0.0019,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.4207,
+   "edgePx": 21720,
+   "biasPx": -0.1335,
+   "over2": 0.032174,
+   "over16": 0.020799,
+   "maxPremult": 0.4207
+  },
+  {
+   "case": "s-soft",
+   "fixture": "s-soft",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00019,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1922,
+   "edgePx": 7655,
+   "biasPx": -0.0052,
+   "over2": 0.006921,
+   "over16": 0.000018,
+   "maxPremult": 0.1922
+  },
+  {
+   "case": "s-offsets",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00068,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1802,
+   "edgePx": 4485,
+   "biasPx": -0.0392,
+   "over2": 0.008288,
+   "over16": 0.005309,
+   "maxPremult": 0.1802
+  },
+  {
+   "case": "s-offsets~s0.5b1",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 0.5
+   },
+   "blurScale": 1,
+   "meanAbs": 0.0003,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1498,
+   "edgePx": 4485,
+   "biasPx": -0.043,
+   "over2": 0.00491,
+   "over16": 0.002382,
+   "maxPremult": 0.1498
+  },
+  {
+   "case": "s-offsets~s2b0",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 0,
+   "meanAbs": 0.00241,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.3311,
+   "edgePx": 4485,
+   "biasPx": -0.0386,
+   "over2": 0.016707,
+   "over16": 0.011892,
+   "maxPremult": 0.3311
+  },
+  {
+   "case": "s-offsets~s2b0.8",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 0.8,
+   "meanAbs": 0.00092,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1363,
+   "edgePx": 11715,
+   "biasPx": -0.015,
+   "over2": 0.016414,
+   "over16": 0.007043,
+   "maxPremult": 0.1363
+  },
+  {
+   "case": "s-offsets~s2b1",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00037,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1025,
+   "edgePx": 14714,
+   "biasPx": -0.012,
+   "over2": 0.014111,
+   "over16": 0.000285,
+   "maxPremult": 0.1025
+  },
+  {
+   "case": "s-offsets~s2b1.2",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 2
+   },
+   "blurScale": 1.2,
+   "meanAbs": 0.00042,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1025,
+   "edgePx": 17169,
+   "biasPx": -0.0104,
+   "over2": 0.019337,
+   "over16": 0.000013,
+   "maxPremult": 0.1025
+  },
+  {
+   "case": "s-offsets~s4b0",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 0,
+   "meanAbs": 0.00587,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.4146,
+   "edgePx": 4485,
+   "biasPx": -0.0343,
+   "over2": 0.03327,
+   "over16": 0.02531,
+   "maxPremult": 0.4146
+  },
+  {
+   "case": "s-offsets~s4b0.8",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 0.8,
+   "meanAbs": 0.0018,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1564,
+   "edgePx": 23680,
+   "biasPx": -0.0069,
+   "over2": 0.032555,
+   "over16": 0.014769,
+   "maxPremult": 0.1564
+  },
+  {
+   "case": "s-offsets~s4b1",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00071,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1171,
+   "edgePx": 28974,
+   "biasPx": -0.0057,
+   "over2": 0.028708,
+   "over16": 0.000033,
+   "maxPremult": 0.1171
+  },
+  {
+   "case": "s-offsets~s4b1.2",
+   "fixture": "s-offsets",
+   "frame": 0,
+   "patch": {
+    "softness": 4
+   },
+   "blurScale": 1.2,
+   "meanAbs": 0.00078,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1035,
+   "edgePx": 34662,
+   "biasPx": -0.0049,
+   "over2": 0.037041,
+   "over16": 0.000041,
+   "maxPremult": 0.1035
+  },
+  {
+   "case": "s-erode",
+   "fixture": "s-erode",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.0007,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.179,
+   "edgePx": 2755,
+   "biasPx": -0.0431,
+   "over2": 0.006867,
+   "over16": 0.004934,
+   "maxPremult": 0.179
+  },
+  {
+   "case": "s-chain",
+   "fixture": "s-chain",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00028,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.2792,
+   "edgePx": 2131,
+   "biasPx": -0.0386,
+   "over2": 0.003663,
+   "over16": 0.002063,
+   "maxPremult": 0.2792
+  },
+  {
+   "case": "s-chain~aspect-off",
+   "fixture": "s-chain",
+   "frame": 0,
+   "patch": {
+    "aspect_correct": false
+   },
+   "blurScale": 1,
+   "meanAbs": 0.00015,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.2808,
+   "edgePx": 1836,
+   "biasPx": -0.033,
+   "over2": 0.002279,
+   "over16": 0.000921,
+   "maxPremult": 0.2808
+  },
+  {
+   "case": "s-folds",
+   "fixture": "s-folds",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00071,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1743,
+   "edgePx": 3248,
+   "biasPx": -0.0401,
+   "over2": 0.007241,
+   "over16": 0.005063,
+   "maxPremult": 0.1743
+  },
+  {
+   "case": "s-tiles",
+   "fixture": "s-tiles",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00123,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0,
+   "max01": 0.1826,
+   "edgePx": 13552,
+   "biasPx": -0.0511,
+   "over2": 0.02333,
+   "over16": 0.014297,
+   "maxPremult": 0.1826
+  },
+  {
+   "case": "s-animated",
+   "fixture": "s-animated",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.01689,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0.00006,
+   "max01": 0.8541,
+   "edgePx": 372,
+   "biasPx": -0.3006,
+   "over2": 0.000742,
+   "over16": 0.000621,
+   "maxPremult": 0.3682
+  },
+  {
+   "case": "s-animated",
+   "fixture": "s-animated",
+   "frame": 24,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00767,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0.00013,
+   "max01": 0.8676,
+   "edgePx": 872,
+   "biasPx": -0.3018,
+   "over2": 0.001788,
+   "over16": 0.001419,
+   "maxPremult": 0.3787
+  },
+  {
+   "case": "s-contour",
+   "fixture": "s-contour",
+   "frame": 0,
+   "patch": {},
+   "blurScale": 1,
+   "meanAbs": 0.00021,
+   "p95Abs": 0,
+   "alphaMeanAbs": 0.00134,
+   "max01": 0.1295,
+   "edgePx": 9852,
+   "biasPx": 0.0114,
+   "over2": 0.004788,
+   "over16": 0.004238,
+   "maxPremult": 1
+  }
+ ]
+}

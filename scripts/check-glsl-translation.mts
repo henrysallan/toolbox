@@ -57,6 +57,29 @@ check(
   unclassified.length === 0,
   unclassified.length ? `missing: ${unclassified.join(", ")}` : undefined
 );
+// SDF / position trees are not pictures but they compile INTO their consumer:
+// an unlisted tree node falls to `opaque` and silently cuts every SDF
+// consumer out of the region (an sdf-rasterize fed by an sdf-circle used to
+// plan as "excluded"). Every producer of an sdf / position value must be
+// listed, and as `compiled` unless its distance is not closed-form GLSL.
+const TREE_SOCKETS = new Set(["sdf", "position"]);
+const OPAQUE_TREE_LEAVES = new Set(["sdf-spline", "sdf-from-image"]);
+const treeProducers = visible.filter(
+  (d) => TREE_SOCKETS.has(d.primaryOutput as string) || (d.auxOutputs ?? []).some((a) => TREE_SOCKETS.has(a.type as string))
+);
+const treeMissing = treeProducers.filter((d) => !(d.type in TRANSLATION_CLASSES)).map((d) => d.type);
+check(
+  `every visible sdf / position producer is classified (${treeProducers.length} defs)`,
+  treeProducers.length > 0 && treeMissing.length === 0,
+  treeMissing.length ? `missing: ${treeMissing.join(", ")}` : undefined
+);
+// (Aux producers — Text's JFA `sdf` — are image nodes first; only the tree
+// nodes proper must compile.)
+const treeNotCompiled = treeProducers
+  .filter((d) => TREE_SOCKETS.has(d.primaryOutput as string))
+  .filter((d) => d.type in TRANSLATION_CLASSES && !OPAQUE_TREE_LEAVES.has(d.type) && TRANSLATION_CLASSES[d.type].class !== "compiled")
+  .map((d) => `${d.type}=${TRANSLATION_CLASSES[d.type].class}`);
+check("sdf / position tree nodes are `compiled` (texture-backed sdf-spline / sdf-from-image excepted)", treeNotCompiled.length === 0, treeNotCompiled.join(", "));
 const stale = Object.keys(TRANSLATION_CLASSES).filter((t) => !getNodeDef(t));
 check("no table entry names an unregistered type", stale.length === 0, stale.join(", "));
 
@@ -310,6 +333,72 @@ function fixture(
   const mergeExcluded = plan.excluded.find((x) => x.id === "merge");
   check("(f) over-cap merge is excluded with the cap reason", !!mergeExcluded && /sampler cap/.test(mergeExcluded.reason), JSON.stringify(plan.excluded));
   check("(f) region shrinks to the target and merge is one sampler", plan.region.join(",") === "thr" && plan.frontier.length === 1 && plan.frontier[0].from === "merge:out", JSON.stringify({ region: plan.region, frontier: plan.frontier }));
+}
+
+// (i) an SDF tree fuses whole into its consumer: translate → rect, rotate →
+//     circle, union, round → sdf-rasterize. Zero frontier — the tree is an
+//     AST, never a sampler.
+{
+  const plan = planTranslation(
+    fixture(
+      [
+        { id: "mv", type: "sdf-translate", params: { tx: 0.1 } },
+        { id: "rect", type: "sdf-rectangle" },
+        { id: "rot", type: "sdf-rotate", params: { rotation: 30 } },
+        { id: "circ", type: "sdf-circle" },
+        { id: "uni", type: "sdf-union" },
+        { id: "rnd", type: "sdf-round" },
+        { id: "ras", type: "sdf-rasterize" },
+      ],
+      [
+        { from: "mv:out", to: "rect:in:position" },
+        { from: "rot:out", to: "circ:in:position" },
+        { from: "rect:out", to: "uni:in:a" },
+        { from: "circ:out", to: "uni:in:b" },
+        { from: "uni:out", to: "rnd:in:sdf" },
+        { from: "rnd:out", to: "ras:in:sdf" },
+      ],
+      "ras"
+    )
+  );
+  check("(i) sdf-circle → sdf-rasterize: the whole tree joins the region", plan.region.length === 7 && !plan.refusal && plan.region[plan.region.length - 1] === "ras", JSON.stringify({ region: plan.region, refusal: plan.refusal, excluded: plan.excluded }));
+  check("(i) zero frontier (no sdf / position wire becomes a sampler or a manual input)", plan.frontier.length === 0, JSON.stringify(plan.frontier));
+  check("(i) every tree node is classed compiled in the plan", plan.nodes.every((n) => n.class === "compiled"), JSON.stringify(plan.nodes.map((n) => [n.id, n.class])));
+  const two = planTranslation(
+    fixture(
+      [
+        { id: "circ", type: "sdf-circle" },
+        { id: "ras", type: "sdf-rasterize" },
+      ],
+      [{ from: "circ:out", to: "ras:in:sdf" }],
+      "ras"
+    )
+  );
+  check("(i) the minimal tree: sdf-circle → sdf-rasterize fuses as two nodes", two.region.join(",") === "circ,ras" && two.frontier.length === 0, JSON.stringify({ region: two.region, excluded: two.excluded }));
+}
+
+// (j) a texture-backed SDF leaf refuses the consumer by name — an sdf value
+//     cannot cross the frontier, so the tree compiles whole or not at all.
+{
+  const plan = planTranslation(
+    fixture(
+      [
+        { id: "spl", type: "circle" },
+        { id: "ssdf", type: "sdf-spline" },
+        { id: "circ", type: "sdf-circle" },
+        { id: "uni", type: "sdf-union" },
+        { id: "ras", type: "sdf-rasterize" },
+      ],
+      [
+        { from: "spl:out", to: "ssdf:in:spline" },
+        { from: "ssdf:out", to: "uni:in:a" },
+        { from: "circ:out", to: "uni:in:b" },
+        { from: "uni:out", to: "ras:in:sdf" },
+      ],
+      "ras"
+    )
+  );
+  check("(j) sdf-spline in the tree refuses the rasterize, naming the leaf", plan.region.length === 0 && !!plan.refusal && /sdf-spline/.test(plan.refusal) && plan.frontier.length === 0, JSON.stringify({ region: plan.region, refusal: plan.refusal }));
 }
 
 // (g) proposeFrames
