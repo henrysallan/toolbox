@@ -19,10 +19,19 @@
 import { numericTrackToAe, sampledTrackToAe } from "../convert";
 import { bundleFromGlslExpression, TBX_SHADER_HOST_MIN } from "../shader";
 import { TBX_SHADER_MATCH_NAME, tbxShaderParamMatch, type AeEffect, type AeLayer, type AePlanNode, type AeProp, type AeShaderRegion } from "../types";
-import { keyCtx, markDriven, windowFrames } from "./context";
+import { keyCtx, markDriven, windowFrames, type WalkCtx } from "./context";
 import { exprProp } from "./expressions";
 import { numbersOf, parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, collapse, compSolid, type Rendered, type Scope } from "./layers";
+
+// A channel's wire. Its socket is "in:<row id>" (glsl-expression
+// resolveInputs), so the handle is "in:in:<id>"; "in:<id>" as the Skia
+// planner also accepts.
+function channelWire(ctx: WalkCtx, fusedId: string, name: string) {
+  const rows = (ctx.graph.params(fusedId).inputs as { id?: string; name?: string }[] | undefined) ?? [];
+  const id = rows.find((r) => r.name === name)?.id ?? name;
+  return ctx.graph.wireInto(fusedId, `in:in:${id}`) ?? ctx.graph.wireInto(fusedId, `in:${id}`);
+}
 
 export function regionFor(scope: Scope, endpoint: string): AeShaderRegion | undefined {
   const { id } = parseOut(endpoint);
@@ -89,7 +98,7 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
         props[key] = knob;
         continue;
       }
-      const wired = ctx.graph.wireInto(fusedId, `in:${p.name}`);
+      const wired = channelWire(ctx, fusedId, p.name);
       const keyed = ctx.graph.block(fusedId, `ch:${p.name}`);
       if (wired) {
         const src = sourceEndpoint(wired);
@@ -111,7 +120,7 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
     } else if (p.kind === "color") {
       const c = Array.isArray(p.default) ? (p.default as number[]) : [1, 1, 1, 1];
       props[key] = { v: [c[0], c[1], c[2]] };
-      if (ctx.graph.wireInto(fusedId, `in:${p.name}`) || ctx.graph.block(fusedId, `ch:${p.name}`))
+      if (channelWire(ctx, fusedId, p.name) || ctx.graph.block(fusedId, `ch:${p.name}`))
         ctx.report.approx(fusedId, `color channel ${p.name} is wired / keyed — exported at its current value`);
     } else if (p.kind === "checkbox") {
       props[key] = { v: p.default === true ? 1 : 0 };

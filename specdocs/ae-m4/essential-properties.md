@@ -175,10 +175,11 @@ so the compiler sees that param as unwired and static.
   today: one "bitsPerChannel … OCIO" build problem per package. The
   `colorManagementSystem = 0` line in `applyProject` fixes it. See the note
   `ae-m4-essential-props-ocio.md` in the shared notes folder.
-- **Pre-existing, not fixed here (scene lane):** `scene/shader.ts` looks up
+- **Pre-existing, fixed on main after merge (2026-10-21):** `scene/shader.ts` looked up
   a wired GLSL channel as `in:${p.name}`, but GLSL Expression channel
   sockets are `in:<channel id>`, so their handle is `in:in:<id>`. A wired
-  channel is therefore never sampled; it exports its row default.
+  channel was therefore never sampled and exported its row default; it now
+  resolves the row id (check-scene-facts "(C, wired channel)").
   `knobs.ts`'s Toolbox Shader link resolves the id itself.
 - `context.ts` (`pairProp` / `colorProp` gained a `knobs?: false` option,
   used to compute the plain prop under a link) and `index.ts` (the graph

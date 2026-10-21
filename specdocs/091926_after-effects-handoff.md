@@ -1190,10 +1190,11 @@ Each lane's full results, numbers and open items are in `specdocs/ae-m4/`.
   - `model-cache.ts` `mergeSubtree` drops the captured material, so Import
     3D always renders three's default white (3d.md);
   - Text's plain fast path aligns a line including its trailing letter
-    spacing, while the per-glyph path doesn't (text.md);
-  - `scene/shader.ts` looks up a wired GLSL channel as `in:<name>`, not
-    `in:in:<id>`, so a wired channel exports its row default
-    (essential-properties.md).
+    spacing, while the per-glyph path doesn't (text.md).
+- Fixed after merge: `scene/shader.ts` looked up a wired GLSL channel as
+  `in:<name>`, not `in:in:<id>`, so a wired channel exported its row
+  default (essential-properties.md); check-scene-facts "(C, wired
+  channel)" holds it.
 - `plan.ts` still reads time from `facts.reads` only, so the plan and the
   walk can disagree on Stagger-driven copies and non-wave Gradients.
 - Not measured: the knob → value-graph link in a live build; pixel probes

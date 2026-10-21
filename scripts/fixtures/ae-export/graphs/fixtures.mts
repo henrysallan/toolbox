@@ -101,7 +101,9 @@ export class GraphBuilder {
     const aux = /^(.*):aux:(.+)$/.exec(from);
     const src = aux ? aux[1] : from.replace(/:out$/, "");
     const sh = aux ? `out:aux:${aux[2]}` : "out:primary";
-    const m = /^(.*):(in|param):(.+)$/.exec(to);
+    // The first ":in:" / ":param:" ends the node id ("fused:in:in:ch-gain"
+    // is a GLSL channel socket, in:<row id>).
+    const m = /^(.*?):(in|param):(.+)$/.exec(to);
     if (!m) throw new Error(`bad wire target ${to}`);
     this.edge(src, sh, m[1], m[2] === "param" ? `in:param:${m[3]}` : `in:${m[3]}`);
   }

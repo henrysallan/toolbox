@@ -152,7 +152,8 @@ export default async function checkExpressions(): Promise<number> {
       build(g: GraphBuilder) {
         base.build(g);
         g.node("LC", "gainLfo", "lfo", { frequency: 0.5, amplitude: 0.25, offset: 0.5 });
-        g.wire("gainLfo:out", "fused:in:gain");
+        // The channel's socket is in:<row id>: the edge handle is in:in:ch-gain.
+        g.wire("gainLfo:out", "fused:in:in:ch-gain");
       },
     };
     const sa = await sceneOf(wired);

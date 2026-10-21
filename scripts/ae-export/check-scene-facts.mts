@@ -116,6 +116,20 @@ export default async function run(): Promise<number> {
     c.check("(C, shaderHost false) no bundle; the regions bake", nh.bundles.length === 0 && nh.bakes.length >= 1 && nh.scene.report.route === "direct+bake", nh.bakes.map((x) => x.output));
     const pin = await build("c-shader", { fused: {}, overrides: { noise: "procedural" } });
     c.check("(C, keep procedural) a bake it would need is a problem instead", pin.problems.some((p) => /keep procedural/.test(p)) && !pin.bakes.some((x) => x.output === "disp:out"), pin.problems);
+    // A wired channel: its socket is in:<row id>, the edge's handle
+    // in:in:ch-gain. The slider follows the driver (a live expression, else
+    // per-frame keys), not the row's 0.5.
+    const f = fx("c-shader");
+    const wob = await sceneOf({
+      ...f,
+      build(g: any) {
+        f.build(g);
+        g.node("LC", "wob", "lfo", { frequency: 0.5, amplitude: 0.25, offset: 0.5 });
+        g.wire("wob:out", "fused:in:in:ch-gain");
+      },
+    });
+    const gain = layer(wob, "shader-1")?.effects?.[0]?.props[tbxShaderParamMatch("slider", 1)] as any;
+    c.check("(C, wired channel) an LFO into gain drives the slider (in:in:<id>), not the row default", !!gain && (typeof gain.expression === "string" || (gain.keys?.length ?? 0) > 1), gain);
   }
 
   // --- D ---------------------------------------------------------------------------------------
