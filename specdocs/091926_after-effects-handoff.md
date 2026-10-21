@@ -1145,6 +1145,60 @@ Consequences in `convert/`:
 - **Keyed `derived` props.** The maps are static there; the scene walk
   samples or refuses them.
 
+## 15. Results — M4 reach wave
+
+Six lanes, built in parallel on 2026-10-21 and merged into main the same
+day (merge commits 6f2c8fe … de1ee76). Every lane measured in After Effects
+26.5 (26.5x89), headless through aerender under the shared AE lock
+(`scripts/ae-export-spike/ae-lock.mts`); the AE GUI was never scripted.
+Each lane's full results, numbers and open items are in `specdocs/ae-m4/`.
+
+| lane | what now exports natively | measured | results |
+|---|---|---|---|
+| Expression compiler | a wired value graph → one live AE expression per property, kept only if it equals the per-frame keys at every frame; else the keys, with the reason. Policy `drivers: "expression" \| "keys"` | AE's `valueAtTime` read back for the corpus (`expressions-roundtrip.mts`) | [expressions.md](ae-m4/expressions.md) |
+| Text | animators (Range / Expression Selectors), text on a path (mask + Path Options), keyed documents (Source Text holds), keyed colours | per glyph within 0.15–1.3 % of range; path text within 0.42 px | [text.md](ae-m4/text.md) |
+| Instances | Copy to Points: per-copy TRS / tint / opacity, picks, draw order, time; lattices → Repeaters (linear opacity ramps too); static image fields sampled at export | every copy's transform, colour and order matched (`instances-roundtrip.mts`) | [instances.md](ae-m4/instances.md) |
+| SDF → Merge Paths | hard SDF chains under rasterize / to-mask / to-spline → one shape layer (parametric primitives, Merge Paths, Offset Paths, Repeaters); smooth / non-affine chains keep the shader route | every probe pixel passes (`calibrate/sdf.mts`) | [sdf.md](ae-m4/sdf.md) |
+| 3D + GLB | Import 3D (GLB / OBJ, byte for byte), cameras, lights, Transform 3D nulls → native AE 3D (Advanced 3D) | framing within 0.06 px (`roundtrip-3d.mts`) | [3d.md](ae-m4/3d.md) |
+| Essential Properties | Control-toggled knobs → Expression Controls on a "Controls" null; promoted group inputs → Essential Properties of the group's precomp (works headless) | 27 / 27 live checks (`essential/roundtrip.mts`) | [essential-properties.md](ae-m4/essential-properties.md) |
+
+### Found on the way
+
+- **AE's sticky "Last Project Settings" turned OCIO** (colorManagementSystem
+  1, Blender's `config.ocio`) on this Mac at 14:26 on 2026-10-21. A new
+  project inherits it, and OCIO refuses 16 bpc. `build.jsx` now switches a
+  new project to Adobe color management (0) before it sets the bit depth;
+  three lanes found it, and main keeps one copy. The pref itself is
+  untouched.
+- **Models need a pause before save.** Saving right after a model import
+  can store a broken model item; `build.jsx` waits (3d.md).
+
+### Joined at merge
+
+- `animatedUpstream` (scene/shape.ts): the instances lane counts
+  `stable: false` defs as time-dependent; SDF → Spline, Text and Point
+  Labels are uncacheable for readback / font reasons, so they are excluded
+  (a static SDF trace stays a one-frame bake).
+- `exprLeaf` (scene/expressions/index.ts) reads a Slider / Angle knob, or a
+  Color knob's channel, through `knobExpression`, so a knob that a compiled
+  value graph reads links to its control (check-controls "value graph").
+  Checkbox, Dropdown and Point leaves stay literals.
+
+### Open
+
+- Engine bugs the lanes found but left alone (outside their files):
+  - `model-cache.ts` `mergeSubtree` drops the captured material, so Import
+    3D always renders three's default white (3d.md);
+  - Text's plain fast path aligns a line including its trailing letter
+    spacing, while the per-glyph path doesn't (text.md);
+  - `scene/shader.ts` looks up a wired GLSL channel as `in:<name>`, not
+    `in:in:<id>`, so a wired channel exports its row default
+    (essential-properties.md).
+- `plan.ts` still reads time from `facts.reads` only, so the plan and the
+  walk can disagree on Stagger-driven copies and non-wave Gradients.
+- Not measured: the knob → value-graph link in a live build; pixel probes
+  for `p-expressions`; 32 bpc; the AE app build; Windows.
+
 ## Appendix A — easing conversion, worked
 
 For a 1 s, 100 px segment: easeOutCubic → out `(influence 33.33, speed 300)`,

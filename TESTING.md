@@ -1132,6 +1132,23 @@ that pair). Offline node tests should push each input through
     replays into an untagged (color-management-off) offscreen surface, where
     the programs' color management passes through: they measure GPU math,
     not a Display P3 screen (`check:skia-color-management` covers that).
+- `check-ae-export` — the After Effects export, offline (spec
+  `091926_after-effects-handoff.md`). `npx tsx scripts/check-ae-export.mts
+  [area…]` runs one area (`controls`, `expressions`, `sdf`, `scene-snap` …);
+  `scene-snap --update` rewrites the `scripts/fixtures/ae-export/graphs/*.
+  snapshot.json` after a deliberate change, so read the diff before
+  committing it. An edit to `src/lib/ae-export/runtime/build.jsx` needs
+  `npx tsx scripts/ae-export-spike/gen-runtime.mts` and the new
+  `shasum -a 256` in `electron/ae-core.js` `BUILD_JSX_SHA256`
+  (package-paths and runtime fail otherwise).
+  - Live checks (not gates): they need After Effects 26.x, never touch the
+    AE GUI, and take the AE lock (`scripts/ae-export-spike/ae-lock.mts`,
+    one aerender run at a time across checkouts):
+    `scripts/fixtures/ae-export/graphs/roundtrip.mts [prefix…]` (scene
+    fixtures' probe pixels), `expressions-roundtrip.mts` (AE's
+    `valueAtTime`), `instances-roundtrip.mts` (every copy's transform,
+    colour and order), `roundtrip-3d.mts` (needs Electron too, ~30 s), and
+    `scripts/ae-export-spike/essential/roundtrip.mts` (knobs → controls).
 
 ---
 
