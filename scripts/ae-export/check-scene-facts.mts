@@ -253,9 +253,14 @@ export default async function run(): Promise<number> {
   {
     const b = await build("l-driver");
     const ell = items(layer(b, "blob")!.contents).find((i) => i.kind === "ellipse") as any;
-    c.check("(driver) an LFO wired into the radius → per-frame size keys (60)", ell?.size?.keys?.length === 60, ell?.size?.keys?.length);
-    c.near("(driver) frame 15 = 2·W·(0.1 + 0.05·sin(π/2)) = 384 px", ell?.size?.keys?.[15]?.v?.[0], 384, 1e-6);
-    c.check("(driver) the report marks it sampled", b.scene.report.native.some((l) => l.id === "blob" && l.fidelity === "sampled"));
+    c.check("(driver) an LFO wired into the radius → one AE expression on Size, no keys", typeof ell?.size?.expression === "string" && !("keys" in (ell?.size ?? {})) && /Math\.sin/.test(ell.size.expression), ell?.size);
+    c.check("(driver) …its static value is frame 0's (2·W·0.1 = 256 px)", JSON.stringify(ell?.size?.v) === "[256,256]", ell?.size?.v);
+    c.check("(driver) the report names the live expression and the LFO compiled into it", b.scene.report.native.some((l) => l.id === "blob" && l.fidelity === "exact" && /live AE expression/.test(l.note ?? "")) && b.scene.report.native.some((l) => l.id === "wobble" && /compiled into the AE expression/.test(l.note ?? "")), b.scene.report.native);
+    const k = await build("l-driver", { policy: { drivers: "keys" } });
+    const kell = items(layer(k, "blob")!.contents).find((i) => i.kind === "ellipse") as any;
+    c.check("(driver, drivers: keys) the LFO → per-frame size keys (60)", kell?.size?.keys?.length === 60 && !kell.size.expression, kell?.size?.keys?.length);
+    c.near("(driver, drivers: keys) frame 15 = 2·W·(0.1 + 0.05·sin(π/2)) = 384 px", kell?.size?.keys?.[15]?.v?.[0], 384, 1e-6);
+    c.check("(driver, drivers: keys) the report marks it sampled", k.scene.report.native.some((l) => l.id === "blob" && l.fidelity === "sampled"));
     const m = await build("m-color");
     const flash = layer(m, "flash")!;
     const fill = items(flash.contents).find((i) => i.kind === "fill") as any;

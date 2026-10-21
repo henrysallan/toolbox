@@ -50,6 +50,7 @@ const AE_POLICY_SCHEMA = z
     bitsPerChannel: z.union([z.literal(8), z.literal(16), z.literal(32)]).optional(),
     acceptApprox: z.boolean().optional(),
     shaderHost: z.boolean().optional(),
+    drivers: z.enum(["expression", "keys"]).optional(),
   })
   .strict()
   .optional();
@@ -992,7 +993,9 @@ export const BRIDGED_TOOLS = [
       "color \"auto\" | \"expression\" | \"dense\" | \"rgb\", layerBudget 200, " +
       "bakeWarnMB 500, bakeCodec \"prores4444\" | \"qtrle\", acceptApprox true " +
       "(false routes approximate AE effects to shaders), shaderHost true " +
-      "(false bakes shader regions), bitsPerChannel, colorTolerance).",
+      "(false bakes shader regions), drivers \"expression\" | \"keys\" (wired " +
+      "value drivers as live AE expressions, or sampled to per-frame keys), " +
+      "bitsPerChannel, colorTolerance).",
     inputSchema: {
       scope: z
         .string()

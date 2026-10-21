@@ -84,7 +84,9 @@ export type CompileResult =
   | { ok: true; program: ProcProgram; from: string; warnings: string[] }
   | { ok: false; reason: string; sampleable: boolean };
 
-class Refusal extends Error {
+// Exported for the After Effects expression compiler (ae-export/scene/
+// expressions), which extends Builder with more value nodes over this IR.
+export class Refusal extends Error {
   constructor(
     message: string,
     readonly sampleable: boolean
@@ -94,7 +96,7 @@ class Refusal extends Error {
 }
 
 // A compiled node output: one expression per component (1 = scalar).
-interface PVal {
+export interface PVal {
   type: "scalar" | "vec2" | "vec3" | "vec4";
   comps: PExpr[];
 }
@@ -130,7 +132,7 @@ function isPure(e: PExpr): boolean {
   }
 }
 
-class Builder {
+export class Builder {
   body: PStmt[] = [];
   tracks: TimelineTrack[] = [];
   curves: ProcCurve[] = [];
@@ -955,7 +957,7 @@ function upstreamAllDrivers(id: string, nodes: Map<string, GraphNode> | GraphNod
 // Drop statements nothing reads (a vec2's unused component, a smooth-min
 // helper a branch never needs…), renumbering slots. RNG statements and every
 // `let` that draws a random stay: a draw advances the state later draws see.
-function prune(p: ProcProgram): ProcProgram {
+export function prune(p: ProcProgram): ProcProgram {
   const used = new Set<number>();
   const draws = (e: PExpr): boolean => {
     switch (e.k) {

@@ -45,6 +45,38 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - The Toolbox Shader effect's clock is layer time × Time Speed + Time
   Offset (equal to comp time for layers that start at 0).
 
+## Expressions
+
+- A value graph wired into a property (Constant, Math, Clamp, Lerp, Remap,
+  Compare, Logic, Switch with a constant index, Float Curve, LFO, Scene
+  Time, Random, Split / Combine Vec2, the Vec / Color literals, the
+  Expression node) becomes **one AE expression** on that property, live.
+  It is the editor's arithmetic operation for operation, checked against
+  toolbox at every frame of the layer before it is used; AE 26.5 computes
+  the same doubles (*measured*: bit-identical but for the last bit of an
+  occasional `sin` / `cos` / `log` / `pow`). Policy
+  `drivers: "keys"` samples every driver to per-frame keys instead.
+- The expression's clock is the layer's toolbox clock: `tick = time · fps
+  · 1000` (snapped to the tick within 1e-6), minus the layer's clip
+  offset when the layer sits in the main comp. Inside a precomp, `time` is
+  already the precomp's.
+- Random, **seeded** (the default): the editor's own hash of seed and
+  frame — the same numbers. **Frame** mode re-rolls `Math.random()` every
+  evaluation in the editor, so AE gets `seedRandom(seed, false);
+  random()`: the same distribution, other numbers, stable across renders.
+- The Expression node's `random()` is its own seeded mulberry32 per frame,
+  as in the editor. Sources outside the math subset (strings, objects,
+  loops, `Math.random()`, unknown names) are refused.
+- Exposed knobs and group inputs inside the graph are their current value.
+- Stays **per-frame keys** (the report says why): stateful nodes (Smooth,
+  Accumulator, Sample & Hold, Trigger Envelope), audio analysis, anything
+  reading geometry, images or points, a param keyed inside the graph, a
+  wired Switch index, Math in uv mode, effect params whose map isn't
+  linear, and a property that also reads a keyed param of its own.
+- A graph that is constant over the layer exports as a static value. The
+  expression text starts `// toolbox value graph` and names the nodes it
+  came from; editing it in AE is fine.
+
 ## Easing
 
 - **Editable** (default): one AE segment per toolbox segment. Exact for

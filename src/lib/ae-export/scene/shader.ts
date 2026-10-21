@@ -20,6 +20,7 @@ import { numericTrackToAe, sampledTrackToAe } from "../convert";
 import { bundleFromGlslExpression, TBX_SHADER_HOST_MIN } from "../shader";
 import { TBX_SHADER_MATCH_NAME, tbxShaderParamMatch, type AeEffect, type AeLayer, type AePlanNode, type AeProp, type AeShaderRegion } from "../types";
 import { keyCtx, markDriven, windowFrames } from "./context";
+import { exprProp } from "./expressions";
 import { numbersOf, parseOut, sourceEndpoint } from "./graph";
 import { BakeSignal, collapse, compSolid, type Rendered, type Scope } from "./layers";
 
@@ -86,9 +87,16 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
       const keyed = ctx.graph.block(fusedId, `ch:${p.name}`);
       if (wired) {
         const src = sourceEndpoint(wired);
-        const r = sampledTrackToAe(windowFrames(clock), (tick) => [numbersOf(ctx.graph.valueAt(src, tick))?.[0] ?? Number(p.default)], kc, `channel ${p.name}`);
+        const oracle = (tick: number) => [numbersOf(ctx.graph.valueAt(src, tick))?.[0] ?? Number(p.default)];
+        // The channel's driver as an expression on the slider, else per frame.
+        const ex = exprProp(ctx, clock, { label: `channel ${p.name}`, owner: fusedId, inputs: [{ endpoint: src, fallback: Number(p.default) }], out: (v) => [v[0]], oracle });
+        if ("prop" in ex) {
+          props[key] = ex.prop;
+          continue;
+        }
+        const r = sampledTrackToAe(windowFrames(clock), oracle, kc, `channel ${p.name}`);
         props[key] = "v" in r.prop ? { v: r.prop.v[0] } : { keys: r.prop.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 };
-        if (!("v" in r.prop)) markDriven(ctx, fusedId, p.name, src, `channel ${p.name}: driven by ${src} → per-frame slider keys`);
+        if (!("v" in r.prop)) markDriven(ctx, fusedId, p.name, src, `channel ${p.name}: driven by ${src} → per-frame slider keys (${ex.refused})`, ex.refused);
       } else if (keyed && keyed.keyframes.length > 1) {
         const r = numericTrackToAe(keyed, "scalar", kc);
         ctx.report.track(fusedId, `channel ${p.name}`, r.report);

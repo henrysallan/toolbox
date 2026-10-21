@@ -12,7 +12,8 @@
 //          layer: its `before` steps, the main effect, its `then` steps.
 //          Per step: fixed props; params via `map` — keyed ones through the
 //          map's `linear` rule (each key's value mapped, speeds scaled),
-//          wired or non-linear ones per frame; `derived` props (several
+//          wired ones as an AE expression through that rule (checked against
+//          the map at every frame), the rest per frame; `derived` props (several
 //          params → one value) static, or per frame when a param they read
 //          animates; `kind: "layer"` derived props (displace's map) → the
 //          input rendered as a hidden precomp and an AeLayerRef. measured:
@@ -37,12 +38,14 @@ import {
   isAnimatedParam,
   markDriven,
   keyCtx,
+  scaleProp,
   scalarProp,
   staticNumber,
   trackSource,
   windowFrames,
   type WalkCtx,
 } from "./context";
+import { exprProp, ir, type ExprInput } from "./expressions";
 import { numbersOf, parseOut, sourceEndpoint } from "./graph";
 import {
   BakeSignal,
@@ -136,13 +139,42 @@ function productOpacity(scope: Scope, id: string, other: AeProp<number>): AeProp
   const op = staticNumber(ctx, id, "opacity", 1);
   if (isAnimatedParam(ctx, id, "opacity")) {
     if ("v" in other && other.v === 100) return scalarProp(ctx, clock, id, "opacity", { map: { scale: 100, offset: 0 }, fallback: 1 });
+    const oracle = (tick: number) => [100 * staticAt(ctx, id, "opacity", tick, 1) * staticAt(ctx, id, "alpha", tick, 1)];
+    const ex = wiredExprProp(scope, id, ["opacity", "alpha"], [1, 1], "opacity × alpha", (v) => [ir.mul(ir.mul(ir.lit(100), v[0]), v[1])], oracle);
+    if (ex) return ex as AeProp<number>;
     ctx.report.sampled(id, "opacity × alpha both animate → per-frame opacity keys");
-    const p = sampledTrackToAe(windowFrames(clock), (tick) => [100 * staticAt(ctx, id, "opacity", tick, 1) * staticAt(ctx, id, "alpha", tick, 1)], keyCtx(ctx, clock));
+    const p = sampledTrackToAe(windowFrames(clock), oracle, keyCtx(ctx, clock));
     return "v" in p.prop ? { v: p.prop.v[0] } : { keys: p.prop.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 };
   }
   if (op === 1) return other;
   if ("v" in other) return { v: other.v * op };
-  return { ...other, keys: other.keys.map((k) => ({ ...k, v: k.v * op, ...(k.easeIn ? { easeIn: k.easeIn.map((e) => ({ ...e, speed: e.speed * op })) } : {}), ...(k.easeOut ? { easeOut: k.easeOut.map((e) => ({ ...e, speed: e.speed * op })) } : {}) })) };
+  return scaleProp(other, op);
+}
+
+// When one of `params` (on node `id`) is wired: the AE property `out` builds
+// from them as an expression (expressions/, checked against `oracle` — the
+// site's sampler — at every frame). Undefined when none is wired, or the
+// compiler refused (reported; the caller samples).
+function wiredExprProp(
+  scope: Scope,
+  id: string,
+  params: string[],
+  fallbacks: number[],
+  label: string,
+  out: Parameters<typeof exprProp>[2]["out"],
+  oracle: (tick: number) => number[]
+): AeProp | undefined {
+  const { ctx, clock } = scope;
+  const wired = params.map((p) => driverOf(ctx, id, p)).filter((d): d is string => !!d);
+  if (!wired.length) return undefined;
+  const inputs: ExprInput[] = params.map((p, i) => ({ node: id, param: p, fallback: fallbacks[i] }));
+  const ex = exprProp(ctx, clock, { label, owner: id, inputs, out, oracle });
+  if ("prop" in ex) return ex.prop;
+  params.forEach((p) => {
+    const d = driverOf(ctx, id, p);
+    if (d) markDriven(ctx, id, p, d, `${label}: driven by ${d} → per-frame keys (${ex.refused})`, ex.refused);
+  });
+  return undefined;
 }
 
 // A param's value at a tick: wire > keyframes > constant.
@@ -193,9 +225,13 @@ function gradientRamp(scope: Scope, id: string, name: string): Rendered {
     const rad = staticNumber(ctx, id, "radius", 0.5);
     if (isAnimatedParam(ctx, id, "radius") || isAnimatedParam(ctx, id, "center_x") || isAnimatedParam(ctx, id, "center_y")) {
       const frames = windowFrames(clock);
-      const r = sampledTrackToAe(frames, (tick) => [W * (staticAt(ctx, id, "center_x", tick, 0.5) + staticAt(ctx, id, "radius", tick, 0.5)), H * (1 - staticAt(ctx, id, "center_y", tick, 0.5))], keyCtx(ctx, clock));
-      end = r.prop;
-      ctx.report.sampled(id, "animated radial gradient → End of Ramp per frame");
+      const oracle = (tick: number) => [W * (staticAt(ctx, id, "center_x", tick, 0.5) + staticAt(ctx, id, "radius", tick, 0.5)), H * (1 - staticAt(ctx, id, "center_y", tick, 0.5))];
+      const ex = wiredExprProp(scope, id, ["center_x", "center_y", "radius"], [0.5, 0.5, 0.5], "End of Ramp", (v) => [ir.mul(ir.lit(W), ir.add(v[0], v[2])), ir.mul(ir.lit(H), ir.sub(ir.lit(1), v[1]))], oracle);
+      if (ex) end = ex;
+      else {
+        end = sampledTrackToAe(frames, oracle, keyCtx(ctx, clock)).prop;
+        ctx.report.sampled(id, "animated radial gradient → End of Ramp per frame");
+      }
     } else end = { v: [W * (cx + rad), H * (1 - cy)] };
     if (W !== H) ctx.report.approx(id, "radial gradient: toolbox's radius is per-axis uv01 (an ellipse on a non-square comp), AE's is circular in pixels");
   }
@@ -217,7 +253,10 @@ function gradientRamp(scope: Scope, id: string, name: string): Rendered {
 function pairPoint(scope: Scope, id: string, px: string, py: string, dx: number, dy: number, u: { scale: number; offset: number }, v: { scale: number; offset: number }): AeProp {
   const { ctx, clock } = scope;
   if ([px, py].some((p) => isAnimatedParam(ctx, id, p))) {
-    const r = sampledTrackToAe(windowFrames(clock), (tick) => [u.scale * staticAt(ctx, id, px, tick, dx) + u.offset, v.scale * staticAt(ctx, id, py, tick, dy) + v.offset], keyCtx(ctx, clock));
+    const oracle = (tick: number) => [u.scale * staticAt(ctx, id, px, tick, dx) + u.offset, v.scale * staticAt(ctx, id, py, tick, dy) + v.offset];
+    const ex = wiredExprProp(scope, id, [px, py], [dx, dy], `${px}/${py}`, (t) => [ir.affine(t[0], u), ir.affine(t[1], v)], oracle);
+    if (ex) return ex;
+    const r = sampledTrackToAe(windowFrames(clock), oracle, keyCtx(ctx, clock));
     if (!("v" in r.prop)) ctx.report.sampled(id, `${px}/${py} animate → per-frame point keys`);
     return r.prop;
   }
@@ -308,7 +347,7 @@ export function withNodeOpacity(scope: Scope, id: string, r: Rendered): Rendered
   const main = s.main!;
   const now = main.transform.opacity;
   main.transform.opacity = animated ? scalarProp(ctx, clock, id, "opacity", { map: { scale: 100, offset: 0 }, fallback: 1 }) : "v" in now ? { ...now, v: now.v * op } : now;
-  if (!animated && !("v" in now)) main.transform.opacity = { ...now, keys: now.keys.map((k) => ({ ...k, v: k.v * op })) };
+  if (!animated && !("v" in now)) main.transform.opacity = scaleProp(now, op);
   return s;
 }
 
@@ -331,17 +370,22 @@ function mapParam(scope: Scope, id: string, param: string, m: AeParamMap, ectx: 
     }
   }
   if (d || (b && b.keyframes.length > 1)) {
-    if (d) markDriven(ctx, id, param, d, `${param}: driven by ${d} → per-frame keys through the effect map`);
+    const oracle = (tick: number) => {
+      const v = d ? numbersOf(ctx.graph.valueAt(d, tick))?.[0] : evalScalar(b!, tick, 0);
+      const ae = m.map(v, ectx);
+      return Array.isArray(ae) ? (ae as number[]) : [Number(ae)];
+    };
+    // A wired param through the map's linear rule, held to the map itself.
+    let why = "the effect map is not linear";
+    if (d && m.linear && m.kind === "scalar") {
+      const lin = m.linear(ectx);
+      const ex = exprProp(ctx, clock, { label: param, owner: id, inputs: [{ node: id, param, fallback: 0 }], out: (v) => [ir.affine(v[0], lin)], oracle });
+      if ("prop" in ex) return ex.prop;
+      why = ex.refused;
+    }
+    if (d) markDriven(ctx, id, param, d, `${param}: driven by ${d} → per-frame keys through the effect map (${why})`, why);
     else ctx.report.sampled(id, `${param}: keys through a non-linear effect map → per-frame keys`);
-    const r = sampledTrackToAe(
-      windowFrames(clock),
-      (tick) => {
-        const v = d ? numbersOf(ctx.graph.valueAt(d, tick))?.[0] : evalScalar(b!, tick, 0);
-        const ae = m.map(v, ectx);
-        return Array.isArray(ae) ? (ae as number[]) : [Number(ae)];
-      },
-      kc
-    );
+    const r = sampledTrackToAe(windowFrames(clock), oracle, kc);
     if ("v" in r.prop) return { v: r.prop.v.length === 1 ? r.prop.v[0] : r.prop.v };
     return r.prop.dims === 1 ? { keys: r.prop.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 } : r.prop;
   }

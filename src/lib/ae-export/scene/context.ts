@@ -2,10 +2,11 @@
 // emitter uses. A param is one of three things, in the evaluator's own
 // priority (wire > keyframes > constant):
 //
-//   driven   a value wire lands on `in:param:<name>` → its source is
-//            evaluated at every frame of the AE layer's window and written
-//            as linear per-frame keys (fidelity "sampled"; an AE expression
-//            compiler is the next wave);
+//   driven   a value wire lands on `in:param:<name>` → its value graph
+//            compiles to an AE expression (expressions/, checked against
+//            the sampler at every frame of the AE layer's window); what the
+//            compiler refuses is evaluated at every frame and written as
+//            linear per-frame keys (fidelity "sampled");
 //   keyed    the node's own track → convert/ with policy.fidelity, verified
 //            per frame (keys.ts);
 //   static   the stored param.
@@ -40,6 +41,7 @@ import type {
   AeShaderBundle,
 } from "../types";
 import type { AeAssetCopy, AeBakeRequest, AeNodeOverride } from "./types";
+import { exprProp, ir, scaleExpression } from "./expressions";
 import { numbersOf, sourceEndpoint, type AeGraph } from "./graph";
 import type { AeReport } from "./report";
 
@@ -159,13 +161,14 @@ function sampleDriver(ctx: WalkCtx, clock: WalkClock, src: string, pick: (v: num
 }
 
 // A driven param was sampled: say so on the consumer AND on the value nodes
-// that drive it (the plan's expression item), which AE will not see.
-export function markDriven(ctx: WalkCtx, nodeId: string, param: string, src: string, what: string): void {
+// that drive it (the plan's expression item), which AE will not see. `why`:
+// what kept the expression compiler from it.
+export function markDriven(ctx: WalkCtx, nodeId: string, param: string, src: string, what: string, why?: string): void {
   ctx.report.sampled(nodeId, what);
   const drives = `${nodeId}:param:${param}`;
   const item = ctx.plan.expressions.find((e) => e.drives === drives);
   const nodes = item?.nodes ?? [src.replace(/:(out|aux:.*)$/, "")];
-  for (const n of nodes) ctx.report.sampled(n, `sampled into ${drives} as per-frame keys (an AE expression compiler is the next wave)`);
+  for (const n of nodes) ctx.report.sampled(n, `sampled into ${drives} as per-frame keys${why ? ` (${why})` : ""}`);
 }
 
 function noteTrack(ctx: WalkCtx, nodeId: string, what: string, r: AeTrackReport) {
@@ -184,7 +187,15 @@ export function scalarProp(
   const label = opts.label ?? param;
   const src = driverOf(ctx, nodeId, param);
   if (src) {
-    markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame keys`);
+    const ex = exprProp(ctx, clock, {
+      label,
+      owner: nodeId,
+      inputs: [{ node: nodeId, param, fallback: opts.fallback ?? 0 }],
+      out: (v) => [ir.affine(v[0], m)],
+      oracle: (tick) => [apply(m, numbersOf(ctx.graph.valueAt(src, tick))?.[0] ?? 0)],
+    });
+    if ("prop" in ex) return ex.prop as AeProp<number>;
+    markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame keys (${ex.refused})`, ex.refused);
     const p = sampleDriver(ctx, clock, src, (v) => [apply(m, v[0] ?? 0)]);
     return "v" in p ? { v: p.v[0] } : { keys: p.keys.map((k) => ({ ...k, v: k.v[0] })), dims: 1 };
   }
@@ -212,20 +223,24 @@ export function pairProp(ctx: WalkCtx, clock: WalkClock, parts: [PairPart, PairP
   const drivers = parts.map((p) => driverOf(ctx, p.node, p.param));
   const kc = keyCtx(ctx, clock);
   if (drivers.some(Boolean)) {
-    parts.forEach((p, i) => {
-      if (drivers[i]) markDriven(ctx, p.node, p.param, drivers[i]!, `${opts.label}: driven (${drivers.filter(Boolean).join(", ")}) → per-frame keys`);
+    const oracle = (tick: number) =>
+      parts.map((p, i) => {
+        const d = drivers[i];
+        const v = d ? (numbersOf(ctx.graph.valueAt(d, tick))?.[0] ?? p.fallback) : valueOfSource(ctx, p, tick);
+        return apply(maps[i], v);
+      });
+    const ex = exprProp(ctx, clock, {
+      label: opts.label,
+      owner: opts.owner,
+      inputs: parts.map((p) => ({ node: p.node, param: p.param, fallback: p.fallback })),
+      out: (v) => v.map((x, i) => ir.affine(x, maps[i])),
+      oracle,
     });
-    const r = sampledTrackToAe(
-      windowFrames(clock),
-      (tick) =>
-        parts.map((p, i) => {
-          const d = drivers[i];
-          const v = d ? (numbersOf(ctx.graph.valueAt(d, tick))?.[0] ?? p.fallback) : valueOfSource(ctx, p, tick);
-          return apply(maps[i], v);
-        }),
-      kc,
-      "driven"
-    );
+    if ("prop" in ex) return ex.prop as AeProp<[number, number]>;
+    parts.forEach((p, i) => {
+      if (drivers[i]) markDriven(ctx, p.node, p.param, drivers[i]!, `${opts.label}: driven (${drivers.filter(Boolean).join(", ")}) → per-frame keys (${ex.refused})`, ex.refused);
+    });
+    const r = sampledTrackToAe(windowFrames(clock), oracle, kc, "driven");
     return r.prop as AeProp<[number, number]>;
   }
   const srcs = parts.map((p) => ({ src: trackSource(ctx, p.node, p.param, p.fallback), paramType: "scalar" as ParamType }));
@@ -271,7 +286,32 @@ export function colorProp(
   const opacityScale = (opts.opacity ?? 1) * 100;
   const src = driverOf(ctx, nodeId, param);
   if (src) {
-    markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame color keys`);
+    // RGB 0–1 (an AE color is [r, g, b, a]: alpha 1, the opacity carries it).
+    const comp = (i: number, dflt: number) => (tick: number) => (numbersOf(ctx.graph.valueAt(src, tick)) ?? [0])[i] ?? dflt;
+    const color = exprProp(ctx, clock, {
+      label,
+      owner: nodeId,
+      inputs: [0, 1, 2].map((i) => ({ endpoint: src, component: i, fallback: 0 })),
+      out: (v) => [...v.map(ir.clamp01), ir.lit(1)],
+      oracle: (tick) => [clamp01(comp(0, 0)(tick)), clamp01(comp(1, 0)(tick)), clamp01(comp(2, 0)(tick)), 1],
+      keyLength: 3,
+      defer: true,
+    });
+    const alpha = exprProp(ctx, clock, {
+      label: `${label} alpha`,
+      owner: nodeId,
+      inputs: [{ endpoint: src, component: 3, fallback: 1 }],
+      out: (v) => [ir.mul(ir.clamp01(v[0]), ir.lit(opacityScale))],
+      oracle: (tick) => [clamp01(comp(3, 1)(tick)) * opacityScale],
+      defer: true,
+    });
+    if ("prop" in color && "prop" in alpha) {
+      color.commit();
+      alpha.commit();
+      return { color: color.prop as AeProp<AeRGB>, opacity: alpha.prop as AeProp<number> };
+    }
+    const why = "refused" in color ? color.refused : "refused" in alpha ? alpha.refused : "";
+    markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame color keys (${why})`, why);
     const rgb = sampleDriver(ctx, clock, src, (v) => [clamp01(v[0] ?? 0), clamp01(v[1] ?? 0), clamp01(v[2] ?? 0)]);
     const a = sampleDriver(ctx, clock, src, (v) => [clamp01(v[3] ?? 1) * opacityScale]);
     return {
@@ -300,8 +340,11 @@ export function colorProp(
 export function scaleProp(p: AeProp<number>, s: number): AeProp<number> {
   if (s === 1) return p;
   if ("v" in p) return { ...p, v: p.v * s };
+  // A compiled expression is the value: it takes the multiply too.
+  const expression = p.expression ? scaleExpression(p.expression, s, 1) : undefined;
   return {
     ...p,
+    ...(expression ? { expression } : {}),
     keys: p.keys.map((k) => ({
       ...k,
       v: k.v * s,
