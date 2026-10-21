@@ -732,11 +732,11 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
     class: "text",
     ae: "layer:text",
     fidelity: "approx",
-    note: "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking, leading, case, alignment, box; on-path → Path Options. Glyph metrics differ from toolbox's rasterizer; animators → AE animators (M4); gradient fills → Gradient Ramp on the layer.",
+    note: "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking (an integer in ±1000; the rest as a px Tracking animator), leading, case, alignment, box; keyed size / spacing / weight → Source Text hold keys; keyed colour → a Fill Color animator; on a path → a mask + Path Options (margin = offset × arc length, side → baseline shift). Animators → AE text animators: a linear cascade is a Range Selector (exact), an eased one Ease High / Low within 0.5 %, random order and other easings an Expression Selector (exact); field drivers bake. Glyph metrics differ from toolbox's rasterizer; gradient / image fills bake.",
     params: {
       font_family: "TextDocument.font (PostScript name via app.fonts)",
       font_size: "fontSize px (% → ·W/100)",
-      letter_spacing: "tracking (1/1000 em)",
+      letter_spacing: "tracking (1/1000 em, integer, ±1000; the rest a px Tracking animator)",
       leading: "leading = font_size·leading px",
       color: "fillColor 0–1 RGB",
       alignment: "justification",

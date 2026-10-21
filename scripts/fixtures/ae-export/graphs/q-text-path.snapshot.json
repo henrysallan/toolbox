@@ -1,0 +1,222 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "Q text path",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "label",
+      "name": "On an arc",
+      "kind": "text",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "label"
+      ],
+      "text": {
+       "document": {
+        "v": {
+         "text": "Along the arc",
+         "font": "ArialMT",
+         "fontSize": 64,
+         "fillColor": [
+          1,
+          1,
+          1
+         ],
+         "tracking": 0,
+         "justification": "left",
+         "allCaps": false,
+         "baselineShift": 14.399999999999999
+        }
+       },
+       "pathMask": 1,
+       "pathOptions": {
+        "reverse": false,
+        "perpendicular": true,
+        "forceAlignment": false,
+        "firstMargin": {
+         "keys": [
+          {
+           "t": 0,
+           "v": 79.58793535687812,
+           "inInterp": "linear",
+           "outInterp": "linear"
+          },
+          {
+           "t": 1.3333333333333333,
+           "v": 238.76380607063436,
+           "inInterp": "linear",
+           "outInterp": "linear"
+          }
+         ],
+         "dims": 1
+        }
+       }
+      },
+      "masks": [
+       {
+        "name": "Arc (text path)",
+        "path": {
+         "v": {
+          "vertices": [
+           [
+            310.91034656191334,
+            370
+           ],
+           [
+            639.9999999999999,
+            180
+           ],
+           [
+            969.0896534380865,
+            369.9999999999999
+           ]
+          ],
+          "inTangents": [
+           [
+            0,
+            0
+           ],
+           [
+            -135.76092416510215,
+            2.4938877184211832e-14
+           ],
+           [
+            -67.88046208255113,
+            -117.57240916823109
+           ]
+          ],
+          "outTangents": [
+           [
+            67.88046208255109,
+            -117.57240916823113
+           ],
+           [
+            135.76092416510215,
+            -2.4938877184211832e-14
+           ],
+           [
+            0,
+            0
+           ]
+          ],
+          "closed": false
+         }
+        },
+        "mode": "none",
+        "inverted": false,
+        "feather": {
+         "v": [
+          0,
+          0
+         ]
+        },
+        "expansion": {
+         "v": 0
+        },
+        "opacity": {
+         "v": 100
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "arc",
+     "type": "arc",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LQ1",
+     "type": "layer",
+     "name": "On an arc",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "label",
+     "type": "text",
+     "class": "text",
+     "fidelity": "approx",
+     "note": "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking (an integer in ±1000; the rest as a px Tracking animator), leading, case, alignment, box; keyed size / spacing / weight → Source Text hold keys; keyed colour → a Fill Color animator; on a path → a mask + Path Options (margin = offset × arc length, side → baseline shift). Animators → AE text animators: a linear cascade is a Range Selector (exact), an eased one Ease High / Low within 0.5 %, random order and other easings an Expression Selector (exact); field drivers bake. Glyph metrics differ from toolbox's rasterizer; gradient / image fills bake. · glyph metrics: toolbox's canvas rasterizer vs AE's text engine (font ArialMT) · text on a path → mask + Path Options (left, First Margin = offset × arc length, above: baseline shift) · text on a path: glyphs past a path end — toolbox stacks them on the end point, AE continues straight along it"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": [
+     "Arial"
+    ]
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

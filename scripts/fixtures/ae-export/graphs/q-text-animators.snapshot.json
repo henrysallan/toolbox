@@ -1,0 +1,424 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "Q text animators",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "typed",
+      "name": "Typed",
+      "kind": "text",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "typed"
+      ],
+      "text": {
+       "document": {
+        "v": {
+         "text": "Hello AE",
+         "font": "ArialMT",
+         "fontSize": 96,
+         "fillColor": [
+          1,
+          1,
+          1
+         ],
+         "tracking": 0,
+         "leading": 115.19999999999999,
+         "justification": "center",
+         "allCaps": false,
+         "box": {
+          "size": [
+           1280,
+           211.2
+          ],
+          "position": [
+           0,
+           317.76
+          ]
+         }
+        }
+       },
+       "animators": [
+        {
+         "name": "Pivot",
+         "properties": {
+          "ADBE Text Anchor Point 3D": {
+           "v": [
+            0,
+            -26.400000000000002,
+            0
+           ]
+          },
+          "ADBE Text Position 3D": {
+           "v": [
+            0,
+            -26.400000000000002,
+            0
+           ]
+          }
+         },
+         "selector": {
+          "basedOn": "characters",
+          "units": "percentage",
+          "start": {
+           "v": 0
+          },
+          "end": {
+           "v": 100
+          },
+          "offset": {
+           "v": 0
+          },
+          "shape": "square",
+          "easeHigh": {
+           "v": 0
+          },
+          "easeLow": {
+           "v": 0
+          }
+         }
+        },
+        {
+         "name": "Type On",
+         "properties": {
+          "ADBE Text Opacity": {
+           "v": 0
+          }
+         },
+         "selectors": [
+          {
+           "basedOn": "characters",
+           "units": "index",
+           "start": {
+            "v": -2.5000000000000004
+           },
+           "end": {
+            "v": 0.5
+           },
+           "offset": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": 10.000000000000002,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           },
+           "shape": "ramp-up",
+           "easeHigh": {
+            "v": 0
+           },
+           "easeLow": {
+            "v": 0
+           }
+          }
+         ]
+        },
+        {
+         "name": "Position",
+         "properties": {
+          "ADBE Text Position 3D": {
+           "v": [
+            0,
+            40,
+            0
+           ]
+          }
+         },
+         "selectors": [
+          {
+           "basedOn": "words",
+           "units": "index",
+           "start": {
+            "v": 1
+           },
+           "end": {
+            "v": 1.2142857142857144
+           },
+           "offset": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": -0.7142857142857144,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           },
+           "shape": "ramp-down",
+           "easeHigh": {
+            "v": 0
+           },
+           "easeLow": {
+            "v": 0
+           }
+          },
+          {
+           "basedOn": "words",
+           "units": "index",
+           "start": {
+            "v": 0.7857142857142857
+           },
+           "end": {
+            "v": 1
+           },
+           "offset": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": 0.7142857142857144,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           },
+           "shape": "ramp-up",
+           "easeHigh": {
+            "v": 0
+           },
+           "easeLow": {
+            "v": 0
+           },
+           "mode": "max"
+          }
+         ]
+        },
+        {
+         "name": "Scale",
+         "properties": {
+          "ADBE Text Scale 3D": {
+           "v": [
+            -10.000405295999993,
+            -10.000405295999993,
+            100
+           ]
+          }
+         },
+         "selectors": [
+          {
+           "kind": "expression",
+           "basedOn": "characters",
+           "amount": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": 100,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           },
+           "expression": "// toolbox text animator (engine/text-animators.ts): forward cascade, softness 0.3, ease-out-back easing.\n// Animate this selector's Amount (100 = the whole sweep).\nvar a = Math.min(1, Math.max(0, value[0] / 100));\nvar n = textTotal, i = textIndex - 1, w = 0.3;\nvar f = n > 1 ? i / (n - 1) : 0;\nvar p = n > 1 ? f : 0;\nvar t = Math.min(1, Math.max(0, (a - p * (1 - w)) / w));\nfunction tbxIn(u) { return 2.70158 * u * u * u - 1.70158 * u * u; }\nt = t + 1 * (1 - tbxIn(1 - t) - t);\n100 * (1 - t) / 1.10000405296;"
+          }
+         ]
+        },
+        {
+         "name": "Rotation",
+         "properties": {
+          "ADBE Text Rotation": {
+           "v": -30
+          }
+         },
+         "selectors": [
+          {
+           "kind": "expression",
+           "basedOn": "characters",
+           "amount": {
+            "keys": [
+             {
+              "t": 0,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1,
+              "v": 100,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           },
+           "expression": "// toolbox text animator (engine/text-animators.ts): random cascade, softness 0.3.\n// Animate this selector's Amount (100 = the whole sweep).\nvar a = Math.min(1, Math.max(0, value[0] / 100));\nvar n = textTotal, i = textIndex - 1, w = 0.3;\nvar f = n > 1 ? i / (n - 1) : 0;\nfunction tbxHash(m) { var x = (m | 0) ^ 0x9e3779b9; x = Math.imul(x ^ (x >>> 16), 0x45d9f3b); x = Math.imul(x ^ (x >>> 16), 0x45d9f3b); x ^= x >>> 16; return (x >>> 0) / 4294967296; }\nvar p = n > 1 ? tbxHash(3 + i * 2654435761) : 0;\nvar t = Math.min(1, Math.max(0, (a - p * (1 - w)) / w));\n100 * (1 - t);"
+          }
+         ]
+        },
+        {
+         "name": "Color",
+         "properties": {
+          "ADBE Text Fill Color": {
+           "v": [
+            1,
+            0.2,
+            0
+           ]
+          }
+         },
+         "selectors": [
+          {
+           "basedOn": "characters",
+           "units": "percentage",
+           "start": {
+            "v": 0
+           },
+           "end": {
+            "v": 100
+           },
+           "offset": {
+            "v": 0
+           },
+           "shape": "square",
+           "easeHigh": {
+            "v": 0
+           },
+           "easeLow": {
+            "v": 0
+           },
+           "amount": {
+            "keys": [
+             {
+              "t": 0.3333333333333333,
+              "v": 100,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             },
+             {
+              "t": 1.3333333333333333,
+              "v": 0,
+              "inInterp": "linear",
+              "outInterp": "linear"
+             }
+            ],
+            "dims": 1
+           }
+          }
+         ]
+        }
+       ]
+      }
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "LQ0",
+     "type": "layer",
+     "name": "Typed",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [
+    {
+     "id": "typed",
+     "type": "text",
+     "class": "text",
+     "fidelity": "approx",
+     "note": "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking (an integer in ±1000; the rest as a px Tracking animator), leading, case, alignment, box; keyed size / spacing / weight → Source Text hold keys; keyed colour → a Fill Color animator; on a path → a mask + Path Options (margin = offset × arc length, side → baseline shift). Animators → AE text animators: a linear cascade is a Range Selector (exact), an eased one Ease High / Low within 0.5 %, random order and other easings an Expression Selector (exact); field drivers bake. Glyph metrics differ from toolbox's rasterizer; gradient / image fills bake. · glyph metrics: toolbox's canvas rasterizer vs AE's text engine (font ArialMT) · no wrap: the AE box is the toolbox box (long lines may wrap in AE where toolbox overflows) · Type On animator: forward cascade → a Range Selector in index units, the amount on Offset (exact) · Position animator: center cascade → two Range Selectors (max) in index units, the amount on Offset (exact) · Scale animator: ease-out-back overshoots to 1.100 — the animator's value carries the overshoot, the selector reaches 100 / 1.100 % · Scale animator: an Expression Selector replays toolbox's forward cascade (ease-out-back easing: Ease High / Low reproduce it within 17.55% at best (tolerance 0.50%)); its Amount carries the amount · Rotation animator: an Expression Selector replays toolbox's random cascade (random order: AE's Randomize Order permutes the units, toolbox hashes each to its own position); its Amount carries the amount · Color animator: uniform → a Range Selector over every character, Amount = the drive"
+    }
+   ],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": [
+     "Arial"
+    ]
+   }
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

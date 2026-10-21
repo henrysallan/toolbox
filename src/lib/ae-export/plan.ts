@@ -936,9 +936,14 @@ function refine(s: NodeState, values: Record<string, unknown>, tracks: AePlanTra
     }
     if (rampKeyed && s.entry.class !== "bake") bakeFor("Animated gradient/ramp stops — AE gradient stops are not scriptable, so the fill bakes.");
   } else if (t === "text") {
-    if (values.fillMode === "linear" || values.fillMode === "radial") s.notes.push("Gradient text fill → a Gradient Ramp effect on the text layer.");
-    if (Object.keys(values).some((k) => /^anim_.*_enabled$/.test(k) && values[k] === true))
-      s.notes.push("Text animators → AE animators + Range Selector (M4); field drivers have no selector form.");
+    if (values.fillMode && values.fillMode !== "solid") bakeFor(`Text fill ${String(values.fillMode)} (gradient / image) has no plain text-layer form — the text bakes.`);
+    const anims = Object.keys(values).filter((k) => /^anim_.*_enabled$/.test(k) && values[k] === true).map((k) => k.slice(5, -8));
+    if (anims.length)
+      s.notes.push("Text animators → AE text animators: a linear cascade is a Range Selector (exact), an eased one Ease High / Low within tolerance, random order and other easings an Expression Selector (exact).");
+    const field = anims.filter((p) => values[`anim_${p}_driver`] === "field");
+    if (field.length) bakeFor(`Text animator${field.length > 1 ? "s" : ""} ${field.join(", ")} driven by an image field — no AE selector samples an image per character; the text bakes.`);
+    const shapeKeyed = anims.flatMap((p) => ["softness", "direction", "seed", "easing", "ease_intensity", "by", "driver"].filter((x) => keyed.has(`anim_${p}_${x}`)).map((x) => `${p} ${x}`));
+    if (shapeKeyed.length) bakeFor(`Animated text animator ${shapeKeyed.join(", ")} — an AE selector's shape is built once; the text bakes.`);
     if (rampKeyed) bakeFor("Animated gradient text fill stops — bakes.");
   } else if (t === "audio-source") {
     if (values.mode === "microphone")

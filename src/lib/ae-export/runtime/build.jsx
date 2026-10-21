@@ -344,6 +344,8 @@
   var TEXT_BASED_ON = { "characters": 1, "characters-excluding-spaces": 2, "words": 3, "lines": 4 };
   var TEXT_UNITS = { "percentage": 1, "index": 2 };
   var TEXT_SHAPE = { "square": 1, "ramp-up": 2, "ramp-down": 3, "triangle": 4, "round": 5, "smooth": 6 };
+  var TEXT_MODE = { "add": 1, "subtract": 2, "intersect": 3, "min": 4, "max": 5, "difference": 6 };
+  var TEXT_GROUPING = { "character": 1, "word": 2, "line": 3, "all": 4 };
   var MASK_MODE = {
     "none": "NONE", "add": "ADD", "subtract": "SUBTRACT", "intersect": "INTERSECT",
     "lighten": "LIGHTEN", "darken": "DARKEN", "difference": "DIFFERENCE"
@@ -505,6 +507,16 @@
 
   function applyProject(p) {
     var proj = app.project;
+    // An OCIO-managed project (colorManagementSystem 1, the startup project
+    // in aerender 26.5 on 2026-10-21) refuses 16 bpc, and the scene's working
+    // space is an ICC profile: switch to Adobe color management (0; 26.5 has
+    // no enum object for it).
+    step("project color management", function () {
+      if (proj.colorManagementSystem !== undefined && proj.colorManagementSystem !== 0) {
+        proj.colorManagementSystem = 0;
+        warnings.push("project: switched color management from OCIO to Adobe (the scene's working space is an ICC profile)");
+      }
+    });
     step("project bitsPerChannel", function () { proj.bitsPerChannel = p.bitsPerChannel; });
     if (has(p, "workingSpace")) step("project workingSpace", function () { proj.workingSpace = p.workingSpace; });
     step("project linearBlending", function () { proj.linearBlending = p.linearBlending === true; });
@@ -1103,6 +1115,15 @@
         }
       }
     }
+    // The panel's kerning mode too: it came in as Optical (measured 26.5),
+    // which narrowed Arial "II" pairs by up to 2 px at 72 px; toolbox's
+    // canvas kerns by the font's metrics.
+    try {
+      if (typeof AutoKernType !== "undefined" && td.autoKernType !== AutoKernType.METRIC_KERN) td.autoKernType = AutoKernType.METRIC_KERN;
+    } catch (e4) {
+      problemsOut.push("kerning (Metrics) cannot be set in this After Effects");
+    }
+    if (has(d, "baselineShift")) td.baselineShift = d.baselineShift;
     if (has(d, "box")) {
       td.boxTextSize = d.box.size;
       td.boxTextPos = d.box.position;
@@ -1125,21 +1146,48 @@
         applyProp(get().property("ADBE Text Animator Properties").property(key), A.properties[key], where + " " + key);
       }
     }
-    var S = A.selector;
+    if (has(A, "selector")) applyRangeSelector(get, A.selector, where);
+    var j;
+    if (has(A, "selectors")) {
+      for (j = 0; j < A.selectors.length; j++) {
+        if (A.selectors[j].kind === "expression") applyExpressionSelector(get, A.selectors[j], where + " selector " + (j + 1));
+        else applyRangeSelector(get, A.selectors[j], where + " selector " + (j + 1));
+      }
+    }
+  }
+
+  function applyRangeSelector(get, S, where) {
     get().property("ADBE Text Selectors").addProperty("ADBE Text Selector");
-    var sel = function () { return get().property("ADBE Text Selectors").property(1); };
+    var n = get().property("ADBE Text Selectors").numProperties;
+    var sel = function () { return get().property("ADBE Text Selectors").property(n); };
     var adv = function () { return sel().property("ADBE Text Range Advanced"); };
     setEnum(adv().property("ADBE Text Range Units"), enumValue(TEXT_UNITS, S.units, "selector units"), where + " units");
     setEnum(adv().property("ADBE Text Range Type2"), enumValue(TEXT_BASED_ON, S.basedOn, "selector based-on"), where + " based on");
+    if (has(S, "mode")) setEnum(adv().property("ADBE Text Selector Mode"), enumValue(TEXT_MODE, S.mode, "selector mode"), where + " mode");
     var byIndex = S.units === "index";
     applyProp(sel().property(byIndex ? "ADBE Text Index Start" : "ADBE Text Percent Start"), S.start, where + " start");
     applyProp(sel().property(byIndex ? "ADBE Text Index End" : "ADBE Text Percent End"), S.end, where + " end");
     applyProp(sel().property(byIndex ? "ADBE Text Index Offset" : "ADBE Text Percent Offset"), S.offset, where + " offset");
     setEnum(adv().property("ADBE Text Range Shape"), enumValue(TEXT_SHAPE, S.shape, "selector shape"), where + " shape");
+    if (has(S, "amount")) applyProp(adv().property("ADBE Text Selector Max Amount"), S.amount, where + " amount");
     applyProp(adv().property("ADBE Text Levels Max Ease"), S.easeHigh, where + " ease high");
     applyProp(adv().property("ADBE Text Levels Min Ease"), S.easeLow, where + " ease low");
     if (has(S, "randomize")) adv().property("ADBE Text Randomize Order").setValue(S.randomize === true ? 1 : 0);
     if (has(S, "seed")) adv().property("ADBE Text Random Seed").setValue(S.seed);
+  }
+
+  // The Expression Selector's Amount is three equal dimensions (the scene
+  // gives one); its expression reads value[0] and returns the selection %.
+  function applyExpressionSelector(get, S, where) {
+    get().property("ADBE Text Selectors").addProperty("ADBE Text Expressible Selector");
+    var n = get().property("ADBE Text Selectors").numProperties;
+    var sel = function () { return get().property("ADBE Text Selectors").property(n); };
+    setEnum(sel().property("ADBE Text Range Type2"), enumValue(TEXT_BASED_ON, S.basedOn, "selector based-on"), where + " based on");
+    if (has(S, "mode")) setEnum(sel().property("ADBE Text Selector Mode"), enumValue(TEXT_MODE, S.mode, "selector mode"), where + " mode");
+    var amount = function () { return sel().property("ADBE Text Expressible Amount"); };
+    applyProp(amount(), S.amount, where + " amount", function (v) { return [v, v, v]; });
+    amount().expression = S.expression;
+    counts.expressions++;
   }
 
   function applyText(layer, T, where) {
@@ -1149,6 +1197,19 @@
     if (notes.length) warnings.push(where + ": " + notes[0] + (notes.length > 1 ? " (+" + (notes.length - 1) + " more)" : ""));
     if (has(T, "pathMask")) {
       layer.property("ADBE Text Properties").property("ADBE Text Path Options").property("ADBE Text Path").setValue(T.pathMask);
+    }
+    if (has(T, "pathOptions")) {
+      var po = function () { return layer.property("ADBE Text Properties").property("ADBE Text Path Options"); };
+      var O = T.pathOptions;
+      if (has(O, "reverse")) po().property("ADBE Text Reverse Path").setValue(O.reverse === true ? 1 : 0);
+      if (has(O, "perpendicular")) po().property("ADBE Text Perpendicular To Path").setValue(O.perpendicular === true ? 1 : 0);
+      if (has(O, "forceAlignment")) po().property("ADBE Text Force Align Path").setValue(O.forceAlignment === true ? 1 : 0);
+      if (has(O, "firstMargin")) applyProp(po().property("ADBE Text First Margin"), O.firstMargin, where + " first margin");
+      if (has(O, "lastMargin")) applyProp(po().property("ADBE Text Last Margin"), O.lastMargin, where + " last margin");
+    }
+    if (has(T, "anchorGrouping")) {
+      setEnum(layer.property("ADBE Text Properties").property("ADBE Text More Options").property("ADBE Text Anchor Point Option"),
+        enumValue(TEXT_GROUPING, T.anchorGrouping, "anchor point grouping"), where + " anchor point grouping");
     }
     var j;
     if (has(T, "animators")) {

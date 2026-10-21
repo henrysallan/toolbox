@@ -84,7 +84,7 @@
            264
           ],
           "position": [
-           0,
+           -3,
            317.28
           ]
          }
@@ -113,7 +113,7 @@
      "type": "text",
      "class": "text",
      "fidelity": "approx",
-     "note": "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking, leading, case, alignment, box; on-path → Path Options. Glyph metrics differ from toolbox's rasterizer; animators → AE animators (M4); gradient fills → Gradient Ramp on the layer. · glyph metrics: toolbox's canvas rasterizer vs AE's text engine (font Inter-Bold) · no wrap: the AE box is the toolbox box (long lines may wrap in AE where toolbox overflows)"
+     "note": "Text layer (TextDocument): font by PostScript name (must be installed in AE), size px, tracking (an integer in ±1000; the rest as a px Tracking animator), leading, case, alignment, box; keyed size / spacing / weight → Source Text hold keys; keyed colour → a Fill Color animator; on a path → a mask + Path Options (margin = offset × arc length, side → baseline shift). Animators → AE text animators: a linear cascade is a Range Selector (exact), an eased one Ease High / Low within 0.5 %, random order and other easings an Expression Selector (exact); field drivers bake. Glyph metrics differ from toolbox's rasterizer; gradient / image fills bake. · glyph metrics: toolbox's canvas rasterizer vs AE's text engine (font Inter-Bold) · no wrap: the AE box is the toolbox box (long lines may wrap in AE where toolbox overflows)"
     }
    ],
    "shader": [],

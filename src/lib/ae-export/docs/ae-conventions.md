@@ -144,8 +144,53 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
   sets every attribute explicitly.
 - Glyph metrics differ between toolbox's rasterizer and AE, so text is
   `approx`.
-- Text animators, text on a path, keyed text documents and gradient or
-  image fills bake for now.
+- A document's tracking must be an integer in −1000…1000: AE refuses
+  anything else (*measured*). Letter spacing past that rides a px Tracking
+  animator. An animator's Tracking Amount is **px**, not 1/1000 em.
+- Plain toolbox text centres a line *with* its trailing letter spacing; AE
+  and toolbox's per-glyph (animated) text centre it without. The builder
+  shifts plain text by that much.
+- Keyed size, spacing, leading, weight or box → Source Text hold keys, one
+  per frame while a number moves (AE can't tween a TextDocument). A keyed
+  colour → a Fill Color animator carrying the colour track.
+- Text animators → AE text animators, one per toolbox animator (plus a
+  constant "base" animator when min is not the property's rest). AE stacks
+  them *measurably*: Position, Anchor Point, Rotation and Tracking add;
+  Scale multiplies; Opacity, Fill Opacity and colours move from the value
+  so far toward the animator's by the selection. Opacity × Fill Opacity
+  multiply, so Type On is Opacity and the Opacity animator is Fill (+
+  Stroke) Opacity.
+- The selector (*measured*: AE's Range Selector is lottie's model — ramps
+  sampled at each unit's centre, Ease High / Low a bezier on the ramp):
+  - a linear cascade is a Range Selector, exactly. Forward / backward is one
+    Ramp; center / edges are two combined by Min / Max. Units are index (no
+    ±100 % limit), and the amount keys go on Offset.
+  - an eased cascade uses Ease High / Low when the fit is within 0.5 %
+    (smoothstep exactly; sine and circ ≈ 0.04 %). Otherwise it's an
+    Expression Selector replaying toolbox's formula exactly, with the amount
+    keys on its own Amount (read as `value`).
+  - `random` is always an Expression Selector: AE's Randomize Order permutes
+    the units, toolbox hashes each one.
+  - Tracking by word is an Expression Selector over characters that reads
+    toolbox's words from the layer's text: AE's Words leave the spaces out,
+    and toolbox's word owns the space after it (*measured*).
+  - field drivers bake.
+- Vertical metrics are per font (*measured*): toolbox's canvas "middle"
+  sits 0.26–0.32 em above the baseline (not the hhea midpoint), and AE's
+  first box-text baseline sits at about the typo ascender below the box top.
+  Measured fonts: Arial, Helvetica, Times New Roman, Courier New, Georgia and
+  Menlo; others use Inter's values.
+- Toolbox scales and rotates a glyph about its middle; AE uses its baseline.
+  A "Pivot" animator sets Anchor Point and Position to the same offset
+  (an Anchor Point alone moves the glyph). Word-based ones set Anchor Point
+  Grouping to Word.
+- Text on a path → the spline as a mask (mode None) + Path Options:
+  start / center / end → left / centre / right, offset × arc length →
+  First Margin (Last for end), flip → Reverse Path, side → baseline shift
+  (toolbox centres the glyph's middle on the path, AE its baseline). Past a
+  path end toolbox stacks glyphs on the end point; AE continues straight.
+- Gradient or image fills, variable axes driven by a mask, and text on a
+  multi-subpath spline bake.
 
 ## ExtendScript
 

@@ -141,6 +141,54 @@ export default async function run(): Promise<number> {
     c.check("(text) box text over the toolbox box", d?.box && near(d.box.size[0], 1280), d?.box);
     c.check("(text) the family is in report.requires.fonts", b.scene.report.requires.fonts.includes("Inter"));
     c.check("(text) PostScript names: known tables and the derived rule", postScriptName("Arial", 700, false).name === "Arial-BoldMT" && postScriptName("Inter", 400, true).name === "Inter-Italic" && postScriptName("Playfair Display", 900, false).name === "PlayfairDisplay-Black" && !postScriptName("Playfair Display", 900, false).sure);
+    c.near("(text) plain text: toolbox centres the line with its trailing letter spacing → the box moves left by spacing / 2 (3 px)", d?.box?.position[0], -3, 1e-9);
+  }
+
+  // --- Q: text animators, text on a path, keyed documents (M4 text lane) -----------------------
+  {
+    const b = await build("q-text-animators");
+    const L = mainOf(b).layers.find((l) => l.kind === "text")!;
+    const A = L.text?.animators ?? [];
+    const by = (n: string) => A.find((a) => a.name === n);
+    const sel = (n: string) => by(n)?.selectors ?? [];
+    c.check("(Q animators) no bake; Pivot, Type On, Position, Scale, Rotation, Color — one AE animator each", !b.bakes.length && A.map((a) => a.name).join() === "Pivot,Type On,Position,Scale,Rotation,Color", A.map((a) => a.name));
+    const pv = (by("Pivot")?.properties["ADBE Text Anchor Point 3D"] as any)?.v;
+    c.check("(Q animators) Pivot: Anchor Point = Position = 0.275 em (Arial's measured canvas middle) above the baseline", near(pv?.[1], -0.275 * 96, 1e-9) && JSON.stringify(by("Pivot")?.properties["ADBE Text Position 3D"]) === JSON.stringify(by("Pivot")?.properties["ADBE Text Anchor Point 3D"]), pv);
+    const to = sel("Type On")[0] as any;
+    c.check("(Q animators) Type On: Opacity 0, one Ramp Up in index units, the amount keys on Offset", (by("Type On")?.properties["ADBE Text Opacity"] as any)?.v === 0 && to?.shape === "ramp-up" && to?.units === "index" && to?.offset?.keys?.length === 2, to);
+    const ps = sel("Position") as any[];
+    c.check("(Q animators) Position by word from the centre, rest at max → Ramp Down + Ramp Up (Max), on words", ps.length === 2 && ps.every((x) => x.basedOn === "words") && ps[1].mode === "max" && JSON.stringify((by("Position")?.properties["ADBE Text Position 3D"] as any)?.v) === JSON.stringify([0, 40, 0]), ps);
+    const sc = sel("Scale")[0] as any;
+    c.check("(Q animators) Scale 0 → 1 with ease-out-back → an Expression Selector; the Scale carries the 1.1 overshoot", sc?.kind === "expression" && /\/ 1\.1/.test(sc.expression) && near((by("Scale")?.properties["ADBE Text Scale 3D"] as any)?.v[0], -10, 1e-3), by("Scale"));
+    const rt = sel("Rotation")[0] as any;
+    c.check("(Q animators) random rotation → an Expression Selector hashing toolbox's seed 3", rt?.kind === "expression" && /tbxHash\(3 \+ i \* 2654435761\)/.test(rt.expression), rt?.expression);
+    const co = sel("Color")[0] as any;
+    c.check("(Q animators) uniform colour, rest at the fill → a Range Selector over every character, Amount keyed 100 → 0", co?.shape === "square" && co?.amount?.keys?.[0]?.v === 100 && co?.amount?.keys?.[1]?.v === 0, co);
+    c.check("(Q animators) the report names the routes (Range exact, Expression for back / random)", /Type On animator: forward cascade → a Range Selector/.test(line(b, "typed")?.note ?? "") && /Rotation animator: an Expression Selector/.test(line(b, "typed")?.note ?? ""));
+    c.check("(Q animators) the scene validates", validateAeScene(b.scene).length === 0, validateAeScene(b.scene).slice(0, 3));
+
+    const p = await build("q-text-path");
+    const T = mainOf(p).layers.find((l) => l.kind === "text")!;
+    const pd = (T.text?.document as any)?.v;
+    c.check("(Q path) the arc → mask 1 (mode none) named as the text path; Path Options on it", T.text?.pathMask === 1 && T.masks?.[0]?.mode === "none" && T.text?.pathOptions?.perpendicular === true && T.text?.pathOptions?.reverse === false, T.masks?.[0]);
+    c.check("(Q path) start → left justification, point text (no box), one run", pd?.justification === "left" && !pd?.box && pd?.text === "Along the arc", pd);
+    c.near("(Q path) above: baseline shift −(0.275 − ½) em = +14.4 px", pd?.baselineShift, -(0.275 - 0.5) * 64, 1e-9);
+    const fm = T.text?.pathOptions?.firstMargin as any;
+    const arcLen = (380 * (120 * Math.PI)) / 180;
+    c.check("(Q path) keyed offset → First Margin keys 0.1 → 0.3 of the arc's length (toolbox's 512-segment polyline)", fm?.keys?.length === 2 && near(fm.keys[0].v, 0.1 * arcLen, 0.05) && near(fm.keys[1].v, 0.3 * arcLen, 0.15), fm?.keys?.map((k: any) => k.v));
+
+    const k = await build("q-text-doc");
+    const D = mainOf(k).layers.find((l) => l.kind === "text")!;
+    const keys = (D.text?.document as any)?.keys ?? [];
+    c.check("(Q doc) keyed font size → a Source Text hold key per frame while it moves (21), then held", keys.length === 21 && keys.every((x: any) => x.inInterp === "hold" && x.outInterp === "hold") && keys[0].v.fontSize === 80 && keys[20].v.fontSize === 120, keys.length);
+    c.check("(Q doc) letter spacing 140 px at 80 px = 1750 → document tracking 1000 (AE's limit)", keys.every((x: any) => x.v.tracking === 1000));
+    const ls = D.text?.animators?.find((a) => a.name === "Letter Spacing");
+    const amt = ls?.properties["ADBE Text Tracking Amount"] as any;
+    c.check("(Q doc) …the rest as a px Tracking (After) animator, per frame with the size (140 − size)", (ls?.properties["ADBE Text Track Type"] as any)?.v === 3 && near(amt?.keys?.[0]?.v, 140 - 80, 1e-9) && near(amt?.keys?.[20]?.v, 140 - 120, 1e-9), amt?.keys?.slice(0, 2));
+    const fc = D.text?.animators?.find((a) => a.name === "Fill Color")?.properties["ADBE Text Fill Color"] as any;
+    c.check("(Q doc) keyed colour → a Fill Color animator: keys + the OKLab expression (the shapes' route)", fc?.keys?.length >= 2 && /OKLab/.test(fc?.expression ?? ""), fc);
+    c.check("(Q doc) keyed stroke colour → a Stroke Color animator", !!D.text?.animators?.find((a) => a.name === "Stroke Color")?.properties["ADBE Text Stroke Color"]);
+    c.check("(Q doc) the scene validates (integer tracking, hold keys)", validateAeScene(k.scene).length === 0, validateAeScene(k.scene).slice(0, 3));
   }
 
   // --- gradients -------------------------------------------------------------------------------
@@ -309,7 +357,19 @@ export default async function run(): Promise<number> {
       g.node(A, "t", "text", { text: "Type", anim_typeon_enabled: true });
       g.out(A, "t:out");
     });
-    c.check("(text animators) the next wave: the text bakes, with the note", anim.bakes.length === 1 && /animators/.test(anim.bakes[0].reason ?? ""), anim.bakes.map((x) => x.reason));
+    const typed = anim.scene.comps.flatMap((x) => x.layers).find((l) => l.kind === "text");
+    const typeOn = typed?.text?.animators?.find((a) => a.name === "Type On");
+    c.check(
+      "(text animators) Type On → an Opacity 0 animator, a Ramp Up Range Selector in index units (no bake)",
+      !anim.bakes.length && (typeOn?.properties["ADBE Text Opacity"] as any)?.v === 0 && typeOn?.selectors?.[0]?.kind !== "expression" && (typeOn?.selectors?.[0] as any)?.shape === "ramp-up" && (typeOn?.selectors?.[0] as any)?.units === "index",
+      typeOn ?? anim.bakes.map((x) => x.reason)
+    );
+    const fielded = await adhoc("anim-field", (g) => {
+      const A = g.layer("LZ", "Fielded");
+      g.node(A, "t", "text", { text: "Field", anim_opacity_enabled: true, anim_opacity_driver: "field" });
+      g.out(A, "t:out");
+    });
+    c.check("(text animators) a field-driven animator bakes, with the reason", fielded.bakes.length === 1 && /image field/.test(fielded.bakes[0].reason ?? ""), fielded.bakes.map((x) => x.reason));
     const box = await adhoc("box", (g) => {
       const A = g.layer("LW", "Boxy");
       g.node(A, "sq", "rectangle", { stroke_enabled: false, fill_enabled: true });

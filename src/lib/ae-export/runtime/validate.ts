@@ -55,6 +55,8 @@ const MATTE_TYPES = new Set(["LUMA", "LUMA_INVERTED", "ALPHA", "ALPHA_INVERTED"]
 const JUSTIFY = new Set(["left", "center", "right", "full-left", "full-center", "full-right", "full"]);
 const TEXT_BASED_ON = new Set(["characters", "characters-excluding-spaces", "words", "lines"]);
 const TEXT_SHAPES = new Set(["square", "ramp-up", "ramp-down", "triangle", "round", "smooth"]);
+const TEXT_MODES = new Set(["add", "subtract", "intersect", "min", "max", "difference"]);
+const TEXT_GROUPING = new Set(["character", "word", "line", "all"]);
 
 type ValueCheck = (v: unknown, path: string, out: string[]) => void;
 
@@ -95,9 +97,11 @@ const textDocument: ValueCheck = (v, path, out) => {
   if (!isStr(v.font) || !v.font) out.push(`${path}.font: expected a PostScript name`);
   num(v.fontSize, `${path}.fontSize`, out);
   num(v.tracking, `${path}.tracking`, out);
+  // AE refuses a document tracking that is not an integer in ±1000 (measured).
+  if (isNum(v.tracking) && (!Number.isInteger(v.tracking) || Math.abs(v.tracking) > 1000)) out.push(`${path}.tracking: AE takes an integer in −1000…1000, got ${v.tracking}`);
   if (!JUSTIFY.has(v.justification)) out.push(`${path}.justification: unknown "${v.justification}"`);
   for (const c of ["fillColor", "strokeColor"]) if (c in v) rgb(v[c], `${path}.${c}`, out);
-  for (const c of ["strokeWidth", "leading"]) if (c in v) num(v[c], `${path}.${c}`, out);
+  for (const c of ["strokeWidth", "leading", "baselineShift"]) if (c in v) num(v[c], `${path}.${c}`, out);
   if ("box" in v) {
     if (!isObj(v.box)) out.push(`${path}.box: expected {size, position}`);
     else {
@@ -153,6 +157,50 @@ function prop(p: unknown, path: string, out: string[], check: ValueCheck, opts: 
 function oneOf(v: unknown, set: Set<string> | Record<string, true>, path: string, out: string[]) {
   const ok = set instanceof Set ? set.has(v as string) : typeof v === "string" && Object.prototype.hasOwnProperty.call(set, v);
   if (!ok) out.push(`${path}: unknown ${JSON.stringify(v)}`);
+}
+
+// Text animator properties build.jsx sets by match name, by value shape
+// (others pass through unchecked).
+const inRange = (lo: number, hi: number): ValueCheck => (v, path, out) => {
+  num(v, path, out);
+  if (isNum(v) && (v < lo || v > hi)) out.push(`${path}: ${v} is outside ${lo}–${hi}`);
+};
+const TEXT_ANIMATOR_PROPS: Record<string, ValueCheck> = {
+  "ADBE Text Anchor Point 3D": vec(3),
+  "ADBE Text Position 3D": vec(3),
+  "ADBE Text Scale 3D": vec(3),
+  "ADBE Text Rotation": num,
+  "ADBE Text Opacity": inRange(0, 100),
+  "ADBE Text Fill Opacity": inRange(0, 100),
+  "ADBE Text Stroke Opacity": inRange(0, 100),
+  "ADBE Text Fill Color": rgb,
+  "ADBE Text Stroke Color": rgb,
+  "ADBE Text Tracking Amount": num,
+  "ADBE Text Track Type": (v, path, out) => {
+    if (v !== 1 && v !== 2 && v !== 3) out.push(`${path}: expected 1 (before & after), 2 (before) or 3 (after)`);
+  },
+};
+
+// A Range or Expression Selector. AE refuses (throws on) a percent Start /
+// End / Offset outside ±100 and an index one outside ±99999 (measured).
+function textSelector(s: any, path: string, out: string[]) {
+  if (!isObj(s)) return void out.push(`${path}: expected a range or expression selector`);
+  oneOf(s.basedOn, TEXT_BASED_ON, `${path}.basedOn`, out);
+  if ("mode" in s) oneOf(s.mode, TEXT_MODES, `${path}.mode`, out);
+  if (s.kind === "expression") {
+    prop(s.amount, `${path}.amount`, out, inRange(-100, 100));
+    if (!isStr(s.expression) || !s.expression.trim()) out.push(`${path}.expression: expected the selector's expression`);
+    return;
+  }
+  if ("kind" in s && s.kind !== "range") return void out.push(`${path}.kind: expected range or expression`);
+  oneOf(s.units, new Set(["percentage", "index"]), `${path}.units`, out);
+  oneOf(s.shape, TEXT_SHAPES, `${path}.shape`, out);
+  const lim = s.units === "index" ? 99999 : 100;
+  for (const k of ["start", "end", "offset"]) prop(s[k], `${path}.${k}`, out, inRange(-lim, lim));
+  for (const k of ["easeHigh", "easeLow"]) prop(s[k], `${path}.${k}`, out, inRange(-100, 100));
+  if ("amount" in s) prop(s.amount, `${path}.amount`, out, inRange(-100, 100));
+  if ("randomize" in s && typeof s.randomize !== "boolean") out.push(`${path}.randomize: expected a boolean`);
+  if ("seed" in s) num(s.seed, `${path}.seed`, out);
 }
 
 function shapeTransform(t: any, path: string, out: string[], repeater = false) {
@@ -447,18 +495,26 @@ export function validateAeScene(scene: unknown): string[] {
           prop(L.text.document, `${p}.text.document`, out, textDocument);
           if ("pathMask" in L.text && (!Number.isInteger(L.text.pathMask) || L.text.pathMask < 1 || L.text.pathMask > nMasks))
             out.push(`${p}.text.pathMask: expected a mask index 1–${nMasks}`);
+          if ("pathOptions" in L.text) {
+            const po = L.text.pathOptions;
+            if (!("pathMask" in L.text)) out.push(`${p}.text.pathOptions: Path Options need a pathMask`);
+            if (!isObj(po)) out.push(`${p}.text.pathOptions: expected {reverse?, perpendicular?, forceAlignment?, firstMargin?, lastMargin?}`);
+            else {
+              for (const k of ["reverse", "perpendicular", "forceAlignment"]) if (k in po && typeof po[k] !== "boolean") out.push(`${p}.text.pathOptions.${k}: expected a boolean`);
+              for (const k of ["firstMargin", "lastMargin"]) prop(po[k], `${p}.text.pathOptions.${k}`, out, num, { required: false });
+            }
+          }
+          if ("anchorGrouping" in L.text) oneOf(L.text.anchorGrouping, TEXT_GROUPING, `${p}.text.anchorGrouping`, out);
           if ("animators" in L.text) {
             if (!Array.isArray(L.text.animators)) out.push(`${p}.text.animators: expected an array`);
             else L.text.animators.forEach((a: any, ai: number) => {
               const ap = `${p}.text.animators[${ai}]`;
               if (!isObj(a) || !isStr(a.name) || !isObj(a.properties)) return void out.push(`${ap}: expected {name, properties, selector}`);
-              for (const [k, v] of Object.entries(a.properties)) prop(v, `${ap}.properties["${k}"]`, out, () => {});
-              const s = a.selector;
-              if (!isObj(s)) return void out.push(`${ap}.selector: expected a range selector`);
-              oneOf(s.basedOn, TEXT_BASED_ON, `${ap}.selector.basedOn`, out);
-              oneOf(s.units, new Set(["percentage", "index"]), `${ap}.selector.units`, out);
-              oneOf(s.shape, TEXT_SHAPES, `${ap}.selector.shape`, out);
-              for (const k of ["start", "end", "offset", "easeHigh", "easeLow"]) prop(s[k], `${ap}.selector.${k}`, out, num);
+              for (const [k, v] of Object.entries(a.properties)) prop(v, `${ap}.properties["${k}"]`, out, TEXT_ANIMATOR_PROPS[k] ?? (() => {}));
+              if (("selector" in a) === ("selectors" in a)) return void out.push(`${ap}: needs exactly one of selector / selectors`);
+              if ("selector" in a) return void textSelector(a.selector, `${ap}.selector`, out);
+              if (!Array.isArray(a.selectors) || !a.selectors.length) return void out.push(`${ap}.selectors: expected at least one selector`);
+              a.selectors.forEach((s: any, si: number) => textSelector(s, `${ap}.selectors[${si}]`, out));
             });
           }
         }

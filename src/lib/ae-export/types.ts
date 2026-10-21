@@ -466,13 +466,24 @@ export interface AeTextDocument {
   allCaps?: boolean;
   // Paragraph (box) text when present; point text otherwise.
   box?: { size: [number, number]; position: [number, number] };
+  // Px, AE's sense: positive raises the baseline (on a path: toward the
+  // glyphs' top, perpendicular to the path).
+  baselineShift?: number;
 }
 
+// Text animators (spec §4.7; specdocs/ae-m4/text.md). Measured in AE 26.5:
+// per character, Position / Anchor Point / Rotation / Tracking Amount ADD
+// across animators, Scale MULTIPLIES, Opacity / Fill Opacity / Stroke
+// Opacity / Fill Color / Stroke Color move from the value so far toward the
+// animator's by the selection (the last animator wins at 100 %); Opacity ×
+// Fill Opacity multiply. Anchor Point moves the glyph by −anchor (a pivot is
+// Anchor + an equal Position). Tracking Amount is px, not 1/1000 em.
 export interface AeTextAnimator {
   name: string;
   // Keyed by animator property match name, e.g. "ADBE Text Opacity".
   properties: Record<string, AeProp>;
-  selector: {
+  // One Range Selector (M0), or `selectors` (M4 text) — exactly one of them.
+  selector?: {
     basedOn: "characters" | "characters-excluding-spaces" | "words" | "lines";
     units: "percentage" | "index";
     start: AeProp<number>;
@@ -483,7 +494,41 @@ export interface AeTextAnimator {
     easeLow: AeProp<number>;
     randomize?: boolean;
     seed?: number;
+    // How this selector combines with the ones above it (AE's Mode; add).
+    mode?: AeTextSelectorMode;
+    // Percent, −100..100 (AE's Amount; 100).
+    amount?: AeProp<number>;
   };
+  // The animator's selectors, top to bottom.
+  selectors?: AeTextSelector[];
+}
+
+export type AeTextSelectorMode = "add" | "subtract" | "intersect" | "min" | "max" | "difference";
+export type AeTextRangeSelector = NonNullable<AeTextAnimator["selector"]> & { kind?: "range" };
+
+// The expression's value per unit (textIndex 1-based, textTotal) is the
+// selection percent, clamped to ±100. AE's Amount here is three equal
+// dimensions; the scene gives one, and the expression reads value[0].
+export interface AeTextExpressionSelector {
+  kind: "expression";
+  basedOn: "characters" | "characters-excluding-spaces" | "words" | "lines";
+  mode?: AeTextSelectorMode;
+  amount: AeProp<number>;
+  expression: string;
+}
+
+export type AeTextSelector = AeTextRangeSelector | AeTextExpressionSelector;
+
+// Path Options of a text layer whose `pathMask` names the path. Margins in
+// px along the path (measured: left-justified text starts at First Margin,
+// right-justified ends at the path end + Last Margin, centred text sits at
+// the midpoint + First + Last; text past an end continues straight).
+export interface AeTextPathOptions {
+  reverse?: boolean;
+  perpendicular?: boolean;
+  forceAlignment?: boolean;
+  firstMargin?: AeProp<number>;
+  lastMargin?: AeProp<number>;
 }
 
 export interface AeLayerTransform {
@@ -518,7 +563,15 @@ export interface AeLayer {
   masks?: AeMask[];
   contents?: AeShapeItem[];
   effects?: AeEffect[];
-  text?: { document: AeProp<AeTextDocument>; animators?: AeTextAnimator[]; pathMask?: number };
+  text?: {
+    document: AeProp<AeTextDocument>;
+    animators?: AeTextAnimator[];
+    pathMask?: number;
+    pathOptions?: AeTextPathOptions;
+    // More Options → Anchor Point Grouping: what a glyph scales / rotates
+    // about (a word's centre for "word"); character by default.
+    anchorGrouping?: "character" | "word" | "line" | "all";
+  };
   // Footage id or comp id (precomp / footage layers). On a shape layer: an
   // "svg" footage id whose imported shapes (native, editable Gradient Fills
   // included) seed the contents; `contents` are then added after them.
