@@ -82,6 +82,12 @@ export function emitShader(scope: Scope, endpoint: string, pn: AePlanNode): Rend
   for (const p of bundle.params) {
     const key = tbxShaderParamMatch(p.kind, p.slot);
     if (p.kind === "slider") {
+      // A knob channel (a promoted input, a Constant knob) reads its control.
+      const knob = ctx.knobs.tbx(ctx, clock, fusedId, p.name, ctx.graph.name(fusedId));
+      if (knob) {
+        props[key] = knob;
+        continue;
+      }
       const wired = ctx.graph.wireInto(fusedId, `in:${p.name}`);
       const keyed = ctx.graph.block(fusedId, `ch:${p.name}`);
       if (wired) {

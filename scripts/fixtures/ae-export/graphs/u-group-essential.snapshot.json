@@ -1,0 +1,316 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:Badge",
+    "name": "U group essential · Badge",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "layers": [
+     {
+      "id": "controls:comp:Badge",
+      "name": "Controls",
+      "kind": "null",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "effects": [
+       {
+        "match": "ADBE Slider Control",
+        "name": "Radius",
+        "props": {
+         "ADBE Slider Control-0001": {
+          "v": 0.0703125
+         }
+        },
+        "essential": "Radius"
+       },
+       {
+        "match": "ADBE Color Control",
+        "name": "Color",
+        "props": {
+         "ADBE Color Control-0001": {
+          "v": [
+           0.2,
+           0.8,
+           0.4
+          ]
+         }
+        },
+        "essential": "Color"
+       }
+      ],
+      "origin": [
+       "disc",
+       "tint"
+      ]
+     },
+     {
+      "id": "tint",
+      "name": "Fill",
+      "kind": "shape",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "position": {
+        "v": [
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "tint",
+       "disc"
+      ],
+      "contents": [
+       {
+        "kind": "group",
+        "name": "Fill",
+        "contents": [
+         {
+          "kind": "ellipse",
+          "name": "Circle",
+          "size": {
+           "v": [
+            180,
+            180
+           ],
+           "expression": "[2560 * thisComp.layer(\"Controls\").effect(\"Radius\")(1), 2560 * thisComp.layer(\"Controls\").effect(\"Radius\")(1)]"
+          },
+          "position": {
+           "v": [
+            640,
+            360
+           ]
+          }
+         },
+         {
+          "kind": "fill",
+          "color": {
+           "v": [
+            0.2,
+            0.8,
+            0.4
+           ],
+           "expression": "thisComp.layer(\"Controls\").effect(\"Color\")(1)"
+          },
+          "opacity": {
+           "v": 100
+          },
+          "rule": "nonzero"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "comp:main",
+    "name": "U group essential",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "pre:Badge",
+      "name": "Badges",
+      "kind": "precomp",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "tint",
+       "disc"
+      ],
+      "source": "comp:Badge"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct",
+   "native": [
+    {
+     "id": "disc",
+     "type": "circle",
+     "class": "vector",
+     "fidelity": "exact"
+    },
+    {
+     "id": "tint",
+     "type": "spline-fill",
+     "class": "style",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LU1",
+     "type": "layer",
+     "name": "Badges",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "badge",
+     "type": "node-group",
+     "name": "Badge",
+     "class": "layer",
+     "fidelity": "exact",
+     "note": "a group with promoted inputs → a precomp of its own; its inputs are Essential Properties of each precomp layer"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   },
+   "controls": [
+    {
+     "node": "disc",
+     "param": "radiusX",
+     "label": "Radius",
+     "source": "promoted",
+     "owner": {
+      "id": "badge",
+      "name": "Badge",
+      "socket": "Radius"
+     },
+     "control": "slider",
+     "landed": "essential",
+     "at": [
+      "U group essential · Badge › Controls › Radius"
+     ],
+     "drives": [
+      "Circle › radius radiusX",
+      "Circle › radius radiusY"
+     ]
+    },
+    {
+     "node": "tint",
+     "param": "color",
+     "label": "Color",
+     "source": "promoted",
+     "owner": {
+      "id": "badge",
+      "name": "Badge",
+      "socket": "Color"
+     },
+     "control": "color",
+     "landed": "essential",
+     "at": [
+      "U group essential · Badge › Controls › Color"
+     ],
+     "drives": [
+      "Fill › color"
+     ]
+    }
+   ]
+  }
+ },
+ "bakes": [],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

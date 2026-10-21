@@ -41,6 +41,7 @@ import type {
 } from "../types";
 import type { AeAssetCopy, AeBakeRequest, AeNodeOverride } from "./types";
 import { numbersOf, sourceEndpoint, type AeGraph } from "./graph";
+import type { KnobRegistry } from "./knobs";
 import type { AeReport } from "./report";
 
 // The clock an AE layer's properties are keyed on. Toolbox interior ticks
@@ -85,6 +86,9 @@ export interface WalkCtx {
   // Project settings an emitter's measured mapping depends on (calibration
   // maps: Gaussian Blur 2 was measured with Linearize Working Space off).
   projectNeeds: { linearizeWorkingSpace?: boolean };
+  // Exposed knobs → AE controls (knobs.ts): the param helpers below link a
+  // knob's property to its Expression Control.
+  knobs: KnobRegistry;
   // Layers whose transform is the comp's identity frame (anchor = position,
   // scale 100, rotation 0): a toolbox layer's TRS can go straight onto them.
   free: WeakSet<AeLayer>;
@@ -182,6 +186,8 @@ export function scalarProp(
 ): AeProp<number> {
   const m = opts.map ?? IDENTITY;
   const label = opts.label ?? param;
+  const knob = ctx.knobs.scalar(ctx, clock, nodeId, param, m, label);
+  if (knob) return knob;
   const src = driverOf(ctx, nodeId, param);
   if (src) {
     markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame keys`);
@@ -207,7 +213,9 @@ export interface PairPart {
 // Two scalar params → one 2-D AE property. `spatial` (positions): one ease
 // along the path, per-frame keys when the easing overshoots (AE's spatial
 // speed is a magnitude — the caller may prefer separated dimensions).
-export function pairProp(ctx: WalkCtx, clock: WalkClock, parts: [PairPart, PairPart], opts: { spatial?: boolean; label: string; owner: string }): AeProp<[number, number]> {
+export function pairProp(ctx: WalkCtx, clock: WalkClock, parts: [PairPart, PairPart], opts: { spatial?: boolean; label: string; owner: string; knobs?: false }): AeProp<[number, number]> {
+  // Knob parts: the pair as usual, then an expression on their components.
+  if (opts.knobs !== false && ctx.knobs.hasKnob(parts)) return ctx.knobs.pair(ctx, clock, parts, pairProp(ctx, clock, parts, { ...opts, knobs: false }), opts.label);
   const maps = parts.map((p) => p.map ?? IDENTITY);
   const drivers = parts.map((p) => driverOf(ctx, p.node, p.param));
   const kc = keyCtx(ctx, clock);
@@ -265,10 +273,12 @@ export function colorProp(
   clock: WalkClock,
   nodeId: string,
   param: string,
-  opts: { shapeOrSolid: boolean; fallback?: string; label?: string; opacity?: number }
+  opts: { shapeOrSolid: boolean; fallback?: string; label?: string; opacity?: number; knobs?: false }
 ): { color: AeProp<AeRGB>; opacity: AeProp<number> } {
   const label = opts.label ?? param;
   const opacityScale = (opts.opacity ?? 1) * 100;
+  const knob = opts.knobs !== false ? ctx.knobs.color(ctx, clock, nodeId, param, opts.shapeOrSolid, label) : null;
+  if (knob) return { color: knob, opacity: colorProp(ctx, clock, nodeId, param, { ...opts, knobs: false }).opacity };
   const src = driverOf(ctx, nodeId, param);
   if (src) {
     markDriven(ctx, nodeId, param, src, `${label}: driven by ${src} → per-frame color keys`);
@@ -299,9 +309,12 @@ export function colorProp(
 
 export function scaleProp(p: AeProp<number>, s: number): AeProp<number> {
   if (s === 1) return p;
-  if ("v" in p) return { ...p, v: p.v * s };
+  // An expression (a knob's link) gives the value: it scales too.
+  const expression = p.expression ? { expression: `(${p.expression}) * ${s}` } : {};
+  if ("v" in p) return { ...p, v: p.v * s, ...expression };
   return {
     ...p,
+    ...expression,
     keys: p.keys.map((k) => ({
       ...k,
       v: k.v * s,

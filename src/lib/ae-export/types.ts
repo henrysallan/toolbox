@@ -449,6 +449,17 @@ export interface AeEffect {
   // "add" (or "subtract" for the inverse), never "none".
   compositingMask?: { mask: number; opacity?: AeProp<number> };
   enabled?: boolean;
+  // Dropdown Menu Control only (AE_DROPDOWN_CONTROL): the menu, in order.
+  // Measured in AE 26.5 (specdocs/ae-m4/essential-properties.md):
+  // setPropertyParameters gives the effect a new "Pseudo/@@…" match name and
+  // resets its display name, so build.jsx sets the items first, then `name`,
+  // and the menu's value is keyed "#1" (1-based item index).
+  menuItems?: string[];
+  // Expression Controls only: add the control's value (its param 1) to this
+  // comp's Essential Graphics under this name, so every precomp layer of the
+  // comp shows it under Essential Properties (AE 16.1+; headless-safe in
+  // 26.5). build.jsx adds a comp's controllers last, in scene order.
+  essential?: string;
 }
 
 export interface AeTextDocument {
@@ -581,6 +592,41 @@ export interface AePlanReport {
   warnings: string[];
   // What the AE user must have: host plugin version, fonts.
   requires: { shaderHost?: string; fonts: string[] };
+  // Every exposed knob and where it landed (scene/knobs.ts). Absent when the
+  // composition has none.
+  controls?: AeControlLine[];
+}
+
+// The Expression Controls a knob can become (scene/knobs.ts AE_CONTROL).
+export type AeControlKind = "slider" | "angle" | "point" | "color" | "checkbox" | "dropdown";
+
+// One exposed knob: a Control-toggled param (controlParams, the export /
+// live-link panel) or a group / layer input promoted to its shell.
+export interface AeControlLine {
+  // The node whose param holds the value (for a promoted input: the interior
+  // consumer the shell's value lands on) and that param ("in:<name>" for a
+  // promoted data socket such as a GLSL channel).
+  node: string;
+  param: string;
+  label: string;
+  source: "control" | "promoted";
+  // Promoted inputs: the group / layer shell and its socket.
+  owner?: { id: string; name: string; socket: string };
+  control?: AeControlKind;
+  //   controls   an Expression Control on a "Controls" null that expressions
+  //              on the driven properties read
+  //   essential  the same, inside the group's precomp, in its Essential
+  //              Graphics: each precomp layer shows it as an Essential Property
+  //   baked      it feeds baked footage (or a shader region baked to footage):
+  //              its current value is in the frames
+  //   unlinked   nothing it reaches maps to an AE property natively; `note`
+  //              says why
+  landed: "controls" | "essential" | "baked" | "unlinked";
+  // "<comp> › <Controls layer> › <effect>" per comp that holds the control.
+  at: string[];
+  // The AE properties it drives, "<layer> › <property>".
+  drives: string[];
+  note?: string;
 }
 
 export interface AeScene {

@@ -119,6 +119,47 @@ read back from AE 26.5 (spec 091926_after-effects-handoff.md §13).
 - 24 of toolbox's 29 blend modes exist in AE. Average, Negation, Reflect,
   Glow and Phoenix don't: those regions become shader regions or bakes.
 
+## Controls
+
+Exposed knobs become controls an AE user edits. There are two kinds of
+knob: a Control-toggled param (the live-link / exported-app panel) and a
+group or layer input promoted to its shell.
+
+- Each knob is one Expression Control: scalar → Slider (Angle when the param
+  is in degrees), boolean → Checkbox, enum → Dropdown Menu, color → Color,
+  vec2 → Point. The control holds the **toolbox** value, the number toolbox's
+  panel shows. The expression on each driven AE property converts it: ×W
+  for px, ×100 for %, the pivot offset for Position, and so on. At rest the
+  expression gives the property's own value.
+- **Control-toggled knobs** go on one null named `Controls`, at the top of
+  the main comp. Expressions in precomps read it as
+  `comp("<main>").layer("Controls")`.
+- **Promoted inputs** of a node-group or toolbox layer render that group as
+  a precomp of its own. The precomp has its own `Controls` null, and those
+  controls are in its Essential Graphics. So each precomp layer shows them
+  under **Essential Properties**, and an override on one layer changes only
+  that instance. All of this works headless (*measured*). A group that
+  doesn't become a precomp (its output is a spline, say) puts its knobs on
+  the main `Controls` null, named `<group> · <input>`.
+- A param wired straight from a Constant knob reads that Constant's value
+  (snapped to its step, as toolbox does). Other wires win over a knob.
+- Only consumers that map natively link: shape geometry, fills and strokes,
+  transforms (rotation, scale, anchor, position), a layer's opacity,
+  calibrated effect params (affine maps; enums through a Dropdown), and
+  Toolbox Shader sliders. A knob inside baked footage keeps the frames'
+  value. A knob feeding a value graph is sampled. Structural params (a
+  stroke on or off, gradient stops) don't link. The report says where each
+  knob landed and why.
+- A keyed knob keeps its keys and eases on the control. The driven property
+  is static, plus the expression.
+- The Dropdown Menu Control renames its match name when its menu is set, so
+  its value is addressed `#1` (*measured*).
+- AE's Color Control has no alpha: a knob's alpha stays on the driven
+  opacity.
+- Essential Properties can't see into a nested precomp. A promoted knob
+  read deeper than the group's own precomp follows that comp's value, not a
+  layer's override; the report says so.
+
 ## Gradients
 
 - AE scripting can't set gradient stop colors directly. The route depends

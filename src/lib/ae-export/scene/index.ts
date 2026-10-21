@@ -32,6 +32,7 @@ import { emitRaster, emitSource } from "./effects";
 import { makeAeGraph } from "./graph";
 import { routeGradients } from "./gradients";
 import { emitInstances } from "./instances";
+import { KnobRegistry } from "./knobs";
 import { emitToolboxLayer, renderEndpoint, type Emitters, type LayerUnit, type Scope } from "./layers";
 import { AeReport } from "./report";
 import { emitShader } from "./shader";
@@ -41,6 +42,7 @@ import type { AeSceneBuild, AeSceneOptions } from "./types";
 
 export type { AeAssetCopy, AeBakeRequest, AeNodeOverride, AeSceneBuild, AeSceneOptions } from "./types";
 export { postScriptName } from "./text";
+export { knobExpression } from "./knobs";
 
 export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: AeSceneOptions): AeSceneBuild {
   const env = opts.env;
@@ -48,7 +50,10 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
   const plan = planAeExport(input);
   const c = env.composition;
   const canvas = { width: c.width, height: c.height };
-  const graph = makeAeGraph(nodes, edges, env.compositionId, canvas, c.fps);
+  // Exposed knobs (knobs.ts) see the raw graph; the walk sees it with
+  // Constant-knob wires read as the constant's value.
+  const knobs = new KnobRegistry(makeAeGraph(nodes, edges, env.compositionId, canvas, c.fps));
+  const graph = knobs.graph;
   const ctx: WalkCtx = {
     canvas,
     fps: c.fps,
@@ -63,6 +68,7 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     report: new AeReport(plan),
     out: { comps: [], footage: [], presets: [], files: [], assets: [], bakes: [], bundles: [], warnings: [], problems: [] },
     projectNeeds: {},
+    knobs,
     free: new WeakSet(),
     uid: makeUid(),
   };
@@ -106,7 +112,7 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
         input: Li,
         clock,
         nodes: nodesById,
-        render: (ep) => renderEndpoint(scope, ep, em),
+        render: (ep) => knobs.render(scope, ep, () => renderEndpoint(scope, ep, em)),
         at: (cl) => makeScope(cl),
       };
       return scope;
@@ -180,6 +186,9 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
 
   const route: AeScene["report"]["route"] = plan.blocked.length ? "blocked" : ctx.out.bundles.length ? "direct+shader" : ctx.out.bakes.length ? "direct+bake" : "direct";
   scene.report = ctx.report.build(plan, route);
+  // Knob placeholders → each comp's Controls null (names are final now).
+  const controls = knobs.finish(ctx, scene);
+  if (controls.length) scene.report.controls = controls;
   const invalid = validateAeScene(scene);
   for (const p of invalid) ctx.out.problems.push(`scene.json: ${p}`);
 

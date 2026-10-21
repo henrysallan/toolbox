@@ -111,5 +111,8 @@ export function nodeTransform(
   });
   for (const [k, rep] of Object.entries(r.reports)) ctx.report.track(id, `${opts.label ?? ""}${k}`, rep);
   for (const n of r.notes) ctx.report.note(id, n);
+  // TRS knobs → expressions reading their controls (knobs.ts).
+  const box = opts.space === "local" ? (opts.aabbAt ? opts.aabbAt(windowFrames(clock)[0] * ctx.tpf - clock.offsetTicks) : opts.aabb) : null;
+  ctx.knobs.trs(ctx, clock, id, t, r, box, opts.space);
   return { transform: r.transform, sampled: false };
 }
