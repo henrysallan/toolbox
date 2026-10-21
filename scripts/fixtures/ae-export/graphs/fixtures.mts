@@ -18,6 +18,7 @@ import type { GraphNode } from "@/state/graph-ops";
 import type { AeSceneOptions } from "@/lib/ae-export/scene";
 import { SDF_SCENE_FIXTURES } from "./sdf-fixtures.mts";
 import { buildCorpus, P_EXPRESSION_CASES } from "./expressions-corpus.mts";
+import { axesModel, writeGlb } from "../../../ae-export-spike/calibrate/model3d.mts";
 
 export interface FixturePixel {
   frame: number;
@@ -37,6 +38,9 @@ export interface SceneFixture {
   build(g: GraphBuilder): void;
   opts?: Partial<Omit<AeSceneOptions, "env" | "name" | "toolboxVersion">> & { policy?: AeSceneOptions["env"]["policy"] };
   probe?: { frames: number[]; pixels: FixturePixel[] };
+  // Import 3D node id → the model file's bytes (the round trips write them
+  // where the scene's model footage points; the gates never read them).
+  models?: Record<string, () => Uint8Array>;
 }
 
 type Key = [frame: number, value: unknown, easing?: string];
@@ -746,6 +750,94 @@ SCENE_FIXTURES.push(
     probe: { frames: [0], pixels: [{ frame: 0, x: 40, y: 40, want: [null, null, null, 0], label: "corner: no text" }] },
   }
 );
+// --- T: native 3-D scenes (M4 lane 5) -------------------------------------------------------------
+// A GLB under a keyed Transform 3D, a keyed camera, three lights; an
+// orthographic camera over a solid background; and scenes that still bake.
+const T_MODEL = { url: "blob:fixture/axes.glb", filename: "axes.glb", size: 3812, format: "glb" };
+const tModels = () => ({ model: () => writeGlb(axesModel(), { baseColor: [1, 1, 1], metallic: 0, roughness: 1 }, "axes") });
+SCENE_FIXTURES.push({
+  name: "t-scene3d",
+  title: "T scene 3D",
+  comp,
+  models: tModels(),
+  build(g) {
+    const L = g.layer("LT", "3D scene");
+    g.node(L, "model", "import-3d", { model: T_MODEL, object: "", rot_y: 20, scale_x: 0.8, scale_y: 0.8, scale_z: 0.8 });
+    g.node(L, "spin", "transform-3d", { pos_y: 0.2 }, { rot_y: track([[0, 0, "easeInOutCubic"], [60, 90]]) });
+    g.node(L, "cam", "camera-3d", { fov: 35, pos_x: 3, pos_y: 2, pos_z: 4 }, { pos_x: track([[0, 3], [60, -3]]), pos_z: track([[0, 4], [30, 5, "easeOutQuad"], [60, 4]]) });
+    g.node(L, "key", "light-3d", { type: "directional", intensity: 2, color: "#ffffff", pos_x: 3, pos_y: 5, pos_z: 2 });
+    g.node(L, "fill", "light-3d", { type: "point", intensity: 6, color: "#88aaff", pos_x: -2, pos_y: 1, pos_z: 2 });
+    g.node(L, "amb", "light-3d", { type: "ambient", intensity: 0.5 });
+    g.node(L, "scene", "scene-render", { background: "transparent" });
+    g.wire("model:out", "spin:in:source");
+    g.wire("spin:out", "scene:in:object:1");
+    g.wire("key:out", "scene:in:object:2");
+    g.wire("fill:out", "scene:in:object:3");
+    g.wire("amb:out", "scene:in:object:4");
+    g.wire("cam:out", "scene:in:camera");
+    g.out(L, "scene:out");
+  },
+  probe: {
+    frames: [0, 30],
+    pixels: [
+      { frame: 0, x: 640, y: 360, want: [null, null, null, 255], label: "the model covers the comp centre (the camera aims at the origin)" },
+      { frame: 0, x: 8, y: 8, want: [null, null, null, 0], label: "transparent background" },
+      { frame: 30, x: 640, y: 360, want: [null, null, null, 255], label: "frame 30: still centred" },
+    ],
+  },
+});
+
+SCENE_FIXTURES.push({
+  name: "t-scene3d-ortho",
+  title: "T ortho",
+  comp,
+  models: tModels(),
+  build(g) {
+    const L = g.layer("LT2", "Ortho scene");
+    g.node(L, "model", "import-3d", { model: T_MODEL, object: "" });
+    g.node(L, "cam", "camera-3d", { projection: "orthographic", ortho_height: 3, pos_x: 2.4, pos_y: 1.8, pos_z: 2.4 });
+    g.node(L, "spot", "light-3d", { type: "spot", intensity: 20, pos_x: 0, pos_y: 3, pos_z: 3, angle: 25, penumbra: 0.4 });
+    g.node(L, "scene", "scene-render", { background: "solid", bg_color: "#202830" });
+    g.wire("model:out", "scene:in:object:1");
+    g.wire("spot:out", "scene:in:object:2");
+    g.wire("cam:out", "scene:in:camera");
+    g.out(L, "scene:out");
+  },
+  probe: {
+    frames: [0],
+    pixels: [
+      { frame: 0, x: 8, y: 8, want: [32, 40, 48, 255], tol: 3, label: "the solid background (#202830)" },
+      { frame: 0, x: 640, y: 360, want: [null, null, null, 255], label: "the model at the centre" },
+    ],
+  },
+});
+
+SCENE_FIXTURES.push({
+  name: "t-scene3d-bakes",
+  title: "T bakes",
+  comp,
+  models: tModels(),
+  build(g) {
+    // Fog: no AE form → the whole scene bakes.
+    const A = g.layer("LT3", "Foggy");
+    g.node(A, "model", "import-3d", { model: T_MODEL, object: "" });
+    g.node(A, "scene", "scene-render", { fog: "linear" });
+    g.wire("model:out", "scene:in:object:1");
+    g.out(A, "scene:out");
+    // A primitive mesh: three.js geometry with no AE form.
+    const B = g.layer("LT4", "Primitive");
+    g.node(B, "box", "cube-3d", {});
+    g.node(B, "scene2", "scene-render", {});
+    g.wire("box:out", "scene2:in:object:1");
+    g.out(B, "scene2:out");
+    // One object picked out of a file: AE imports the whole file.
+    const C = g.layer("LT5", "Picked");
+    g.node(C, "pick", "import-3d", { model: T_MODEL, object: "top:1" });
+    g.node(C, "scene3", "scene-render", {});
+    g.wire("pick:out", "scene3:in:object:1");
+    g.out(C, "scene3:out");
+  },
+});
 
 export async function buildFixture(f: SceneFixture): Promise<{ nodes: GraphNode[]; edges: Edge[] }> {
   const { makeInstanceNode, makeLayerNodes } = await import("@/state/graph-ops");

@@ -39,6 +39,7 @@ import { AeReport } from "./report";
 import { emitShader } from "./shader";
 import { emitVector } from "./shape";
 import { emitText } from "./text";
+import { emitScene3d } from "./three";
 import type { AeSceneBuild, AeSceneOptions } from "./types";
 
 export type { AeAssetCopy, AeBakeRequest, AeNodeOverride, AeSceneBuild, AeSceneOptions } from "./types";
@@ -86,6 +87,7 @@ export function buildAeSceneForEditor(nodes: GraphNode[], edges: Edge[], opts: A
     instances: (s, ep, pn) => emitInstances(s, ep, pn),
     shader: (s, ep, pn) => emitShader(s, ep, pn),
     bake: (s, ep, reason, members) => emitBake(s, ep, reason, members),
+    scene3d: (s, ep, pn) => emitScene3d(s, ep, pn),
   };
 
   // Parents before children (a child's AE parent must exist); the main comp

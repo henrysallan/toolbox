@@ -1,0 +1,306 @@
+{
+ "scene": {
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-20T00:00:00.000Z",
+  "toolboxVersion": "fixture",
+  "project": {
+   "bitsPerChannel": 16,
+   "workingSpace": "sRGB IEC61966-2.1",
+   "linearBlending": false,
+   "linearizeWorkingSpace": false,
+   "expressionEngine": "javascript-1.0"
+  },
+  "footage": [
+   {
+    "id": "bake:scene",
+    "path": "footage/bake_scene.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "3D Scene (baked)"
+   },
+   {
+    "id": "bake:scene2",
+    "path": "footage/bake_scene2.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "3D Scene (baked)"
+   },
+   {
+    "id": "bake:scene3",
+    "path": "footage/bake_scene3.mov",
+    "kind": "video",
+    "alpha": "straight",
+    "name": "3D Scene (baked)"
+   }
+  ],
+  "presets": [],
+  "comps": [
+   {
+    "id": "comp:main",
+    "name": "T bakes",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "duration": 2,
+    "bgColor": [
+     0,
+     0,
+     0
+    ],
+    "layers": [
+     {
+      "id": "scene3",
+      "name": "Picked",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene3",
+       "pick"
+      ],
+      "source": "bake:scene3"
+     },
+     {
+      "id": "scene2",
+      "name": "Primitive",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene2",
+       "box"
+      ],
+      "source": "bake:scene2"
+     },
+     {
+      "id": "scene",
+      "name": "Foggy",
+      "kind": "footage",
+      "inPoint": 0,
+      "outPoint": 2,
+      "startTime": 0,
+      "blendingMode": "normal",
+      "transform": {
+       "anchor": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "position": {
+        "v": [
+         640,
+         360
+        ]
+       },
+       "scale": {
+        "v": [
+         100,
+         100
+        ]
+       },
+       "rotation": {
+        "v": 0
+       },
+       "opacity": {
+        "v": 100
+       }
+      },
+      "origin": [
+       "scene",
+       "model"
+      ],
+      "source": "bake:scene"
+     }
+    ]
+   }
+  ],
+  "main": "comp:main",
+  "report": {
+   "route": "direct+bake",
+   "native": [
+    {
+     "id": "LT3",
+     "type": "layer",
+     "name": "Foggy",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LT4",
+     "type": "layer",
+     "name": "Primitive",
+     "class": "layer",
+     "fidelity": "exact"
+    },
+    {
+     "id": "LT5",
+     "type": "layer",
+     "name": "Picked",
+     "class": "layer",
+     "fidelity": "exact"
+    }
+   ],
+   "approx": [],
+   "shader": [],
+   "baked": [
+    {
+     "id": "model",
+     "type": "import-3d",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with scene:out"
+    },
+    {
+     "id": "scene",
+     "type": "scene-render",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked: three.js render — bakes (not native: fog (linear) has no AE Advanced 3D form). · static — one frame (AE holds a one-frame movie as a still)"
+    },
+    {
+     "id": "box",
+     "type": "cube-3d",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with scene2:out"
+    },
+    {
+     "id": "scene2",
+     "type": "scene-render",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked: three.js render — bakes (not native: cube-3d (box) feeds scene2: only Import 3D models (optionally under Transform 3D), lights and a camera rebuild natively). · static — one frame (AE holds a one-frame movie as a still)"
+    },
+    {
+     "id": "pick",
+     "type": "import-3d",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked with scene3:out"
+    },
+    {
+     "id": "scene3",
+     "type": "scene-render",
+     "class": "bake",
+     "fidelity": "bake",
+     "note": "baked: three.js render — bakes (not native: pick picks one object of its file (top:1): AE imports the whole file as one model layer). · static — one frame (AE holds a one-frame movie as a still)"
+    }
+   ],
+   "blocked": [],
+   "warnings": [],
+   "requires": {
+    "fonts": []
+   }
+  }
+ },
+ "bakes": [
+  {
+   "id": "bake:scene",
+   "output": "scene:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_scene.mov",
+   "reason": "three.js render — bakes (not native: fog (linear) has no AE Advanced 3D form)."
+  },
+  {
+   "id": "bake:scene2",
+   "output": "scene2:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_scene2.mov",
+   "reason": "three.js render — bakes (not native: cube-3d (box) feeds scene2: only Import 3D models (optionally under Transform 3D), lights and a camera rebuild natively)."
+  },
+  {
+   "id": "bake:scene3",
+   "output": "scene3:out",
+   "frames": [
+    0,
+    0
+   ],
+   "size": [
+    1280,
+    720
+   ],
+   "codec": "prores4444",
+   "path": "footage/bake_scene3.mov",
+   "reason": "three.js render — bakes (not native: pick picks one object of its file (top:1): AE imports the whole file as one model layer)."
+  }
+ ],
+ "bundles": [],
+ "presets": [],
+ "files": [],
+ "assets": [],
+ "problems": [],
+ "warnings": []
+}

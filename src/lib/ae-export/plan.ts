@@ -43,6 +43,7 @@ import {
   SDF_CHAIN_TYPES,
 } from "./classes";
 import { SDF_NATIVE_CONSUMERS, sdfChainVerdict, type SdfChainGraph } from "./sdf-chain";
+import { planScene3d, scene3dEntry } from "./three-plan";
 import {
   DEFAULT_AE_POLICY,
   TBX_SHADER_MATCH_NAME,
@@ -244,6 +245,8 @@ interface NodeState {
   mask?: boolean;
   region?: Region;
   segment: number;
+  // Member of a native 3-D scene (three-plan.ts): the Scene Render's id.
+  scene3d?: string;
 }
 
 interface SegmentBuild {
@@ -413,6 +416,34 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     refine(s, input.valuesOf(id), tracksOf(id), policy);
     st.set(id, s);
   }
+  // 3-D scenes (M4 lane 5, three-plan.ts): a Scene Render whose objects are
+  // Import 3D models (under Transform 3D) and lights, seen by a Camera node,
+  // rebuilds natively as a 3-D precomp; its members leave the bake rung.
+  for (const id of order) {
+    const s = st.get(id)!;
+    if (s.node.type !== "scene-render") continue;
+    const v = planScene3d({
+      sceneId: id,
+      type: (x) => byId.get(x)?.type,
+      values: input.valuesOf,
+      inputs: (x) => (inputsOf.get(x) ?? []).map((w) => ({ fromId: w.fromId, toHandle: w.toHandle })),
+    });
+    if (!v.native) {
+      s.entry = { ...s.entry, note: `three.js render — bakes (not native: ${v.reason}).` };
+      continue;
+    }
+    s.entry = scene3dEntry("scene");
+    s.requires = new Set();
+    s.notes.push(...v.notes);
+    for (const [m, role] of v.members) {
+      const ms = st.get(m);
+      if (!ms) continue;
+      ms.entry = scene3dEntry(role, v.ortho);
+      ms.requires = new Set(ms.entry.requires ?? []);
+      ms.scene3d = id;
+    }
+  }
+
   const isValue = (id: string) => {
     const s = st.get(id)!;
     if (s.entry.class === "expression") return true;
@@ -587,7 +618,7 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
   for (const id of order) {
     const s = st.get(id)!;
     // A native SDF tree joins its consumer's segment (one shape layer).
-    if (isValue(id) || s.mask || zoneShell(id) || sdfTree.has(id)) continue;
+    if (isValue(id) || s.mask || zoneShell(id) || sdfTree.has(id) || s.scene3d) continue;
     if (s.region) {
       if (s.region.segment === undefined) {
         s.region.segment = segs.length;

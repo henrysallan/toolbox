@@ -1,0 +1,2481 @@
+{
+ "job": {
+  "ae": "26.5x89",
+  "errors": [],
+  "colorManagement": {
+   "before": 1,
+   "members": {},
+   "hasEnum": false,
+   "after": 0
+  },
+  "cases": [
+   {
+    "name": "glb_adv",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.294,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ],
+    "modelProps": [
+     {
+      "i": 1,
+      "mn": "ADBE Marker",
+      "name": "Marker",
+      "type": "MARKER",
+      "value": {
+       "chapter": "",
+       "comment": "",
+       "cuePointName": "",
+       "duration": 0,
+       "eventCuePoint": true,
+       "frameTarget": "",
+       "label": 0,
+       "protectedRegion": false,
+       "url": ""
+      },
+      "canVary": true
+     },
+     {
+      "i": 2,
+      "mn": "ADBE Time Remapping",
+      "name": "Time Remap",
+      "type": "OneD",
+      "value": 0,
+      "min": 0,
+      "max": 30,
+      "canVary": true
+     },
+     {
+      "i": 3,
+      "mn": "ADBE MTrackers",
+      "name": "Motion Trackers",
+      "props": []
+     },
+     {
+      "i": 4,
+      "mn": "ADBE ModelAnimOptionsSGrp",
+      "name": "Animation Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE ModelAnimName",
+        "name": "Name",
+        "props": []
+       },
+       {
+        "i": 2,
+        "mn": "ADBE ModelAnimName2",
+        "name": "Name",
+        "type": "NO_VALUE",
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 5,
+      "mn": "ADBE Mask Parade",
+      "name": "Masks",
+      "props": []
+     },
+     {
+      "i": 6,
+      "mn": "ADBE Effect Parade",
+      "name": "Effects",
+      "props": []
+     },
+     {
+      "i": 7,
+      "mn": "ADBE Transform Group",
+      "name": "Transform",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Anchor Point",
+        "name": "Anchor Point",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         0,
+         0,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Position",
+        "name": "Position",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         200,
+         200,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Position_0",
+        "name": "X Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Position_1",
+        "name": "Y Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Position_2",
+        "name": "Z Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Scale",
+        "name": "Scale",
+        "type": "ThreeD",
+        "value": [
+         100,
+         100,
+         100
+        ],
+        "canVary": true
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Orientation",
+        "name": "Orientation",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         0,
+         0,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Rotate X",
+        "name": "X Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Rotate Y",
+        "name": "Y Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Rotate Z",
+        "name": "Z Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Opacity",
+        "name": "Opacity",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Envir Appear in Reflect",
+        "name": "Appears in Reflections",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       }
+      ]
+     },
+     {
+      "i": 8,
+      "mn": "ADBE Layer Styles",
+      "name": "Layer Styles",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Blend Options Group",
+        "name": "Blending Options",
+        "props": [
+         {
+          "i": 1,
+          "mn": "ADBE Global Angle2",
+          "name": "Global Light Angle",
+          "type": "OneD",
+          "value": 120,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "ADBE Global Altitude2",
+          "name": "Global Light Altitude",
+          "type": "OneD",
+          "value": 30,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "ADBE Adv Blend Group",
+          "name": "Advanced Blending",
+          "props": [
+           {
+            "i": 1,
+            "mn": "ADBE Layer Fill Opacity2",
+            "name": "Fill Opacity",
+            "type": "OneD",
+            "value": 100,
+            "min": 0,
+            "max": 100,
+            "canVary": true
+           },
+           {
+            "i": 2,
+            "mn": "ADBE R Channel Blend",
+            "name": "Red",
+            "type": "OneD",
+            "value": 1,
+            "canVary": true
+           },
+           {
+            "i": 3,
+            "mn": "ADBE G Channel Blend",
+            "name": "Green",
+            "type": "OneD",
+            "value": 1,
+            "canVary": true
+           },
+           {
+            "i": 4,
+            "mn": "ADBE B Channel Blend",
+            "name": "Blue",
+            "type": "OneD",
+            "value": 1,
+            "canVary": true
+           },
+           {
+            "i": 5,
+            "mn": "ADBE Blend Interior",
+            "name": "Blend Interior Styles as Group",
+            "type": "OneD",
+            "value": 0,
+            "canVary": true
+           },
+           {
+            "i": 6,
+            "mn": "ADBE Blend Ranges",
+            "name": "Use Blend Ranges from Source",
+            "type": "OneD",
+            "value": 1,
+            "canVary": true
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "i": 2,
+        "mn": "dropShadow/enabled",
+        "name": "Drop Shadow",
+        "props": [
+         {
+          "i": 1,
+          "mn": "dropShadow/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 5,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "dropShadow/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           0,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "dropShadow/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "dropShadow/useGlobalAngle",
+          "name": "Use Global Light",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "dropShadow/localLightingAngle",
+          "name": "Angle",
+          "type": "OneD",
+          "value": 120,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "dropShadow/distance",
+          "name": "Distance",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 30000,
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "dropShadow/chokeMatte",
+          "name": "Spread",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "dropShadow/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "dropShadow/noise",
+          "name": "Noise",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 10,
+          "mn": "dropShadow/layerConceals",
+          "name": "Layer Knocks Out Drop Shadow",
+          "type": "OneD",
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 3,
+        "mn": "innerShadow/enabled",
+        "name": "Inner Shadow",
+        "props": [
+         {
+          "i": 1,
+          "mn": "innerShadow/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 5,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "innerShadow/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           0,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "innerShadow/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "innerShadow/useGlobalAngle",
+          "name": "Use Global Light",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "innerShadow/localLightingAngle",
+          "name": "Angle",
+          "type": "OneD",
+          "value": 120,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "innerShadow/distance",
+          "name": "Distance",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 30000,
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "innerShadow/chokeMatte",
+          "name": "Choke",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "innerShadow/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "innerShadow/noise",
+          "name": "Noise",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 4,
+        "mn": "outerGlow/enabled",
+        "name": "Outer Glow",
+        "props": [
+         {
+          "i": 1,
+          "mn": "outerGlow/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 11,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "outerGlow/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "outerGlow/noise",
+          "name": "Noise",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "outerGlow/AEColorChoice",
+          "name": "Color Type",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "outerGlow/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           1,
+           1,
+           0.74509803921569,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "outerGlow/gradient",
+          "name": "Colors",
+          "type": "NO_VALUE",
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "outerGlow/gradientSmoothness",
+          "name": "Gradient Smoothness",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "outerGlow/glowTechnique",
+          "name": "Technique",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "outerGlow/chokeMatte",
+          "name": "Spread",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 10,
+          "mn": "outerGlow/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 11,
+          "mn": "outerGlow/inputRange",
+          "name": "Range",
+          "type": "OneD",
+          "value": 50,
+          "min": 1,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 12,
+          "mn": "outerGlow/shadingNoise",
+          "name": "Jitter",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 5,
+        "mn": "innerGlow/enabled",
+        "name": "Inner Glow",
+        "props": [
+         {
+          "i": 1,
+          "mn": "innerGlow/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 11,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "innerGlow/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "innerGlow/noise",
+          "name": "Noise",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "innerGlow/AEColorChoice",
+          "name": "Color Type",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "innerGlow/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           1,
+           1,
+           0.74509803921569,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "innerGlow/gradient",
+          "name": "Colors",
+          "type": "NO_VALUE",
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "innerGlow/gradientSmoothness",
+          "name": "Gradient Smoothness",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "innerGlow/glowTechnique",
+          "name": "Technique",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "innerGlow/innerGlowSource",
+          "name": "Source",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 10,
+          "mn": "innerGlow/chokeMatte",
+          "name": "Choke",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 11,
+          "mn": "innerGlow/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 12,
+          "mn": "innerGlow/inputRange",
+          "name": "Range",
+          "type": "OneD",
+          "value": 50,
+          "min": 1,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 13,
+          "mn": "innerGlow/shadingNoise",
+          "name": "Jitter",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 6,
+        "mn": "bevelEmboss/enabled",
+        "name": "Bevel and Emboss",
+        "props": [
+         {
+          "i": 1,
+          "mn": "bevelEmboss/bevelStyle",
+          "name": "Style",
+          "type": "OneD",
+          "value": 2,
+          "min": 1,
+          "max": 5,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "bevelEmboss/bevelTechnique",
+          "name": "Technique",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 3,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "bevelEmboss/strengthRatio",
+          "name": "Depth",
+          "type": "OneD",
+          "value": 100,
+          "min": 1,
+          "max": 1000,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "bevelEmboss/bevelDirection",
+          "name": "Direction",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "bevelEmboss/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 5,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "bevelEmboss/softness",
+          "name": "Soften",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 16,
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "bevelEmboss/useGlobalAngle",
+          "name": "Use Global Light",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "bevelEmboss/localLightingAngle",
+          "name": "Angle",
+          "type": "OneD",
+          "value": 120,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "bevelEmboss/localLightingAltitude",
+          "name": "Altitude",
+          "type": "OneD",
+          "value": 30,
+          "canVary": true
+         },
+         {
+          "i": 10,
+          "mn": "bevelEmboss/highlightMode",
+          "name": "Highlight Mode",
+          "type": "OneD",
+          "value": 11,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 11,
+          "mn": "bevelEmboss/highlightColor",
+          "name": "Highlight Color",
+          "type": "COLOR",
+          "value": [
+           1,
+           1,
+           1,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 12,
+          "mn": "bevelEmboss/highlightOpacity",
+          "name": "Highlight Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 13,
+          "mn": "bevelEmboss/shadowMode",
+          "name": "Shadow Mode",
+          "type": "OneD",
+          "value": 5,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 14,
+          "mn": "bevelEmboss/shadowColor",
+          "name": "Shadow Color",
+          "type": "COLOR",
+          "value": [
+           0,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 15,
+          "mn": "bevelEmboss/shadowOpacity",
+          "name": "Shadow Opacity",
+          "type": "OneD",
+          "value": 75,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 7,
+        "mn": "chromeFX/enabled",
+        "name": "Satin",
+        "props": [
+         {
+          "i": 1,
+          "mn": "chromeFX/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 5,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "chromeFX/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           0,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "chromeFX/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 50,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "chromeFX/localLightingAngle",
+          "name": "Angle",
+          "type": "OneD",
+          "value": 19,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "chromeFX/distance",
+          "name": "Distance",
+          "type": "OneD",
+          "value": 11,
+          "min": 1,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "chromeFX/blur",
+          "name": "Size",
+          "type": "OneD",
+          "value": 14,
+          "min": 0,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "chromeFX/invert",
+          "name": "Invert",
+          "type": "OneD",
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 8,
+        "mn": "solidFill/enabled",
+        "name": "Color Overlay",
+        "props": [
+         {
+          "i": 1,
+          "mn": "solidFill/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "solidFill/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           1,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "solidFill/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 9,
+        "mn": "gradientFill/enabled",
+        "name": "Gradient Overlay",
+        "props": [
+         {
+          "i": 1,
+          "mn": "gradientFill/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "gradientFill/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "gradientFill/gradient",
+          "name": "Colors",
+          "type": "NO_VALUE",
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "gradientFill/gradientSmoothness",
+          "name": "Gradient Smoothness",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "gradientFill/angle",
+          "name": "Angle",
+          "type": "OneD",
+          "value": 90,
+          "canVary": true
+         },
+         {
+          "i": 6,
+          "mn": "gradientFill/type",
+          "name": "Style",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 5,
+          "canVary": true
+         },
+         {
+          "i": 7,
+          "mn": "gradientFill/reverse",
+          "name": "Reverse",
+          "type": "OneD",
+          "value": 0,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 8,
+          "mn": "gradientFill/align",
+          "name": "Align with Layer",
+          "type": "OneD",
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 9,
+          "mn": "gradientFill/scale",
+          "name": "Scale",
+          "type": "OneD",
+          "value": 100,
+          "min": 10,
+          "max": 150,
+          "canVary": true
+         },
+         {
+          "i": 10,
+          "mn": "gradientFill/offset",
+          "name": "Offset",
+          "type": "TwoD_SPATIAL",
+          "value": [
+           0,
+           0
+          ],
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 10,
+        "mn": "patternFill/enabled",
+        "name": "Pattern Overlay",
+        "props": [
+         {
+          "i": 1,
+          "mn": "patternFill/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "patternFill/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "patternFill/align",
+          "name": "Link with Layer",
+          "type": "OneD",
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "patternFill/scale",
+          "name": "Scale",
+          "type": "OneD",
+          "value": 100,
+          "min": 1,
+          "max": 1000,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "patternFill/phase",
+          "name": "Offset",
+          "type": "TwoD_SPATIAL",
+          "value": [
+           0,
+           0
+          ],
+          "canVary": true
+         }
+        ]
+       },
+       {
+        "i": 11,
+        "mn": "frameFX/enabled",
+        "name": "Stroke",
+        "props": [
+         {
+          "i": 1,
+          "mn": "frameFX/mode2",
+          "name": "Blend Mode",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 33,
+          "canVary": true
+         },
+         {
+          "i": 2,
+          "mn": "frameFX/color",
+          "name": "Color",
+          "type": "COLOR",
+          "value": [
+           1,
+           0,
+           0,
+           1
+          ],
+          "min": -3921568.62745098,
+          "max": 3921568.62745098,
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "frameFX/size",
+          "name": "Size",
+          "type": "OneD",
+          "value": 3,
+          "min": 1,
+          "max": 250,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "frameFX/opacity",
+          "name": "Opacity",
+          "type": "OneD",
+          "value": 100,
+          "min": 0,
+          "max": 100,
+          "canVary": true
+         },
+         {
+          "i": 5,
+          "mn": "frameFX/style",
+          "name": "Position",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 3,
+          "canVary": true
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "i": 9,
+      "mn": "ADBE Extrsn Options Group",
+      "name": "Geometry Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Bevel Styles",
+        "name": "Bevel Style",
+        "type": "OneD",
+        "value": 1,
+        "min": 1,
+        "max": 4,
+        "canVary": false
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Bevel Direction",
+        "name": "Bevel Direction",
+        "type": "OneD",
+        "value": 1,
+        "min": 1,
+        "max": 2,
+        "canVary": false
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Bevel Depth",
+        "name": "Bevel Depth",
+        "type": "OneD",
+        "value": 2,
+        "min": 0,
+        "max": 1000,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Hole Bevel Depth",
+        "name": "Hole Bevel Depth",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Extrsn Depth",
+        "name": "Extrusion Depth",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 10000,
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 10,
+      "mn": "ADBE Material Options Group",
+      "name": "Material Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Casts Shadows",
+        "name": "Casts Shadows",
+        "type": "OneD",
+        "value": 0,
+        "canVary": false
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Light Transmission",
+        "name": "Light Transmission",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Accepts Shadows",
+        "name": "Accepts Shadows",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Accepts Lights",
+        "name": "Accepts Lights",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Shadow Color",
+        "name": "Shadow Color",
+        "type": "COLOR",
+        "value": [
+         0,
+         0,
+         0,
+         1
+        ],
+        "min": -3921568.62745098,
+        "max": 3921568.62745098,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Appears in Reflections",
+        "name": "Appears in Reflections",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Ambient Coefficient",
+        "name": "Ambient",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Diffuse Coefficient",
+        "name": "Diffuse",
+        "type": "OneD",
+        "value": 50,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Specular Coefficient",
+        "name": "Specular Intensity",
+        "type": "OneD",
+        "value": 50,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Shininess Coefficient",
+        "name": "Specular Shininess",
+        "type": "OneD",
+        "value": 5,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Metal Coefficient",
+        "name": "Metal",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Reflection Coefficient",
+        "name": "Reflection Intensity",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 13,
+        "mn": "ADBE Glossiness Coefficient",
+        "name": "Reflection Sharpness",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 14,
+        "mn": "ADBE Fresnel Coefficient",
+        "name": "Reflection Rolloff",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 15,
+        "mn": "ADBE Transparency Coefficient",
+        "name": "Transparency",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 16,
+        "mn": "ADBE Transp Rolloff",
+        "name": "Transparency Rolloff",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 17,
+        "mn": "ADBE Index of Refraction",
+        "name": "Index of Refraction",
+        "type": "OneD",
+        "value": 1,
+        "min": 1,
+        "max": 5,
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 11,
+      "mn": "ADBE Compositing Options Group",
+      "name": "Compositing Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Casts Shadows",
+        "name": "Casts Shadows",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Accepts Shadows",
+        "name": "Accepts Shadows",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Accepts Lights",
+        "name": "Accepts Lights",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Appears in Reflections",
+        "name": "Appears in Reflections",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Shadow Color",
+        "name": "Shadow Color",
+        "type": "COLOR",
+        "value": [
+         0,
+         0,
+         0,
+         1
+        ],
+        "min": -3921568.62745098,
+        "max": 3921568.62745098,
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 12,
+      "mn": "ADBE Audio Group",
+      "name": "Audio",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Audio Levels",
+        "name": "Audio Levels",
+        "type": "TwoD",
+        "value": [
+         0,
+         0
+        ],
+        "min": -192,
+        "max": 24,
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 13,
+      "mn": "ADBE Layer Sets",
+      "name": "Sets",
+      "props": []
+     },
+     {
+      "i": 14,
+      "mn": "ADBE3D Material Parade",
+      "name": "Material Assignment",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE3D Material Atom",
+        "name": "axes-mat",
+        "props": [
+         {
+          "i": 1,
+          "mn": "ADBE3D Material Projection",
+          "name": "Projection Mode",
+          "type": "OneD",
+          "value": 1,
+          "min": 1,
+          "max": 2,
+          "canVary": false
+         },
+         {
+          "i": 2,
+          "mn": "ADBE3D Material Texturre Offset",
+          "name": "Texture Offset",
+          "type": "TwoD",
+          "value": [
+           0,
+           0
+          ],
+          "canVary": true
+         },
+         {
+          "i": 3,
+          "mn": "ADBE3D Material Rotation",
+          "name": "Rotation",
+          "type": "OneD",
+          "value": 0,
+          "canVary": true
+         },
+         {
+          "i": 4,
+          "mn": "ADBE3D Material Scale",
+          "name": "Scale",
+          "type": "TwoD",
+          "value": [
+           100,
+           100
+          ],
+          "canVary": true
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "i": 15,
+      "mn": "ADBE Plane Options Group",
+      "name": "Geometry Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Plane Curvature",
+        "name": "Curvature",
+        "type": "OneD",
+        "value": 0,
+        "min": -100,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Plane Subdivision",
+        "name": "Segments",
+        "type": "OneD",
+        "value": 4,
+        "min": 2,
+        "max": 256,
+        "canVary": true
+       }
+      ]
+     },
+     {
+      "i": 16,
+      "mn": "ADBE Layer Overrides",
+      "name": "Essential Properties",
+      "props": []
+     },
+     {
+      "i": 17,
+      "mn": "ADBE Source Options Group",
+      "name": "Replace Source",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Layer Source Alternate",
+        "name": "Item Cache Entry",
+        "type": "NO_VALUE",
+        "canVary": true
+       }
+      ]
+     }
+    ],
+    "cameraProps": [
+     {
+      "i": 1,
+      "mn": "ADBE Marker",
+      "name": "Marker",
+      "type": "MARKER",
+      "value": {
+       "chapter": "",
+       "comment": "",
+       "cuePointName": "",
+       "duration": 0,
+       "eventCuePoint": true,
+       "frameTarget": "",
+       "label": 0,
+       "protectedRegion": false,
+       "url": ""
+      },
+      "canVary": true
+     },
+     {
+      "i": 2,
+      "mn": "ADBE Transform Group",
+      "name": "Transform",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Anchor Point",
+        "name": "Point of Interest",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         200,
+         200,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Position",
+        "name": "Position",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         200,
+         200,
+         -1000
+        ],
+        "canVary": true
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Position_0",
+        "name": "X Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Position_1",
+        "name": "Y Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Position_2",
+        "name": "Z Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Scale",
+        "name": "Scale",
+        "type": "ThreeD",
+        "value": [
+         100,
+         100,
+         100
+        ],
+        "canVary": true
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Orientation",
+        "name": "Orientation",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         0,
+         0,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Rotate X",
+        "name": "X Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Rotate Y",
+        "name": "Y Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Rotate Z",
+        "name": "Z Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Opacity",
+        "name": "Opacity",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Envir Appear in Reflect",
+        "name": "Appears in Reflections",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       }
+      ]
+     },
+     {
+      "i": 3,
+      "mn": "ADBE Camera Options Group",
+      "name": "Camera Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Camera Zoom",
+        "name": "Zoom",
+        "type": "OneD",
+        "value": 1000,
+        "min": 1,
+        "canVary": true
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Camera Depth of Field",
+        "name": "Depth of Field",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Camera Focus Distance",
+        "name": "Focus Distance",
+        "type": "OneD",
+        "value": 555.55555554,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Camera Aperture",
+        "name": "Aperture",
+        "type": "OneD",
+        "value": 25.3093363329584,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Camera Blur Level",
+        "name": "Blur Level",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Camera Focus Area Width",
+        "name": "Focus Area Width",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Camera Split Blur Level",
+        "name": "Near, Far Blur Level",
+        "type": "TwoD",
+        "value": [
+         100,
+         100
+        ],
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Iris Shape",
+        "name": "Iris Shape",
+        "type": "OneD",
+        "value": 1,
+        "min": 1,
+        "max": 10,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Iris Rotation",
+        "name": "Iris Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Iris Roundness",
+        "name": "Iris Roundness",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Iris Aspect Ratio",
+        "name": "Iris Aspect Ratio",
+        "type": "OneD",
+        "value": 1,
+        "min": 0.00999999977648,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Iris Diffraction Fringe",
+        "name": "Iris Diffraction Fringe",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 500,
+        "canVary": true
+       },
+       {
+        "i": 13,
+        "mn": "ADBE Iris Highlight Gain",
+        "name": "Highlight Gain",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 14,
+        "mn": "ADBE Iris Highlight Threshold",
+        "name": "Highlight Threshold",
+        "type": "OneD",
+        "value": 1,
+        "min": 0,
+        "max": 1,
+        "canVary": true
+       },
+       {
+        "i": 15,
+        "mn": "ADBE Iris Hightlight Saturation",
+        "name": "Highlight Saturation",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       }
+      ]
+     }
+    ],
+    "lightProps": [
+     {
+      "i": 1,
+      "mn": "ADBE Marker",
+      "name": "Marker",
+      "type": "MARKER",
+      "value": {
+       "chapter": "",
+       "comment": "",
+       "cuePointName": "",
+       "duration": 0,
+       "eventCuePoint": true,
+       "frameTarget": "",
+       "label": 0,
+       "protectedRegion": false,
+       "url": ""
+      },
+      "canVary": true
+     },
+     {
+      "i": 2,
+      "mn": "ADBE Transform Group",
+      "name": "Transform",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Anchor Point",
+        "name": "Point of Interest",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         200,
+         200,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Position",
+        "name": "Position",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         0,
+         0,
+         -500
+        ],
+        "canVary": true
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Position_0",
+        "name": "X Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Position_1",
+        "name": "Y Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Position_2",
+        "name": "Z Position",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Scale",
+        "name": "Scale",
+        "type": "ThreeD",
+        "value": [
+         100,
+         100,
+         100
+        ],
+        "canVary": true
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Orientation",
+        "name": "Orientation",
+        "type": "ThreeD_SPATIAL",
+        "value": [
+         0,
+         0,
+         0
+        ],
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Rotate X",
+        "name": "X Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Rotate Y",
+        "name": "Y Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Rotate Z",
+        "name": "Z Rotation",
+        "type": "OneD",
+        "value": 0,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Opacity",
+        "name": "Opacity",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Envir Appear in Reflect",
+        "name": "Appears in Reflections",
+        "type": "OneD",
+        "value": 1,
+        "canVary": false
+       }
+      ]
+     },
+     {
+      "i": 3,
+      "mn": "ADBE Light Options Group",
+      "name": "Light Options",
+      "props": [
+       {
+        "i": 1,
+        "mn": "ADBE Light Env Atom",
+        "name": "Source",
+        "props": []
+       },
+       {
+        "i": 2,
+        "mn": "ADBE Light Backgd Visible",
+        "name": "Background Visible",
+        "type": "OneD",
+        "value": 0,
+        "canVary": false
+       },
+       {
+        "i": 3,
+        "mn": "ADBE Light Backgd Opacity",
+        "name": "Background Opacity",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 4,
+        "mn": "ADBE Light Backgd Blur",
+        "name": "Background Blur",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 5,
+        "mn": "ADBE Light Intensity",
+        "name": "Intensity",
+        "type": "OneD",
+        "value": 100,
+        "canVary": true
+       },
+       {
+        "i": 6,
+        "mn": "ADBE Light Color",
+        "name": "Color",
+        "type": "COLOR",
+        "value": [
+         1,
+         1,
+         1,
+         1
+        ],
+        "min": -3921568.62745098,
+        "max": 3921568.62745098,
+        "canVary": true
+       },
+       {
+        "i": 7,
+        "mn": "ADBE Light Cone Angle",
+        "name": "Cone Angle",
+        "type": "OneD",
+        "value": 90,
+        "min": 0,
+        "max": 180,
+        "canVary": true
+       },
+       {
+        "i": 8,
+        "mn": "ADBE Light Cone Feather 2",
+        "name": "Cone Feather",
+        "type": "OneD",
+        "value": 50,
+        "min": 0,
+        "max": 100,
+        "canVary": true
+       },
+       {
+        "i": 9,
+        "mn": "ADBE Light Falloff Type",
+        "name": "Falloff",
+        "type": "OneD",
+        "value": 1,
+        "min": 1,
+        "max": 3,
+        "canVary": true
+       },
+       {
+        "i": 10,
+        "mn": "ADBE Light Falloff Start",
+        "name": "Radius",
+        "type": "OneD",
+        "value": 500,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 11,
+        "mn": "ADBE Light Falloff Distance",
+        "name": "Falloff Distance",
+        "type": "OneD",
+        "value": 500,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 12,
+        "mn": "ADBE Casts Shadows",
+        "name": "Casts Shadows",
+        "type": "OneD",
+        "value": 0,
+        "canVary": false
+       },
+       {
+        "i": 13,
+        "mn": "ADBE Light Shadow Darkness",
+        "name": "Shadow Darkness",
+        "type": "OneD",
+        "value": 100,
+        "min": 0,
+        "canVary": true
+       },
+       {
+        "i": 14,
+        "mn": "ADBE Light Shadow Diffusion",
+        "name": "Shadow Diffusion",
+        "type": "OneD",
+        "value": 0,
+        "min": 0,
+        "canVary": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "glb_classic",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.004,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "obj_adv",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.108,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "axes.obj",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   },
+   {
+    "name": "sphere_adv",
+    "errors": [],
+    "renderers": [
+     "ADBE Advanced 3d",
+     "ADBE Calder",
+     "ADBE Ernst"
+    ],
+    "rendererBefore": "ADBE Advanced 3d",
+    "renderer": "ADBE Advanced 3d",
+    "modelExists": true,
+    "canImportFootage": true,
+    "importSeconds": 0.108,
+    "itemType": "FootageItem",
+    "item": {
+     "name": "sphere.glb",
+     "typeName": "Footage",
+     "width": 1920,
+     "height": 1080,
+     "duration": 30,
+     "hasVideo": true,
+     "mainSource": "[object FileSource]",
+     "isStill": false
+    },
+    "layerType": "ThreeDModelLayer",
+    "layerMatch": "ADBE 3D Model Layer",
+    "threeD": true,
+    "layerSize": [
+     1920,
+     1080
+    ]
+   }
+  ],
+  "hasThreeDModelLayer": true,
+  "lightTypes": {
+   "PARALLEL": true,
+   "SPOT": true,
+   "POINT": true,
+   "AMBIENT": true,
+   "ENVIRONMENT": true
+  },
+  "om": {
+   "Audio Bit Depth": "32 Bit",
+   "Audio Channels": "Stereo",
+   "Audio Sample Rate": "",
+   "Channels": "RGB + Alpha",
+   "Color": "Straight (Unmatted)",
+   "Crop": "false",
+   "Crop Bottom": "0",
+   "Crop Left": "0",
+   "Crop Right": "0",
+   "Crop Top": "0",
+   "Depth": "Trillions of Colors+",
+   "Format": "PNG Sequence",
+   "Include Project Link": "false",
+   "Include Source XMP Metadata": "false",
+   "Lock Aspect Ratio": "true",
+   "Output Audio": "Off",
+   "Output File Info": {
+    "Full Flat Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/probe5/renders/glb_adv_f0_[#####].png",
+    "Base Path": "/private/tmp/claude-501/-Users-hallan-Documents-Projects-Brex-toolbox--claude-worktrees-ae-m4-3d-c89419/d274fcd7-68f9-4a5b-b980-acdd659bcc10/scratchpad/probe5/renders",
+    "Subfolder Path": "",
+    "File Name": "glb_adv_f0_[#####].png",
+    "File Template": "glb_adv_f0_[#####].[fileExtension]"
+   },
+   "Post-Render Action": "None",
+   "Resize": "false",
+   "Resize Quality": "High",
+   "Resize to": {
+    "x": 400,
+    "y": 400
+   },
+   "Starting #": "0",
+   "Use Comp Frame Number": "true",
+   "Use Region of Interest": "false",
+   "Video Output": "true"
+  }
+ },
+ "frames": {
+  "glb_adv_f0": {
+   "pixels": 160000,
+   "box": [
+    0,
+    0,
+    399,
+    399
+   ],
+   "mean": [
+    0.6941,
+    0.6941,
+    0.6941
+   ]
+  },
+  "glb_classic_f0": {
+   "pixels": 160000,
+   "box": [
+    0,
+    0,
+    399,
+    399
+   ],
+   "mean": [
+    0.6941,
+    0.6941,
+    0.6941
+   ]
+  },
+  "obj_adv_f0": {
+   "pixels": 160000,
+   "box": [
+    0,
+    0,
+    399,
+    399
+   ],
+   "mean": [
+    0.6448,
+    0.6448,
+    0.6448
+   ]
+  },
+  "sphere_adv_f0": {
+   "pixels": 0
+  }
+ },
+ "seconds": {
+  "job": 8.125,
+  "render": 6.121
+ }
+}

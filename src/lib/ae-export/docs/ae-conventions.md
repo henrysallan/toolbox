@@ -338,3 +338,39 @@ group or layer input promoted to its shell.
 
 - AE 26.5's ExtendScript reads `a ? x : b ? y : z` as
   `(a ? x : b) ? y : z` (*measured*). Never nest ternaries in `.jsx`.
+
+## 3-D
+
+- A 3D Scene (`scene-render`) rebuilds natively when every object is an
+  Import 3D model (optionally under Transform 3D) or a light, and the camera
+  is a Camera node or none. It becomes a 3-D precomp on the Advanced 3D
+  renderer, placed as one 2-D layer where the render was. Otherwise the whole
+  render bakes, and the report says why: fog, the room environment, depth of
+  field, primitives or materials, an STL, or a picked file object.
+- Units (*measured*): an AE model layer draws 512 px per glTF / toolbox
+  world unit, and glTF `(x, y, z)` becomes AE `(x, −y, −z)`. The world origin
+  sits at the comp centre. Rotations map per axis: X = rot_x, Y = −rot_y,
+  Z = −rot_z. AE's rotation is Rx·Ry·Rz like three's 'XYZ' Euler, so this is
+  exact.
+- Camera: Position = the camera position, Point of Interest = its target,
+  Zoom = (H/2)/tan(fov/2). Framing matches toolbox within 0.06 px
+  (*measured*). AE has no orthographic camera: one 2·10⁵ px away with a
+  matching zoom stands in (approx).
+- Lights (approx): directional → Parallel, point → Point, spot → Spot
+  (Cone Angle = 2·angle, Feather = 100·penumbra), ambient → Ambient. Advanced
+  3D lights in the encoded working space (*measured*): AE is linear in N·L,
+  toolbox goes through the sRGB encode, so no intensity matches everywhere.
+  Intensity is the least-squares match (100 · 1.16 · encode(I/π)). Point and
+  spot lights use Inverse Square Clamped with Radius 512 px, matched at the
+  camera target's distance.
+- Materials: AE renders the model file's own PBR materials. Toolbox's plain
+  Import 3D shows three's default white material today.
+- Keyed TRS, camera and light params become keys (separated X / Y / Z
+  position where the axes key apart). FOV and intensity keys are sampled per
+  frame, because their maps are not affine.
+- Headless builds: a project saved right after importing a model can keep a
+  broken model item (it renders transparent). The builder pauses before saving
+  (*measured*).
+- The startup project may be OCIO-managed (AE's sticky last-project
+  setting), which refuses 16 bpc. The builder switches it to Adobe colour
+  management first (`colorManagementSystem` 0).

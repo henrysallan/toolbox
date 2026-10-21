@@ -800,10 +800,10 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
   "image-generate": bake("Generated still — one-frame footage (look-exact)."),
   paint: bake("Painted still — one-frame footage (look-exact)."),
   "cube-3d-test": bake("3D test render — bakes."),
-  "scene-render": bake("three.js render — bakes (AE camera/lights + native GLB are M4)."),
-  "import-3d": bake("3D model — baked with its Scene Render; AE 24.1+ can re-import the same GLB/glTF/OBJ/FBX (M4)."),
-  "camera-3d": { class: "layer", ae: "layer:camera", fidelity: "approx", note: "AE camera (FOV → zoom) once the 3D scene rebuilds natively (M4); in v1 it bakes with its Scene Render." },
-  "light-3d": { class: "layer", ae: "layer:light", fidelity: "approx", note: "AE light once the 3D scene rebuilds natively (M4); in v1 it bakes with its Scene Render." },
+  "scene-render": bake("three.js render — bakes, unless every object is an Import 3D model (under Transform 3D) or a light and the camera is a Camera node: then a native 3-D precomp (three-plan.ts)."),
+  "import-3d": bake("3D model — in a native 3-D scene the same GLB / glTF / OBJ becomes an AE 3D model layer (Advanced 3D); otherwise baked with its Scene Render."),
+  "camera-3d": { class: "layer", ae: "layer:camera", fidelity: "exact", note: "AE camera: Point of Interest = target, Zoom = (H/2)/tan(fov/2), 512 px per world unit; orthographic → a far camera (approx). Bakes with a non-native Scene Render." },
+  "light-3d": { class: "layer", ae: "layer:light", fidelity: "approx", note: "AE light (Parallel / Point / Spot / Ambient); intensity the least-squares match over N·L (approx). Bakes with a non-native Scene Render." },
   "sksl-shader": bake("Rendered by Skia (CanvasKit) — bakes; porting it is a manual SkSL → GLSL rewrite."),
   "diffusion-curves": bake("Spline-seeded Jacobi relaxation — geometry in AND iterative; bakes."),
   "spline-flow-field": bake("CPU flow-field render — bakes."),
@@ -837,6 +837,7 @@ export const AE_EXPORT_CLASSES: Record<string, AeExportEntry> = {
 for (const t of SKIA_LAYER_TYPES) AE_EXPORT_CLASSES[t] = bake(SKIA_NOTE);
 for (const t of AUDIO_TYPES) AE_EXPORT_CLASSES[t] = bake(AUDIO_NOTE);
 for (const t of MESH_TYPES) AE_EXPORT_CLASSES[t] = bake(MESH_NOTE);
+AE_EXPORT_CLASSES["transform-3d"] = bake("3D transform — over Import 3D models in a native 3-D scene it becomes a 3-D null the model is parented to; otherwise baked with its Scene Render.");
 for (const t of SIM_INPUT_TYPES) AE_EXPORT_CLASSES[t] = bake(SIM_INPUT_NOTE);
 for (const t of SDF_CHAIN_TYPES)
   AE_EXPORT_CLASSES[t] = shader("SDF tree node — compiles into the sdf-rasterize / sdf-to-mask it feeds (one shader region). Under a hard chain (sdf-chain.ts) it is shape-layer geometry instead (planAeExport refines it per graph).");

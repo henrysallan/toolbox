@@ -62,6 +62,8 @@ export interface Emitters {
   instances: Emitter;
   shader: Emitter;
   bake: (scope: Scope, endpoint: string, reason: string, nodes?: string[]) => Rendered;
+  // A native 3-D scene (scene-render the plan made layer-class; three.ts).
+  scene3d?: Emitter;
 }
 
 export const IDENTITY_SCALE: AeProp<number[]> = { v: [100, 100] };
@@ -195,7 +197,7 @@ export function renderEndpoint(scope: Scope, endpoint: string, em: Emitters): Re
         r = em.instances(scope, endpoint, pn);
         break;
       case "layer":
-        r = em.composite(scope, endpoint, pn);
+        r = pn.type === "scene-render" && em.scene3d ? em.scene3d(scope, endpoint, pn) : em.composite(scope, endpoint, pn);
         break;
       case "effect":
       case "transform":

@@ -731,7 +731,10 @@ for (const p of pkgs) {
       const other = await readTiff(cli);
       const m = compareRgba(mine.data, other.data, mine.width, mine.height);
       r.fact("compareRgba(render-queue frame, aerender CLI frame)", m);
-      r.check("the CLI render matches the render-queue render", m.verdict === "match" && m.meanAbs === 0, m);
+      // The Advanced 3D renderer is not bit-identical between launches
+      // (measured mean 2.6e-6, 0.007% of pixels): near-zero, not zero.
+      const adv3d = p.scene.comps.some((c) => c.renderer === "advanced-3d");
+      r.check("the CLI render matches the render-queue render", m.verdict === "match" && (m.meanAbs === 0 || (adv3d && m.meanAbs < 1e-4)), m);
     }
   }
   r.print();

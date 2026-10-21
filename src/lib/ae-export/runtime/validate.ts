@@ -57,6 +57,9 @@ const TEXT_BASED_ON = new Set(["characters", "characters-excluding-spaces", "wor
 const TEXT_SHAPES = new Set(["square", "ramp-up", "ramp-down", "triangle", "round", "smooth"]);
 const TEXT_MODES = new Set(["add", "subtract", "intersect", "min", "max", "difference"]);
 const TEXT_GROUPING = new Set(["character", "word", "line", "all"]);
+const RENDERERS = new Set(["advanced-3d", "classic-3d"]);
+const LIGHT_TYPES = new Set(["parallel", "spot", "point", "ambient"]);
+const LIGHT_FALLOFFS = new Set(["none", "smooth", "inverse-square-clamped"]);
 
 type ValueCheck = (v: unknown, path: string, out: string[]) => void;
 
@@ -376,6 +379,42 @@ function layerTransform(t: any, path: string, out: string[], kind: string) {
   void kind;
 }
 
+// Camera / light options (M4 lane 5): only on their own layer kinds; spot-only
+// and falloff-only props where AE shows them (it refuses values on hidden ones).
+function cameraLight(L: any, p: string, out: string[]) {
+  if ("camera" in L) {
+    if (L.kind !== "camera") out.push(`${p}.camera: only camera layers`);
+    if (!isObj(L.camera)) out.push(`${p}.camera: expected {zoom}`);
+    else prop(L.camera.zoom, `${p}.camera.zoom`, out, num);
+  }
+  if (!("light" in L)) return;
+  if (L.kind !== "light") out.push(`${p}.light: only light layers`);
+  const g = L.light;
+  if (!isObj(g)) return void out.push(`${p}.light: expected {type, color, intensity}`);
+  oneOf(g.type, LIGHT_TYPES, `${p}.light.type`, out);
+  prop(g.color, `${p}.light.color`, out, rgb);
+  prop(g.intensity, `${p}.light.intensity`, out, num);
+  for (const k of ["coneAngle", "coneFeather"]) {
+    if (!(k in g)) continue;
+    if (g.type !== "spot") out.push(`${p}.light.${k}: only spot lights have a cone`);
+    prop(g[k], `${p}.light.${k}`, out, num);
+  }
+  if ("falloff" in g) {
+    oneOf(g.falloff, LIGHT_FALLOFFS, `${p}.light.falloff`, out);
+    if (g.type !== "point" && g.type !== "spot") out.push(`${p}.light.falloff: only point and spot lights fall off`);
+  }
+  if ("radius" in g) {
+    if (g.falloff !== "smooth" && g.falloff !== "inverse-square-clamped") out.push(`${p}.light.radius: AE hides Radius without a falloff`);
+    prop(g.radius, `${p}.light.radius`, out, num);
+  }
+  if ("falloffDistance" in g) {
+    if (g.falloff !== "smooth") out.push(`${p}.light.falloffDistance: only the smooth falloff has a Falloff Distance`);
+    prop(g.falloffDistance, `${p}.light.falloffDistance`, out, num);
+  }
+  if ("castsShadows" in g && typeof g.castsShadows !== "boolean") out.push(`${p}.light.castsShadows: expected a boolean`);
+  if ("castsShadows" in g && g.type === "ambient") out.push(`${p}.light.castsShadows: an ambient light has no shadows (AE hides the option)`);
+}
+
 export function validateAeScene(scene: unknown): string[] {
   const out: string[] = [];
   if (!isObj(scene)) return ["scene: expected an object"];
@@ -432,6 +471,7 @@ export function validateAeScene(scene: unknown): string[] {
     if (!isNum(c.fps) || c.fps <= 0 || c.fps > 999) out.push(`${cp}.fps: expected 0–999`);
     if (!isNum(c.duration) || c.duration <= 0) out.push(`${cp}.duration: expected seconds > 0`);
     if ("bgColor" in c) rgb(c.bgColor, `${cp}.bgColor`, out);
+    if ("renderer" in c) oneOf(c.renderer, RENDERERS, `${cp}.renderer`, out);
     if (!Array.isArray(c.layers)) {
       out.push(`${cp}.layers: expected an array`);
       continue;
@@ -546,6 +586,10 @@ export function validateAeScene(scene: unknown): string[] {
         else if (L.kind === "precomp" && !comps.has(L.source) && footage.get(L.source)?.kind !== "svg")
           out.push(`${p}.source: a precomp layer takes a comp id (or an SVG imported as a comp)`);
         if (L.source === c.id) out.push(`${p}.source: a comp cannot contain itself`);
+        if (footage.get(L.source)?.kind === "model") {
+          if (L.kind !== "footage" || L.threeD !== true) out.push(`${p}: a model is a 3-D footage layer (threeD true)`);
+          if (c.renderer !== "advanced-3d") out.push(`${p}: a model layer needs its comp's renderer "advanced-3d"`);
+        }
       } else if ("source" in L) {
         if (L.kind !== "shape") out.push(`${p}.source: only precomp, footage and shape layers have a source`);
         else if (footage.get(L.source)?.kind !== "svg") out.push(`${p}.source: a shape layer's source must be SVG footage`);
@@ -560,6 +604,7 @@ export function validateAeScene(scene: unknown): string[] {
         prop(L.timeRemap, `${p}.timeRemap`, out, num);
       }
       if ("origin" in L && (!Array.isArray(L.origin) || !L.origin.every(isStr))) out.push(`${p}.origin: expected node ids`);
+      cameraLight(L, p, out);
     });
   }
   if (!comps.has(scene.main)) out.push(`main: no comp "${scene.main}"`);
