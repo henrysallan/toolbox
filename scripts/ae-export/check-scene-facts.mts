@@ -696,5 +696,84 @@ export default async function run(): Promise<number> {
     const probs = validateAeScene(bad);
     c.check("(T validate) a model outside an advanced-3d comp, a cone on a point light, a camera without zoom → refused", probs.some((p) => /renderer "advanced-3d"/.test(p)) && probs.some((p) => /only spot lights have a cone/.test(p)) && probs.some((p) => /camera\.zoom: missing/.test(p)), probs);
   }
+
+  // --- (U) Rasterize Spline overlap / holes, polymorphic points, GPU-only paths -----------------
+  {
+    const adhoc = (name: string, body: (g: any, L: string) => void, opts: Record<string, unknown> = {}) =>
+      sceneOf({ name, title: name, comp: { width: 1024, height: 1024, fps: 30, frames: 30 }, build(g: any) { const L = g.layer("LU", name); body(g, L); g.out(L, "paint:out"); }, opts } as any);
+    const sq = (cx: number, cy: number, r: number) => ({ closed: true, anchors: [[cx - r, cy - r], [cx + r, cy - r], [cx + r, cy + r], [cx - r, cy + r]].map((pos) => ({ pos })) });
+    const groupsOf = (b: AeSceneBuild) => (layer(b, "paint")?.contents ?? []).filter((i) => i.kind === "group") as any[];
+    const kinds = (g: any) => g.contents.map((i: any) => i.kind).join(",");
+    // Scatter → Transform → Mirror carry points through image-typed resting
+    // sockets; spline copies of a circle, layered.
+    const copies = (g: any, L: string, paint: Record<string, unknown>) => {
+      g.node(L, "pts", "scatter-points", { count: 3, seed: 4 });
+      g.node(L, "xf", "transform", { scaleX: 0.7, scaleY: 0.7 });
+      g.node(L, "mir", "mirror", {});
+      g.node(L, "dot", "circle", { radiusX: 0.04, radiusY: 0.04, stroke_enabled: false });
+      g.node(L, "copy", "copy-to-points", { mode: "spline" });
+      g.node(L, "paint", "rasterize-spline", { fill_color: "#e8e8e8", thickness: 2, ...paint });
+      g.wire("pts:out", "xf:in:image");
+      g.wire("xf:out", "mir:in:source");
+      g.wire("mir:out", "copy:in:points");
+      g.wire("dot:out", "copy:in:instance");
+      g.wire("copy:out", "paint:in:path");
+    };
+    const lay = await adhoc("u-layered", (g, L) => copies(g, L, { overlap: "layered" }));
+    const lg = groupsOf(lay);
+    c.check("(U) points through Transform → Mirror don't read an image: the copies stay native", lay.bakes.length === 0 && !lay.scene.report.baked.length, lay.scene.report.baked);
+    c.check("(U) the plan calls a Mirror on points an instance node, not AE's Mirror effect", lay.plan.layers[0].nodes.find((n) => n.id === "mir")?.class === "instances" && !lay.scene.report.approx.some((l) => l.id === "mir"), lay.plan.layers[0].nodes.find((n) => n.id === "mir"));
+    c.check("(U) overlap = layered → one group per copy (path, stroke, fill under it)", lg.length === 6 && lg.every((g) => kinds(g) === "path,stroke,fill"), lg.map(kinds));
+    c.check("(U) …later copies on top: AE's first group is toolbox's last subpath", lg[0].name.endsWith(" 6") && lg[5].name.endsWith(" 1"), lg.map((g) => g.name));
+    const flat = await adhoc("u-flatten", (g, L) => copies(g, L, {}));
+    c.check("(U) overlap = flatten keeps one group (every fill, the strokes on top)", groupsOf(flat).length === 1 && flat.bakes.length === 0, groupsOf(flat).map(kinds));
+
+    // Nested contours: an outer square with a hole, and a solo square.
+    const ring = { kind: "spline", subpaths: [sq(0.3, 0.5, 0.2), sq(0.3, 0.5, 0.1), sq(0.75, 0.5, 0.1)] };
+    const holes = (paint: Record<string, unknown>) =>
+      adhoc(`u-holes-${Object.keys(paint).join("-")}`, (g, L) => {
+        g.node(L, "draw", "spline-draw", { spline: ring, stroke_enabled: false, fill_enabled: false });
+        g.node(L, "paint", "rasterize-spline", { fill_color: "#336699", thickness: 2, ...paint });
+        g.wire("draw:out", "paint:in:path");
+      });
+    const punch = await holes({ holes: true });
+    const pg = groupsOf(punch);
+    const fills = items(layer(punch, "paint")?.contents).filter((i) => i.kind === "fill") as any[];
+    c.check("(U holes) flatten: the strokes on top, then one fill group per island (even-odd)", pg.length === 2 && /stroke$/.test(pg[0].name) && /fill$/.test(pg[1].name) && fills.length === 2 && fills.every((f) => f.rule === "evenodd"), pg.map((g) => g.name));
+    c.check("(U holes) the ringed island holds its outer and its hole; islands in reverse", JSON.stringify(pg[1].contents.map((g: any) => g.contents.filter((i: any) => i.kind === "path").length)) === "[1,2]", pg[1]?.contents?.map(kinds));
+    const punchLayered = groupsOf(await holes({ holes: true, overlap: "layered" }));
+    c.check("(U holes) layered: one group per island, fill + stroke, the ringed island last (on the bottom)", punchLayered.length === 2 && punchLayered.every((g) => /stroke,fill$/.test(kinds(g))) && kinds(punchLayered[1]) === "path,path,stroke,fill", punchLayered.map(kinds));
+    const fillHoles = items(layer(await holes({ fill_holes: true }), "paint")?.contents);
+    const fh = fillHoles.filter((i) => i.kind === "group" && (i as any).contents.some((x: any) => x.kind === "fill")) as any[];
+    c.check("(U holes) fill_holes fills just the hole (one path under the fill), the strokes on every contour", fh.length === 1 && fh[0].contents.filter((i: any) => i.kind === "path").length === 1 && fillHoles.filter((i) => i.kind === "stroke").length === 1, fh.map(kinds));
+    const noNest = await adhoc("u-holes-nonest", (g, L) => copies(g, L, { holes: true }));
+    c.check("(U holes) nothing nests → hole punching changes nothing: the plain group", groupsOf(noNest).length === 1 && noNest.bakes.length === 0, groupsOf(noNest).map(kinds));
+
+    // Spline Merge's Flow runs on the GPU: the walk's evaluator throws, and
+    // the copies downstream of it would be empty — it bakes, saying why.
+    const flowGraph = (g: any, L: string) => {
+      copies(g, L, {});
+      g.node(L, "goo", "spline-merge", { flow: true, flow_speed: 0 });
+      g.node(L, "smooth", "relax", { mode: "spline", iterations: 4 });
+      g.wire("copy:out", "goo:in:path");
+      g.wire("goo:out", "smooth:in:in");
+      g.wire("smooth:out", "paint:in:path");
+    };
+    const offline = await adhoc("u-flow-offline", flowGraph);
+    c.check("(U flow) the plan keeps a still Flow native, with the editor-evaluation note", lay.plan && /settled outline/.test(offline.plan.layers[0].nodes.find((n) => n.id === "goo")?.notes.join(" ") ?? ""), offline.plan.layers[0].nodes.find((n) => n.id === "goo"));
+    c.check("(U flow) no editor hook: the GPU-only merge fails in the walk → a bake naming it, never an empty path", offline.bakes.length === 1 && offline.scene.report.baked.some((l) => /Spline Merge.*failed in the export's evaluator/.test(l.note ?? "")), offline.scene.report.baked);
+    const outline = { kind: "spline", subpaths: [sq(0.5, 0.5, 0.25)] };
+    const asked: string[] = [];
+    const live = await adhoc("u-flow-editor", flowGraph, { editorValue: (ep: string) => (asked.push(ep), ep === "smooth:out" ? outline : undefined) });
+    const lp = items(layer(live, "paint")?.contents).filter((i) => i.kind === "path") as any[];
+    c.check("(U flow) with the editor's value: one native static path, read once at the still endpoint", live.bakes.length === 0 && lp.length === 1 && lp[0].path.v?.vertices?.length === 4 && asked.includes("smooth:out"), { bakes: live.bakes.length, paths: lp.length, asked });
+    c.check("(U flow) a still Flow merge is not animated (no per-frame path keys)", !lines(live).some((l) => (l.id === "smooth" || l.id === "goo") && /per frame|every frame/.test(l.note ?? "")) && !items(layer(live, "paint")?.contents).some((i: any) => i.path?.keys), lines(live).filter((l) => l.id === "smooth" || l.id === "goo"));
+    const moving = await adhoc("u-flow-moving", (g, L) => {
+      flowGraph(g, L);
+      g.nodes.find((n: any) => n.id === "dot").data.animation = { radiusX: track([[0, 0.03], [29, 0.06]]) };
+    });
+    c.check("(U flow) Flow on moving geometry: the plan bakes it too", moving.plan.layers[0].nodes.find((n) => n.id === "goo")?.class === "bake" && moving.bakes.length === 1, moving.plan.layers[0].nodes.find((n) => n.id === "goo"));
+    for (const x of [lay, flat, punch, noNest, offline, live]) c.check(`(U ${x.scene.comps.at(-1)!.name}) valid, no problems`, x.problems.length === 0 && validateAeScene(x.scene).length === 0, [...x.problems, ...validateAeScene(x.scene)].slice(0, 3));
+  }
   return c.failures;
 }

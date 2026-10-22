@@ -119,8 +119,15 @@ export function makeAeGraph(nodes: GraphNode[], edges: Edge[], compositionId: st
         });
         const out = r.outputs.get(id);
         v = handle === "primary" ? out?.primary : out?.aux?.[handle.slice(4)];
-        const err = r.errors[id];
-        if (err) errors.set(id, err);
+        // A node upstream that threw (a GPU-only compute — Spline Merge's
+        // Flow — has no GL here) left its consumers without an input: the
+        // value is not toolbox's, so it is none.
+        const up = Object.keys(r.errors).find((k) => k !== id);
+        const err = r.errors[id] ?? (up ? `${flat.names.get(up) ?? up} (${up}) failed in the export's evaluator: ${r.errors[up]}` : undefined);
+        if (err) {
+          errors.set(id, err);
+          if (up && !r.errors[id]) v = undefined;
+        }
       } catch (e) {
         errors.set(id, e instanceof Error ? e.message : String(e));
         v = undefined;

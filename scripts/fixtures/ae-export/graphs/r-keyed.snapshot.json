@@ -793,7 +793,7 @@
      "id": "tilt",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "box",

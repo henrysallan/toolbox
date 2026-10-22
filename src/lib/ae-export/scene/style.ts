@@ -15,16 +15,21 @@
 //                     round-capped, round-joined Stroke, the node's opacity
 //                     on the group
 //
-// Anything a style node does that AE cannot (repeats, per-subpath widths,
-// ramps along the path, image fills, holes / layered overlap) throws
-// BakeSignal: the segment bakes rather than exporting a wrong look.
+// Rasterize Spline's overlap = layered and hole islands (holes /
+// fill_holes) → one group per subpath / island in toolbox's stacking
+// (stackedFlat). Anything a style node does that AE cannot (repeats,
+// per-subpath widths, ramps along the path, image fills —
+// ../rasterize-rules.ts for Rasterize Spline) throws BakeSignal: the
+// segment bakes rather than exporting a wrong look.
 
 import { normalizeRampInterp, normalizeRampSpace, type ColorRampStop } from "@/engine/color-ramp";
 import { makeSubpathColorFn, type ColorRampBy } from "@/engine/spline-color-source";
 import { makeSubpathGradientFn, type GradientCanvas } from "@/engine/spline-gradient-fill";
 import { subpathHasWidthProfile } from "@/engine/spline-width";
 import type { SplineSubpath } from "@/engine/types";
+import { groupHoleIslands } from "@/nodes/effect/rasterize-spline";
 import { rampToAeStops } from "../convert";
+import { punchesHoles, rasterizeBakeReason } from "../rasterize-rules";
 import type { AeGradientStops, AeProp, AeRGB, AeShapeItem } from "../types";
 import { colorProp, isAnimatedParam, scalarProp, staticNumber, type WalkCtx } from "./context";
 import { sourceEndpoint } from "./graph";
@@ -252,36 +257,114 @@ function stopsOf(r: Recorded): AeGradientStops {
   return { colors, opacities };
 }
 
-const enableStroke = (p: Record<string, unknown>) => p.enable_stroke !== false;
+// The geometry as one item list per subpath, in subpath order: plain paths,
+// or paths under one shared modifier group (live corners' Round Corners),
+// re-wrapped around each path. Null when the items don't split that way
+// (Repeaters, nested groups).
+function splitLeaves(geom: Geom, n: number): AeShapeItem[][] | null {
+  if (n <= 1) return [geom.items];
+  if (geom.items.length === n && geom.items.every((it) => it.kind === "path")) return geom.items.map((it) => [it]);
+  const g = geom.items.length === 1 ? geom.items[0] : undefined;
+  if (g?.kind !== "group") return null;
+  const paths = g.contents.filter((it) => it.kind === "path");
+  const mods = g.contents.filter((it) => it.kind !== "path");
+  if (paths.length !== n || mods.some((it) => it.kind === "group") || g.contents.findIndex((it) => it.kind !== "path") < paths.length) return null;
+  return paths.map((path, i) => [{ ...g, name: `${g.name} ${i + 1}`, contents: [path, ...clone(mods)] }]);
+}
+
+const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
+type Islands = NonNullable<ReturnType<typeof groupHoleIslands>>;
+
+// Toolbox's hole islands on the subpaths as evaluated (groupHoleIslands:
+// an even-depth outer + the odd-depth contours right inside it), or null
+// when punching changes nothing (no contour nests in another). fill_holes
+// with no islands fills nothing, as toolbox draws it.
+function holeIslands(scope: Scope, id: string): { islands: Islands | null; fillHoles: boolean; count: number } | null {
+  const p = scope.ctx.graph.params(id);
+  const fillHoles = p.fill_holes === true;
+  const subs = subpathsOf(scope, id, "hole punching");
+  const islands = groupHoleIslands(subs);
+  if (!fillHoles && (!islands || islands.every((x) => !x.holes.length))) return null;
+  return { islands, fillHoles, count: subs.length };
+}
+
+// overlap = layered and/or hole islands with a flat fill (toolbox's
+// drawSplineFlat): each unit is a subpath, or an island (its outer + holes,
+// filled even-odd; fill_holes fills just the holes).
+//   layered  each unit filled then stroked, later units on top
+//   flatten  every unit's fill, then every stroke on top
+// AE draws the first item of a contents list on top, so units go in
+// reverse.
+function stackedFlat(scope: Scope, id: string, name: string, leaves: AeShapeItem[][], holes: { islands: Islands | null; fillHoles: boolean } | null, stroke: (() => AeShapeItem) | null, fillOn: boolean): AeShapeItem[] {
+  const layered = scope.ctx.graph.params(id).overlap === "layered";
+  const units = holes?.islands ? holes.islands.map((x) => ({ members: [x.root, ...x.holes], holes: x.holes })) : leaves.map((_, i) => ({ members: [i], holes: [] as number[] }));
+  const paths = (ix: number[]) => ix.flatMap((i) => clone(leaves[i]));
+  const fillOf = (u: (typeof units)[number]): AeShapeItem[] => {
+    if (!fillOn || (holes?.fillHoles && !u.holes.length)) return [];
+    if (holes?.fillHoles) return [...paths(u.holes), fillItem(scope, id, "fill_color", "nonzero")];
+    return [...paths(u.members), fillItem(scope, id, "fill_color", holes?.islands ? "evenodd" : "nonzero")];
+  };
+  const label = (i: number) => (units.length > 1 ? `${name} ${i + 1}` : name);
+  if (layered) {
+    const groups = units.map((u, i): AeShapeItem => {
+      const fill = fillOf(u);
+      if (!holes?.fillHoles) {
+        // One group: its paths, the stroke, the fill under it.
+        const contents = fill.length ? fill.slice(0, -1) : paths(u.members);
+        if (stroke) contents.push(stroke());
+        if (fill.length) contents.push(fill[fill.length - 1]);
+        return { kind: "group", name: label(i), contents };
+      }
+      const parts: AeShapeItem[] = [];
+      if (stroke) parts.push({ kind: "group", name: "Stroke", contents: [...paths(u.members), stroke()] });
+      if (fill.length) parts.push({ kind: "group", name: "Fill", contents: fill });
+      return { kind: "group", name: label(i), contents: parts };
+    });
+    return groups.reverse();
+  }
+  const out: AeShapeItem[] = [];
+  if (stroke) out.push({ kind: "group", name: `${name} stroke`, contents: [...paths(units.flatMap((u) => u.members)), stroke()] });
+  const fills = units.map((u, i): AeShapeItem | null => {
+    const f = fillOf(u);
+    return f.length ? { kind: "group", name: label(i), contents: f } : null;
+  });
+  const kept = fills.filter((x): x is AeShapeItem => !!x).reverse();
+  if (kept.length) out.push({ kind: "group", name: `${name} fill`, contents: kept });
+  return out;
+}
 
 function rasterizeStyle(scope: Scope, id: string, name: string, geom: Geom): AeShapeItem[] {
   const { ctx, clock } = scope;
   const p = ctx.graph.params(id);
-  if ((p.overlap ?? "flatten") !== "flatten") throw new BakeSignal(`Rasterize Spline overlap = ${String(p.overlap)}`);
-  if (p.holes || p.fill_holes) throw new BakeSignal("Rasterize Spline hole punching");
-  for (const k of ["image_fill", "image_stroke"]) if (ctx.graph.wireInto(id, `in:${k}`)) throw new BakeSignal(`Rasterize Spline ${k} (an image fill)`);
-  if (p.thickness_source === "vary") throw new BakeSignal("Rasterize Spline thickness_source = vary");
-  if (p.cap === "arrowhead" && enableStroke(p) && p.style !== "dotted" && !p.close_open_paths && (p.arrow_start === true || p.arrow_end !== false))
-    throw new BakeSignal("Rasterize Spline arrow heads");
+  const why = rasterizeBakeReason(p, (x) => !!ctx.graph.wireInto(id, `in:${x}`));
+  if (why) throw new BakeSignal(why);
   const groups: AeShapeItem[] = [];
   const strokeOn = p.enable_stroke !== false;
   const fillOn = p.enable_fill !== false;
   const stroke = () => {
-    if (p.stroke_source === "ramp") throw new BakeSignal("Rasterize Spline stroke ramp");
     const c = colorProp(ctx, clock, id, "stroke_color", { shapeOrSolid: true, fallback: "#000000" });
     return strokeItem(scope, id, p, c, "thickness", "units");
   };
   const rule: "nonzero" | "evenodd" = p.stack_subpaths !== false ? "nonzero" : p.fill_rule === "nonzero" ? "nonzero" : "evenodd";
+  const layered = p.overlap === "layered";
+  const holes = punchesHoles(p) ? holeIslands(scope, id) : null;
   if (!fillOn || p.fill_source === "flat" || p.fill_source === undefined) {
+    const n = holes ? holes.count : geom.leaves;
+    if (holes || (layered && n > 1)) {
+      const leaves = splitLeaves(geom, n);
+      if (!leaves) throw new BakeSignal(`Rasterize Spline ${holes ? "hole punching" : "overlap = layered"} needs one path per subpath (this geometry is composed: Repeaters or nested groups)`);
+      if (holes) ctx.report.note(id, `hole islands → one group per island (${holes.fillHoles ? "its holes filled" : "even-odd"})`);
+      if (layered) ctx.report.note(id, "overlap = layered → one group per subpath (fill + stroke), later subpaths on top");
+      return stackedFlat(scope, id, name, leaves, holes, strokeOn ? stroke : null, fillOn);
+    }
     const contents: AeShapeItem[] = [...geom.items];
     if (strokeOn) contents.push(stroke());
     if (fillOn) contents.push(fillItem(scope, id, "fill_color", rule));
     return [{ kind: "group", name, contents }];
   }
-  if (p.fill_source === "ramp") throw new BakeSignal("Rasterize Spline fill ramp by subpath — per-subpath fills not mapped yet");
   // Gradient fill: toolbox's per-subpath frame, recorded in comp px.
-  if (p.gradient_kind === "conic") throw new BakeSignal("conic gradient fill — no AE gradient type");
-  if (p.gradient_vary && p.gradient_vary !== "none") throw new BakeSignal("gradient_vary (per-subpath phase)");
+  if (holes) throw new BakeSignal("Rasterize Spline hole punching under a gradient fill");
   for (const k of ["fill_ramp", "gradient_angle", "gradient_scale", "gradient_offset"])
     if (isAnimatedParam(ctx, id, k)) throw new BakeSignal(`animated ${k} — AE gradient stops / points from a preset are static`);
   const subs = subpathsOf(scope, id, "gradient fill");
@@ -322,5 +405,6 @@ function rasterizeStyle(scope: Scope, id: string, name: string, geom: Geom): AeS
     }
     groups.push({ kind: "group", name: leaves.length > 1 ? `${name} ${i + 1}` : name, contents });
   });
-  return groups;
+  // Layered: later subpaths on top, and AE draws the first group on top.
+  return layered ? groups.reverse() : groups;
 }

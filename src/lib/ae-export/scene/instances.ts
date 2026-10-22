@@ -228,7 +228,9 @@ export function imageReadUpstream(scope: Scope, id: string): string | null {
     const n = ctx.graph.node(x);
     const def = n ? getNodeDef(n.type) : undefined;
     if (!n || !def) return null;
-    const ins = def.resolveInputs?.(n.params ?? {}) ?? def.inputs;
+    // The sockets as wired: a Mirror or Transform on points carries points
+    // through an input whose resting type is image.
+    const ins = def.resolveInputs?.(n.params ?? {}, { connectedTypes: ctx.graph.flat.connectedTypes(x) }) ?? def.inputs;
     for (const w of ctx.graph.into(x)) {
       const name = w.targetHandle.replace(/^in:/, "");
       const t = ins.find((i) => i.name === name)?.type;

@@ -13,3 +13,7 @@ class: effect
   - `x` / `y` / `both` / `radial`, which composite reflected copies over the
     source (an opaque frame becomes its mirror image);
   - Keep source off.
+- **On points or a spline** the Mirror is not an image effect: the plan reads
+  the sockets as wired (its resting `source` socket says image), so the
+  mirrored points export as instance positions and a mirrored spline as its
+  evaluated path, like any other point / spline node.

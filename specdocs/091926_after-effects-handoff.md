@@ -1184,6 +1184,32 @@ Each lane's full results, numbers and open items are in `specdocs/ae-m4/`.
   value graph reads links to its control (check-controls "value graph").
   Checkbox, Dropdown and Point leaves stay literals.
 
+### Fixed from the Sketch_017 hand test (2026-10-21)
+
+A scatter → Transform → Mirror → spline copies → Spline Merge (Flow) →
+Relax → Rasterize graph baked both branches; it now exports native and
+matches toolbox (mean 0.0009, outline anti-aliasing).
+
+- **Polymorphic sockets.** The plan and the walk read sockets at their
+  resting type, so a Mirror on points looked like an image read (the copies
+  baked) and the plan listed it as AE's Mirror effect. The flattened graph
+  now resolves `connectedTypes` as the evaluator does
+  (`flattenAeComposition`), and both read the sockets as wired.
+- **Rasterize Spline `overlap = layered` and `holes` / `fill_holes`** map:
+  one group per subpath / hole island in toolbox's stacking (style.ts
+  `stackedFlat`, docs/nodes/rasterize-spline.md). Its bake rules live in
+  `rasterize-rules.ts`, shared with the plan, which had promised no bakes;
+  the dead `in:image_fill` check is now the real `in:fill` input.
+- **Spline Merge Flow.** Its fingerprint ticks, so the walk sampled it every
+  frame, but it only follows its input: on a still input it is still
+  (`clock.ts`, shared with the plan's `readsTime`). The walk's evaluator has
+  no GL, so Flow threw there and Relax downstream returned an empty path,
+  hidden only by the bake. A still path now comes from the editor's own
+  evaluation (`AeSceneOptions.editorValue`). Any upstream evaluation error
+  now makes the value missing, so the walk bakes and names the failed node.
+- Still evaluated paths and point sets report exact, not "sampled to
+  per-frame keys".
+
 ### Open
 
 - Engine bugs the lanes found but left alone (outside their files):
@@ -1196,8 +1222,12 @@ Each lane's full results, numbers and open items are in `specdocs/ae-m4/`.
   `in:<name>`, not `in:in:<id>`, so a wired channel exported its row
   default (essential-properties.md); check-scene-facts "(C, wired
   channel)" holds it.
-- `plan.ts` still reads time from `facts.reads` only, so the plan and the
-  walk can disagree on Stagger-driven copies and non-wave Gradients.
+- `plan.ts` reads time from `facts.reads` and the fingerprint (`clock.ts`)
+  but not `tickDriven` / `stable: false`, so the plan and the walk can still
+  disagree on Stagger-driven copies.
+- A static image field (Noise into Copy to Points' Scale field) is sampled
+  at export, yet the report still lists it as a Toolbox Shader region with
+  no bundle.
 - Not measured: the knob → value-graph link in a live build; pixel probes
   for `p-expressions`; 32 bpc; the AE app build; Windows.
 

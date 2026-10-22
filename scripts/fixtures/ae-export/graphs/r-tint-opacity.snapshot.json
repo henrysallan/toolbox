@@ -935,13 +935,13 @@
      "id": "hue",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "fade",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "dot",
@@ -959,7 +959,7 @@
      "id": "hue2",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "box",

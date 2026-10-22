@@ -680,7 +680,7 @@
      "id": "turn",
      "type": "point-expression",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "tri",

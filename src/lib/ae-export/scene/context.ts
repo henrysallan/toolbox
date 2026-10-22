@@ -97,6 +97,8 @@ export interface WalkCtx {
   uid(base: string): string;
   // AeSceneOptions.fieldPixels (instances.ts samples static image fields).
   fieldPixels?: AeSceneOptions["fieldPixels"];
+  // AeSceneOptions.editorValue (shape.ts splineAt reads still paths).
+  editorValue?: AeSceneOptions["editorValue"];
 }
 
 export function makeUid(): (base: string) => string {

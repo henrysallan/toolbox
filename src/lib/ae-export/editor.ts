@@ -21,8 +21,9 @@ import { isZoneShell, LAYER_TYPE, LAYER_XFORM_TYPE } from "@/engine/groups";
 import { DEFAULT_TICKS_PER_FRAME, type KeyframeAnimationBlock } from "@/engine/keyframes";
 import { SETTABLE_PARAM_TYPES } from "@/engine/node-catalog";
 import { getNodeDef } from "@/engine/registry";
-import type { NodeOutput } from "@/engine/types";
+import type { NodeOutput, ResolveCtx, SocketType } from "@/engine/types";
 import { resolveComposition, type GraphNode } from "@/state/graph-ops";
+import { readsClock } from "./clock";
 import { describeAePlan, planAeExport, type AePlanInput, type AePlanLayerInput, type AePlanTrack } from "./plan";
 import type { PlanEdge, PlanNode, PlanNodeInfo } from "@/lib/glsl-translation/plan";
 import {
@@ -82,21 +83,27 @@ const fromEndpoint = (id: string, handle: string) =>
 const toEndpoint = (id: string, handle: string) =>
   handle.startsWith("in:param:") ? `${id}:param:${handle.slice("in:param:".length)}` : `${id}:${handle.startsWith("in:") ? handle : `in:${handle}`}`;
 
-export function nodeInfoFor(type: string, params: Record<string, unknown>): PlanNodeInfo | undefined {
+// `connectedTypes`: what feeds each wired input (AeFlatComposition), so a
+// polymorphic node reports the sockets it has in this graph — a Mirror on
+// points is a points node, not its resting image sockets.
+export function nodeInfoFor(type: string, params: Record<string, unknown>, connectedTypes: ResolveCtx["connectedTypes"] = {}): PlanNodeInfo | undefined {
   const def = getNodeDef(type);
   if (!def) return undefined;
+  const rc: ResolveCtx = { connectedTypes };
   let ins = def.inputs;
+  let primary = def.primaryOutput;
   try {
-    ins = def.resolveInputs?.(params) ?? def.inputs;
+    ins = def.resolveInputs?.(params, rc) ?? def.inputs;
+    primary = def.resolvePrimaryOutput?.(params, rc) ?? def.primaryOutput;
   } catch {
     ins = def.inputs;
   }
   ins = withMaskInput(ins, def);
   return {
     inputs: ins.map((i) => ({ name: i.name, type: i.type })),
-    primaryOutput: def.primaryOutput ?? undefined,
+    primaryOutput: primary ?? undefined,
     auxOutputs: (def.auxOutputs ?? []).map((a) => ({ name: a.name, type: a.type })),
-    readsTime: !!def.facts?.reads?.includes("time"),
+    readsTime: readsClock(type, def, params),
     simulation: !!def.simulation,
     params: def.params
       .filter((p) => SETTABLE_PARAM_TYPES.has(p.type))
@@ -162,6 +169,10 @@ export interface AeFlatComposition {
   byId: Map<string, EngineNode>;
   // allEdges minus edges into bypassed nodes, sources resolved through bypasses.
   wires: GraphEdge[];
+  // ResolveCtx.connectedTypes for a node, as the evaluator computes it: the
+  // resolved output type of whatever feeds each wired input (through
+  // polymorphic producers — Transform / Mirror retype from their source).
+  connectedTypes(id: string): Record<string, SocketType | undefined>;
 }
 
 export function flattenAeComposition(nodes: GraphNode[], edges: Edge[], compositionId?: string): AeFlatComposition {
@@ -203,11 +214,51 @@ export function flattenAeComposition(nodes: GraphNode[], edges: Edge[], composit
     const s = resolveSource(e.source, e.sourceHandle);
     if (s) wires.push({ ...e, ...s });
   }
-  return { comp, names, flat, allNodes, allEdges, byId, wires };
+
+  const wiresInto = new Map<string, GraphEdge[]>();
+  for (const e of wires) (wiresInto.get(e.target) ?? wiresInto.set(e.target, []).get(e.target)!).push(e);
+  const typed = new Map<string, Record<string, SocketType | undefined>>();
+  const primary = new Map<string, SocketType | null>();
+  const resolving = new Set<string>();
+  const outputType = (id: string, handle: string): SocketType | null | undefined => {
+    const n = byId.get(id);
+    const def = n ? getNodeDef(n.type) : undefined;
+    if (!n || !def) return undefined;
+    if (handle.startsWith("out:aux:")) {
+      const name = handle.slice("out:aux:".length);
+      return (def.resolveAuxOutputs?.(n.params ?? {}) ?? def.auxOutputs).find((a) => a.name === name)?.type;
+    }
+    let t = primary.get(id);
+    if (t !== undefined) return t;
+    if (resolving.has(id)) return def.primaryOutput;
+    resolving.add(id);
+    try {
+      t = def.resolvePrimaryOutput?.(n.params ?? {}, { connectedTypes: connectedTypes(id) }) ?? def.primaryOutput;
+    } catch {
+      t = def.primaryOutput;
+    }
+    resolving.delete(id);
+    primary.set(id, t);
+    return t;
+  };
+  const connectedTypes = (id: string) => {
+    let ct = typed.get(id);
+    if (ct) return ct;
+    ct = {};
+    for (const e of wiresInto.get(id) ?? []) {
+      const input = e.targetHandle.replace(/^in:/, "");
+      if (input.startsWith("param:")) continue;
+      const t = outputType(e.source, e.sourceHandle);
+      if (t) ct[input] = t;
+    }
+    typed.set(id, ct);
+    return ct;
+  };
+  return { comp, names, flat, allNodes, allEdges, byId, wires, connectedTypes };
 }
 
 export function buildAePlanInput(nodes: GraphNode[], edges: Edge[], env: AeEditorEnv): AePlanInput {
-  const { comp, names, flat, allNodes, byId, wires } = flattenAeComposition(nodes, edges, env.compositionId);
+  const { comp, names, flat, allNodes, byId, wires, connectedTypes } = flattenAeComposition(nodes, edges, env.compositionId);
   const into = new Map<string, GraphEdge[]>();
   for (const e of wires) (into.get(e.target) ?? into.set(e.target, []).get(e.target)!).push(e);
   const sourceInto = (id: string, handle: string) => into.get(id)?.find((e) => e.targetHandle === handle);
@@ -323,7 +374,7 @@ export function buildAePlanInput(nodes: GraphNode[], edges: Edge[], env: AeEdito
     layers,
     infoOf: (id) => {
       const n = byId.get(id);
-      return n ? nodeInfoFor(n.type, n.params) : undefined;
+      return n ? nodeInfoFor(n.type, n.params, connectedTypes(id)) : undefined;
     },
     valuesOf: (id) => byId.get(id)?.params ?? {},
     tracksOf: (id) => {

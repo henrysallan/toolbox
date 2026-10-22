@@ -5,6 +5,7 @@
 // Agreed before wave 2 with the package and modal lanes; fields may be added
 // here, but renaming or removing one needs a note to the coordinating session.
 
+import type { SocketValue } from "@/engine/types";
 import type { AeEditorEnv } from "../editor";
 import type { AeBakeCodec, AeExportPlan, AeScene, AeShaderBundle } from "../types";
 
@@ -47,6 +48,13 @@ export interface AeSceneOptions {
   // value: a static field is the same at every frame). Undefined, or no
   // hook (offline callers), and the copies that need it bake.
   fieldPixels?: (endpoint: string, width: number, height: number) => ArrayLike<number> | undefined;
+  // The editor's last evaluated value at `endpoint` ("<id>:out" |
+  // "<id>:aux:<name>"), for a STILL path (scene/shape.ts splineAt): the
+  // walk's own evaluator has no GL, so a GPU-only compute (Spline Merge's
+  // Flow) fails there and everything downstream of it with it. Spline values
+  // only are read. Undefined, or no hook (offline callers), and the walk
+  // evaluates the path itself.
+  editorValue?: (endpoint: string) => SocketValue | undefined;
 }
 
 // Frames the package writer renders and encodes before AE can open the scene.

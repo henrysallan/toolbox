@@ -366,7 +366,7 @@
      "id": "fade",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "box",
@@ -384,7 +384,7 @@
      "id": "fade2",
      "type": "point-expression",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "dot",

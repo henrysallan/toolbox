@@ -2604,7 +2604,7 @@
      "id": "c_w",
      "type": "set-named-attribute",
      "class": "instances",
-     "fidelity": "sampled"
+     "fidelity": "exact"
     },
     {
      "id": "c_red",

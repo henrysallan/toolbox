@@ -12304,6 +12304,14 @@ function EffectsShell({
               const backend = backendRef.current;
               return backend && v && (v.kind === "image" || v.kind === "mask") ? (backend.readImagePixels(v as ImageValue, width, height) ?? undefined) : undefined;
             },
+            // A still path: its last evaluated value — the walk's evaluator
+            // has no GL, so a GPU-only compute (Spline Merge's Flow) fails there.
+            editorValue: (endpoint) => {
+              const aux = /^(.*):aux:(.+)$/.exec(endpoint);
+              const id = aux ? aux[1] : endpoint.replace(/:out$/, "");
+              const output = evalCacheRef.current.get(id)?.output ?? lastEvalOutputsRef.current?.get(id);
+              return pickInspectSocket(output, aux ? `aux:${aux[2]}` : "out").value;
+            },
           }),
         renderFrames: renderNodeFrames,
         readAsset: readAeAsset,

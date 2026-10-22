@@ -42,6 +42,7 @@ import {
   isGlslFusable,
   SDF_CHAIN_TYPES,
 } from "./classes";
+import { punchesHoles, rasterizeBakeReason } from "./rasterize-rules";
 import { SDF_NATIVE_CONSUMERS, sdfChainVerdict, type SdfChainGraph } from "./sdf-chain";
 import { planScene3d, scene3dEntry } from "./three-plan";
 import {
@@ -414,7 +415,45 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     if (!isAeClassified(n.type) && !input.classOf)
       acc.warnings.push(`${n.type} (${id}) is not in the After Effects class table — treated as unsupported.`);
     refine(s, input.valuesOf(id), tracksOf(id), policy);
+    // A polymorphic node on points or a spline (Mirror, …): the class table
+    // lists its image form, but the walk evaluates its points / path.
+    const carries = infoOf(id)?.primaryOutput;
+    if ((carries === "points" || carries === "spline") && (s.entry.class === "effect" || s.entry.class === "shader")) {
+      s.entry =
+        carries === "points"
+          ? { class: "instances", fidelity: "exact", note: "On points → the evaluated points as instance positions (static values; animated → per-frame keys)." }
+          : { class: "vector", ae: "shape:path", fidelity: "sampled", note: "On a spline → the evaluated path (static → exact; animated → path keys per frame)." };
+      s.requires = new Set();
+      s.notes = [];
+    }
     st.set(id, s);
+  }
+  // Rasterize Spline settings the walk bakes for (rasterize-rules.ts), and
+  // hole punching on animated geometry (its contour nesting is read once).
+  for (const id of order) {
+    const s = st.get(id)!;
+    if (s.node.type !== "rasterize-spline" || s.entry.class === "bake") continue;
+    const values = input.valuesOf(id);
+    const wires = inputsOf.get(id) ?? [];
+    const path = wires.find((w) => w.toHandle === "in:path");
+    const reason =
+      rasterizeBakeReason(values, (x) => wires.some((w) => w.toHandle === `in:${x}`)) ??
+      (punchesHoles(values) && path && animated.has(path.fromId) ? "hole punching on animated geometry — the contour nesting is read once" : null);
+    if (!reason) continue;
+    s.entry = { class: "bake", ae: "layer:footage", fidelity: "bake", requires: ["footage"], note: `${reason}; bakes.` };
+    s.requires = new Set(["footage"]);
+    s.notes = [];
+  }
+  // Spline Merge's Flow runs on the GPU, which the walk's evaluator has not:
+  // on a still input the editor's own outline exports (scene/shape.ts
+  // splineAt); on moving geometry it bakes.
+  for (const id of order) {
+    const s = st.get(id)!;
+    if (s.node.type !== "spline-merge" || s.entry.class === "bake" || input.valuesOf(id).flow === false) continue;
+    if ((inputsOf.get(id) ?? []).some((w) => animated.has(w.fromId))) {
+      s.entry = { class: "bake", ae: "layer:footage", fidelity: "bake", requires: ["footage"], note: "Flow on moving geometry simulates on the GPU every frame, which the export can't replay; bakes." };
+      s.requires = new Set(["footage"]);
+    } else s.notes.push("Flow on a still input → its settled outline, from the editor's own evaluation (the export's evaluator has no GPU).");
   }
   // A gradient fill spans each subpath's own frame, so on animated geometry
   // its points move every frame, which a preset can't key: the walk bakes it
@@ -851,6 +890,9 @@ function planLayer(L: AePlanLayerInput, input: AePlanInput, acc: Acc): AePlanLay
     }
     if (baked) continue;
 
+    // A still evaluated path or point set is exact: nothing is keyed per
+    // frame (the walk reports it sampled where it does sample).
+    if ((s.entry.class === "vector" || s.entry.class === "mask" || s.entry.class === "instances") && s.entry.fidelity === "sampled" && !animated.has(id)) s.entry = { ...s.entry, fidelity: "exact" };
     // Anchor-count stability for sampled (evaluated) paths.
     if ((s.entry.class === "vector" || s.entry.class === "mask") && s.entry.fidelity === "sampled" && animated.has(id) && !resampleDownstream(id)) {
       s.notes.push("Animated evaluated path → path keys per frame; AE needs a constant vertex count — add a Spline Resample downstream, or the segment bakes.");
