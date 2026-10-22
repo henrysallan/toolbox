@@ -100,3 +100,6 @@ next-env.d.ts
 
 # agent / tool worktrees (Claude Code isolation)
 /.claude/worktrees/
+
+# AE rig census corpus (scripts/ae-rig/fetch-corpus.mts): downloaded cloud projects
+/.corpus/
